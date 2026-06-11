@@ -1,6 +1,6 @@
 """
-Test orchestratore ciclo notturno: dry_run, from_phase, gestione errori.
-Nessuna chiamata I/O reale — fasi reali mockata dove necessario.
+Tests for the nightly cycle orchestrator: dry_run, from_phase, error handling.
+No real I/O calls — real phases mocked where needed.
 """
 
 from unittest.mock import patch
@@ -16,7 +16,7 @@ from pathosphere.cycle.orchestrator import (
 
 
 # ─────────────────────────────────────────────────────────────
-# Costanti e struttura
+# Constants and structure
 # ─────────────────────────────────────────────────────────────
 
 def test_phase_order_has_five_phases():
@@ -50,7 +50,7 @@ def test_dry_run_completes_all_phases():
 
 
 def test_dry_run_no_real_phase_called():
-    """Con dry_run=True nessuna funzione di fase reale deve essere chiamata."""
+    """With dry_run=True no real phase function must be called."""
     with patch("pathosphere.cycle.orchestrator._phase_ingest") as mock_ingest:
         run_cycle(dry_run=True)
         mock_ingest.assert_not_called()
@@ -86,33 +86,33 @@ def test_from_phase_brief_runs_only_brief():
 
 
 # ─────────────────────────────────────────────────────────────
-# Gestione errori (fasi reali che sollevano eccezioni)
+# Error handling (real phases that raise exceptions)
 # ─────────────────────────────────────────────────────────────
 
 def test_ingest_error_stops_cycle():
-    """Se _phase_ingest solleva, il ciclo si ferma e registra l'errore."""
+    """If _phase_ingest raises, the cycle stops and records the error."""
     with patch(
         "pathosphere.cycle.orchestrator._phase_ingest",
-        side_effect=RuntimeError("connessione DB fallita"),
+        side_effect=RuntimeError("DB connection failed"),
     ):
         state = run_cycle(dry_run=False)
     assert Phase.INGEST in state.errors
-    assert "connessione DB fallita" in state.errors[Phase.INGEST]
+    assert "DB connection failed" in state.errors[Phase.INGEST]
     assert Phase.EMBED not in state.completed
 
 
 def test_embed_phase_raises_not_implemented():
-    """_phase_embed è stub: NotImplementedError registrata in state.errors."""
+    """_phase_embed is a stub: NotImplementedError recorded in state.errors."""
     with patch("pathosphere.cycle.orchestrator._phase_ingest"):
         state = run_cycle(dry_run=False)
     assert Phase.INGEST in state.completed
     assert Phase.EMBED in state.errors
     assert "NotImplementedError" in state.errors[Phase.EMBED] or \
-           "Embedding non ancora" in state.errors[Phase.EMBED]
+           "Embedding not yet" in state.errors[Phase.EMBED]
 
 
 def test_error_stops_subsequent_phases():
-    """Dopo errore in EMBED, EXTRACT/CLUSTER/BRIEF non devono girare."""
+    """After error in EMBED, EXTRACT/CLUSTER/BRIEF must not run."""
     with patch("pathosphere.cycle.orchestrator._phase_ingest"):
         state = run_cycle(dry_run=False)
     assert Phase.EXTRACT not in state.completed
@@ -121,7 +121,7 @@ def test_error_stops_subsequent_phases():
 
 
 def test_phase_error_message_stored(capsys):
-    """Il messaggio di errore deve essere salvato in state.errors."""
+    """The error message must be saved in state.errors."""
     with patch("pathosphere.cycle.orchestrator._phase_ingest"):
         state = run_cycle(dry_run=False)
     assert isinstance(state.errors[Phase.EMBED], str)
@@ -129,11 +129,11 @@ def test_phase_error_message_stored(capsys):
 
 
 # ─────────────────────────────────────────────────────────────
-# Combinazione from_phase + errori
+# Combination from_phase + errors
 # ─────────────────────────────────────────────────────────────
 
 def test_from_phase_embed_hits_not_implemented():
-    """Riprendere da EMBED: INGEST skippato, EMBED fallisce per NotImplementedError."""
+    """Resume from EMBED: INGEST skipped, EMBED fails with NotImplementedError."""
     state = run_cycle(start_from=Phase.EMBED, dry_run=False)
     assert Phase.INGEST not in state.completed
     assert Phase.EMBED in state.errors

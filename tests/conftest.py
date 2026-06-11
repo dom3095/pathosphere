@@ -1,5 +1,5 @@
 """
-Fixture condivise tra tutti i test.
+Shared fixtures for all tests.
 """
 
 import sqlite3
@@ -13,7 +13,7 @@ from pathosphere.ingest.gdelt import GDELT_COLS
 
 @pytest.fixture
 def tmp_db(tmp_path: Path) -> sqlite3.Connection:
-    """DB SQLite temporaneo con schema completo inizializzato."""
+    """Temporary SQLite DB with full schema initialized."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
     conn = get_connection(db_path)
@@ -23,9 +23,9 @@ def tmp_db(tmp_path: Path) -> sqlite3.Connection:
 
 def make_gdelt_row(**overrides) -> dict:
     """
-    Riga GDELT con valori di default sensati.
-    Override selettivi via kwargs.
-    Valori default: conflitto materiale CN→TW, 50 mentions, Goldstein -8.
+    GDELT row with sensible default values.
+    Selective overrides via kwargs.
+    Defaults: material conflict CN→TW, 50 mentions, Goldstein -8.
     """
     defaults = {col: "" for col in GDELT_COLS}
     defaults.update(

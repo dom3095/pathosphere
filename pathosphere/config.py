@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     ollama_llm_model: str = "qwen3:4b"
     ollama_embed_model: str = "nomic-embed-text"
 
-    # Embedding locale
+    # Local embedding
     embed_model_name: str = "intfloat/multilingual-e5-small"
 
     # Logging

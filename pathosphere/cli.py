@@ -1,4 +1,4 @@
-"""CLI principale di Pathosphere — entry point: `pathos`."""
+"""Pathosphere main CLI — entry point: `pathos`."""
 
 import click
 from loguru import logger
@@ -10,7 +10,7 @@ from pathosphere.logging_setup import setup_logging
 @click.group()
 @click.option("--log-level", default=None, help="Override LOG_LEVEL (.env)")
 def cli(log_level: str | None) -> None:
-    """Pathosphere — OSINT intelligence su eventi critici globali."""
+    """Pathosphere — OSINT intelligence on global critical events."""
     if log_level:
         import os
         os.environ["LOG_LEVEL"] = log_level.upper()
@@ -21,26 +21,26 @@ def cli(log_level: str | None) -> None:
 
 @cli.group()
 def db() -> None:
-    """Gestione database."""
+    """Database management."""
 
 
 @db.command("init")
 def db_init() -> None:
-    """Inizializza il database SQLite (crea tabelle e vec0)."""
+    """Initialize the SQLite database (creates tables and vec0)."""
     from pathosphere.db.schema import init_db
     settings = get_settings()
-    logger.info(f"Inizializzazione DB: {settings.db_path}")
+    logger.info(f"Initializing DB: {settings.db_path}")
     init_db(settings.db_path)
-    logger.success(f"Database pronto: {settings.db_path}")
+    logger.success(f"Database ready: {settings.db_path}")
 
 
 @db.command("info")
 def db_info() -> None:
-    """Mostra info e conteggi delle tabelle principali."""
+    """Show info and row counts for main tables."""
     from pathosphere.db.schema import get_connection
     settings = get_settings()
     if not settings.db_path.exists():
-        click.echo("Database non trovato. Esegui: pathos db init")
+        click.echo("Database not found. Run: pathos db init")
         return
     conn = get_connection(settings.db_path)
     tables = [
@@ -48,7 +48,7 @@ def db_info() -> None:
         "entity_links", "theses", "trades", "portfolios", "predictions",
     ]
     click.echo(f"\nDatabase: {settings.db_path}")
-    click.echo(f"{'Tabella':<25} {'Righe':>8}")
+    click.echo(f"{'Table':<25} {'Rows':>8}")
     click.echo("─" * 35)
     for table in tables:
         try:
@@ -67,11 +67,11 @@ def db_info() -> None:
     "--from-phase",
     type=click.Choice(["ingest", "embed", "extract", "cluster", "brief"]),
     default=None,
-    help="Riprendi dal ciclo da questa fase.",
+    help="Resume the cycle from this phase.",
 )
-@click.option("--dry-run", is_flag=True, help="Simula il ciclo senza eseguire nulla.")
+@click.option("--dry-run", is_flag=True, help="Simulate the cycle without running anything.")
 def cycle(from_phase: str | None, dry_run: bool) -> None:
-    """Esegui il ciclo notturno completo (download → brief)."""
+    """Run the full nightly cycle (download → brief)."""
     from pathosphere.cycle.orchestrator import Phase, run_cycle
 
     start = None
@@ -79,24 +79,24 @@ def cycle(from_phase: str | None, dry_run: bool) -> None:
         start = Phase[from_phase.upper()]
 
     if dry_run:
-        logger.info("Modalità dry-run attiva")
+        logger.info("Dry-run mode active")
 
     state = run_cycle(start_from=start, dry_run=dry_run)
 
     if state.errors:
-        click.echo(f"\nCiclo interrotto. Errori: {list(state.errors.keys())}")
-        click.echo(f"Riprendi con: pathos cycle --from-phase {list(state.errors.keys())[0].name.lower()}")
+        click.echo(f"\nCycle aborted. Errors: {list(state.errors.keys())}")
+        click.echo(f"Resume with: pathos cycle --from-phase {list(state.errors.keys())[0].name.lower()}")
     else:
-        click.echo(f"\nCiclo completato. Fasi: {[p.name for p in state.completed]}")
+        click.echo(f"\nCycle complete. Phases: {[p.name for p in state.completed]}")
 
 
 # ─── config ───────────────────────────────────────────────────────────────────
 
 @cli.command()
 def config() -> None:
-    """Mostra la configurazione attiva."""
+    """Show the active configuration."""
     settings = get_settings()
-    click.echo("\nConfigurazione attiva:")
+    click.echo("\nActive configuration:")
     for field_name, value in settings.model_dump().items():
         click.echo(f"  {field_name:<30} = {value}")
 
@@ -105,40 +105,40 @@ def config() -> None:
 
 @cli.group()
 def sources() -> None:
-    """Gestione catalogo fonti."""
+    """Source catalogue management."""
 
 
 @sources.command("list")
 def sources_list() -> None:
-    """Lista le fonti configurate."""
+    """List configured sources."""
     from pathosphere.db.schema import get_connection
     settings = get_settings()
     if not settings.db_path.exists():
-        click.echo("Database non trovato. Esegui: pathos db init")
+        click.echo("Database not found. Run: pathos db init")
         return
     conn = get_connection(settings.db_path)
     rows = conn.execute(
         "SELECT id, name, country, geopolitical_block, state_control, active FROM sources ORDER BY geopolitical_block, name"
     ).fetchall()
     if not rows:
-        click.echo("Nessuna fonte configurata. Usa: pathos sources seed")
+        click.echo("No sources configured. Use: pathos sources seed")
         return
-    click.echo(f"\n{'ID':>4} {'Nome':<30} {'Paese':<8} {'Blocco':<12} {'Ctrl':>4} {'Attiva':>6}")
+    click.echo(f"\n{'ID':>4} {'Name':<30} {'Country':<8} {'Block':<12} {'Ctrl':>4} {'Active':>6}")
     click.echo("─" * 70)
     for r in rows:
-        click.echo(f"{r['id']:>4} {r['name']:<30} {r['country']:<8} {r['geopolitical_block']:<12} {r['state_control']:>4} {'sì' if r['active'] else 'no':>6}")
+        click.echo(f"{r['id']:>4} {r['name']:<30} {r['country']:<8} {r['geopolitical_block']:<12} {r['state_control']:>4} {'yes' if r['active'] else 'no':>6}")
     conn.close()
 
 
 @sources.command("seed")
 def sources_seed() -> None:
-    """Popola il catalogo con le fonti predefinite del progetto."""
+    """Populate the catalogue with the project's default sources."""
     from pathosphere.db.schema import get_connection
     settings = get_settings()
     conn = get_connection(settings.db_path)
     _seed_sources(conn)
     conn.close()
-    logger.success("Fonti predefinite inserite.")
+    logger.success("Default sources inserted.")
 
 
 def _seed_sources(conn: "sqlite3.Connection") -> None:  # type: ignore[name-defined]
@@ -174,17 +174,17 @@ def _seed_sources(conn: "sqlite3.Connection") -> None:  # type: ignore[name-defi
 
 @cli.group()
 def ingest() -> None:
-    """Ingestione dati dalle fonti."""
+    """Data ingestion from sources."""
 
 
 def _require_db(settings):
     if not settings.db_path.exists():
-        click.echo("Database non trovato. Esegui prima: pathos db init")
+        click.echo("Database not found. Run first: pathos db init")
         raise SystemExit(1)
 
 
 @ingest.command("gdelt")
-@click.option("--days", default=1, show_default=True, help="Quanti giorni indietro.")
+@click.option("--days", default=1, show_default=True, help="How many days back.")
 @click.option(
     "--quad",
     default="conflict",
@@ -192,11 +192,11 @@ def _require_db(settings):
     show_default=True,
     help="conflict=QuadClass 3-4 | all=1-4",
 )
-@click.option("--min-mentions", default=10, show_default=True, help="Filtro NumMentions minimo.")
-@click.option("--max-goldstein", default=None, type=float, help="Mantieni solo GoldsteinScale ≤ valore.")
-@click.option("--countries", default=None, help="ISO-2 separati da virgola (es. CN,US,TW).")
-@click.option("--max-files", default=None, type=int, help="Limita n. file (utile per test).")
-@click.option("--no-skip", is_flag=True, help="Riscaricare file già presenti nel log.")
+@click.option("--min-mentions", default=10, show_default=True, help="Minimum NumMentions filter.")
+@click.option("--max-goldstein", default=None, type=float, help="Keep only GoldsteinScale ≤ value.")
+@click.option("--countries", default=None, help="Comma-separated ISO-2 codes (e.g. CN,US,TW).")
+@click.option("--max-files", default=None, type=int, help="Limit number of files (useful for testing).")
+@click.option("--no-skip", is_flag=True, help="Re-download files already present in the log.")
 def ingest_gdelt(
     days: int,
     quad: str,
@@ -206,7 +206,7 @@ def ingest_gdelt(
     max_files: int | None,
     no_skip: bool,
 ) -> None:
-    """Scarica eventi GDELT 2.0 per gli ultimi N giorni (ciclo incrementale)."""
+    """Download GDELT 2.0 events for the last N days (incremental cycle)."""
     from pathosphere.db.schema import get_connection
     from pathosphere.ingest.gdelt import QUAD_ALL, QUAD_CONFLICT, ingest_gdelt
 
@@ -230,37 +230,37 @@ def ingest_gdelt(
     conn.close()
 
     click.echo(
-        f"\nRisultato GDELT:\n"
-        f"  File:    {result.files_ok} ok | {result.files_skipped} saltati | {result.files_error} errori\n"
-        f"  Righe:   {result.rows_raw:,} raw → {result.rows_filtered:,} filtrate\n"
-        f"  Insert:  {result.events_inserted:,} eventi | {result.docs_inserted:,} documenti"
+        f"\nGDELT result:\n"
+        f"  Files:   {result.files_ok} ok | {result.files_skipped} skipped | {result.files_error} errors\n"
+        f"  Rows:    {result.rows_raw:,} raw → {result.rows_filtered:,} filtered\n"
+        f"  Insert:  {result.events_inserted:,} events | {result.docs_inserted:,} documents"
     )
     if result.errors:
-        click.echo(f"\nPrimi errori: {result.errors[:3]}")
+        click.echo(f"\nFirst errors: {result.errors[:3]}")
 
 
 @ingest.command("gdelt-history")
 @click.option(
     "--start", required=True,
-    help="Data inizio (YYYY-MM-DD).",
+    help="Start date (YYYY-MM-DD).",
 )
 @click.option(
     "--end", default=None,
-    help="Data fine escl. (YYYY-MM-DD). Default: ieri.",
+    help="End date excl. (YYYY-MM-DD). Default: yesterday.",
 )
 @click.option(
     "--sample-hours", default=1, show_default=True,
-    help="Scarica 1 file ogni N ore. Default=1 (ogni ora, buona copertura). "
-         "Usa 6 per un bootstrap rapido, 0 per tutto (ogni 15 min, ~7 notti).",
+    help="Download 1 file every N hours. Default=1 (every hour, good coverage). "
+         "Use 6 for a quick bootstrap, 0 for all (every 15 min, ~7 nights).",
 )
-@click.option("--min-mentions", default=10, show_default=True, help="Soglia NumMentions.")
+@click.option("--min-mentions", default=10, show_default=True, help="NumMentions threshold.")
 @click.option(
     "--quad",
     default="conflict",
     type=click.Choice(["conflict", "all"]),
     show_default=True,
 )
-@click.option("--countries", default=None, help="ISO-2 separati da virgola.")
+@click.option("--countries", default=None, help="Comma-separated ISO-2 codes.")
 def ingest_gdelt_history(
     start: str,
     end: str | None,
@@ -270,21 +270,21 @@ def ingest_gdelt_history(
     countries: str | None,
 ) -> None:
     """
-    Download bulk storico GDELT per un intervallo di date (operazione una-tantum, ripartibile).
+    Bulk historical GDELT download for a date range (one-time, resumable).
 
-    Campiona 1 file ogni sample-hours ore per ridurre il volume. Gli eventi con
-    copertura significativa (min-mentions ≥ 10) appaiono in molte finestre
-    consecutive, quindi l'orario (default 1h) cattura tutto ciò che conta.
+    Samples 1 file every sample-hours hours to reduce volume. Events with
+    significant coverage (min-mentions ≥ 10) appear in many consecutive windows,
+    so hourly sampling (default 1h) captures everything that matters.
 
-    Stime per 5 anni di storico:
-      --sample-hours 1  → ~43k file, ~2 notti (raccomandato)
-      --sample-hours 2  → ~22k file, ~1 notte
-      --sample-hours 6  → ~7k file,  ~2.5h  (bootstrap rapido)
-      --sample-hours 0  → tutti i file ogni 15min, ~7 notti
+    Estimates for 5 years of history:
+      --sample-hours 1  → ~43k files, ~2 nights (recommended)
+      --sample-hours 2  → ~22k files, ~1 night
+      --sample-hours 6  → ~7k files,  ~2.5h  (quick bootstrap)
+      --sample-hours 0  → all files every 15min, ~7 nights
 
-    Ripartibile: Ctrl+C e rilancia — salta automaticamente i file già scaricati.
+    Resumable: Ctrl+C and relaunch — automatically skips already-downloaded files.
 
-    Esempio:
+    Example:
       pathos ingest gdelt-history --start 2021-01-01
     """
     from datetime import date, timedelta
@@ -307,20 +307,20 @@ def ingest_gdelt_history(
     try:
         start_date = date.fromisoformat(start)
     except ValueError:
-        click.echo(f"Formato data non valido: {start} (usa YYYY-MM-DD)")
+        click.echo(f"Invalid date format: {start} (use YYYY-MM-DD)")
         raise SystemExit(1)
 
     end_date = date.fromisoformat(end) if end else date.today()
     qc = QUAD_CONFLICT if quad == "conflict" else QUAD_ALL
     ctry = set(c.strip().upper() for c in countries.split(",")) if countries else None
 
-    # Genera URL campionati
-    # sample_hours=0 → tutti i file ogni 15 minuti
-    # sample_hours=N → 1 file per ogni N ore (al minuto :00 dell'ora scelta)
+    # Generate sampled URLs
+    # sample_hours=0 → all files every 15 minutes
+    # sample_hours=N → 1 file every N hours (at minute :00 of the chosen hour)
     urls: list[tuple[str, str]] = []
     cursor = start_date
     if sample_hours == 0:
-        # download completo: ogni 15 minuti
+        # full download: every 15 minutes
         slot_minutes = list(range(0, 24 * 60, 15))
     else:
         slot_minutes = [h * 60 for h in range(0, 24, sample_hours)]
@@ -335,13 +335,13 @@ def ingest_gdelt_history(
 
     total = len(urls)
     click.echo(
-        f"GDELT storico: {start_date} → {end_date} | "
-        f"{total} file "
-        f"({'ogni 15min' if sample_hours == 0 else f'ogni {sample_hours}h'}) | "
+        f"GDELT historical: {start_date} → {end_date} | "
+        f"{total} files "
+        f"({'every 15min' if sample_hours == 0 else f'every {sample_hours}h'}) | "
         f"min_mentions={min_mentions}"
     )
     est_hours = total * 1.2 / 3600
-    click.echo(f"Stima: ~{est_hours:.1f}h ({est_hours/8:.1f} notti da 8h). Ripartibile con Ctrl+C.\n")
+    click.echo(f"Estimate: ~{est_hours:.1f}h ({est_hours/8:.1f} 8h-nights). Resumable with Ctrl+C.\n")
 
     import httpx
     from pathosphere.ingest.gdelt import _fetch_zip
@@ -378,7 +378,7 @@ def ingest_gdelt_history(
                 continue
             except Exception as exc:
                 files_err += 1
-                logger.warning(f"Errore {fname}: {exc}")
+                logger.warning(f"Error {fname}: {exc}")
                 continue
 
             try:
@@ -415,13 +415,13 @@ def ingest_gdelt_history(
                 click.echo(
                     f"[{pct:5.1f}%] {i}/{total} | "
                     f"ok={files_ok} skip={files_skip} err={files_err} | "
-                    f"eventi={ev_total:,} doc={doc_total:,}"
+                    f"events={ev_total:,} docs={doc_total:,}"
                 )
 
     conn.close()
     click.echo(
-        f"\nStorico GDELT completato:\n"
-        f"  File:   {files_ok} ok | {files_skip} saltati | {files_err} errori\n"
-        f"  Righe:  {rows_raw_total:,} raw → {rows_filt_total:,} filtrate\n"
-        f"  Insert: {ev_total:,} eventi | {doc_total:,} documenti"
+        f"\nGDELT historical complete:\n"
+        f"  Files:  {files_ok} ok | {files_skip} skipped | {files_err} errors\n"
+        f"  Rows:   {rows_raw_total:,} raw → {rows_filt_total:,} filtered\n"
+        f"  Insert: {ev_total:,} events | {doc_total:,} documents"
     )

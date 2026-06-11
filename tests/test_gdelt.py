@@ -1,6 +1,6 @@
 """
-Test logica GDELT: generazione URL, parsing, filtraggio, storage, dedup.
-Nessuna chiamata HTTP reale — tutto in-process o mockato.
+Tests for GDELT logic: URL generation, parsing, filtering, storage, dedup.
+No real HTTP calls — all in-process or mocked.
 """
 
 import io
@@ -30,7 +30,7 @@ from tests.conftest import make_gdelt_row
 # ─────────────────────────────────────────────────────────────
 
 def test_generate_file_urls_one_day_count():
-    """Un giorno = 24 ore × 4 slot = 96 file."""
+    """One day = 24 hours × 4 slots = 96 files."""
     urls = generate_file_urls(1)
     assert len(urls) == 96
 
@@ -41,11 +41,11 @@ def test_generate_file_urls_two_days_count():
 
 
 def test_generate_file_urls_filename_format():
-    """Filename deve matchare YYYYMMDDHHMMSS.export.CSV.zip."""
+    """Filename must match YYYYMMDDHHMMSS.export.CSV.zip."""
     urls = generate_file_urls(1)
     for fname, url in urls:
         assert fname.endswith(".export.CSV.zip")
-        # 14 cifre data + ".export.CSV.zip"
+        # 14 digit timestamp + ".export.CSV.zip"
         timestamp_part = fname.replace(".export.CSV.zip", "")
         assert len(timestamp_part) == 14
         assert timestamp_part.isdigit()
@@ -59,16 +59,16 @@ def test_generate_file_urls_url_prefix():
 
 
 def test_generate_file_urls_minutes_slots():
-    """Minuti devono essere solo 00, 15, 30, 45."""
+    """Minutes must be only 00, 15, 30, 45."""
     urls = generate_file_urls(1)
     for fname, _ in urls:
-        # YYYYMMDDHHMMSS → minuti sono caratteri [10:12]
+        # YYYYMMDDHHMMSS → minutes are chars [10:12]
         minutes = int(fname[10:12])
         assert minutes in (0, 15, 30, 45)
 
 
 def test_generate_file_urls_day_is_yesterday():
-    """n_days=1 deve generare URL per ieri, non oggi."""
+    """n_days=1 must generate URLs for yesterday, not today."""
     yesterday = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
     urls = generate_file_urls(1)
     first_fname = urls[0][0]
@@ -182,7 +182,7 @@ def test_filter_rows_keeps_exact_min_mentions():
 
 
 def test_filter_rows_goldstein_drops_positive():
-    """min_goldstein=-1 scarta eventi con Goldstein > -1 (cioè meno destabilizzanti)."""
+    """min_goldstein=-1 discards events with Goldstein > -1 (i.e. less destabilising)."""
     rows = [make_gdelt_row(QuadClass="4", NumMentions="50", GoldsteinScale="2.0")]
     result = filter_rows(iter(rows), quad_classes={3, 4}, min_mentions=10,
                          min_goldstein=-1.0, countries=None)
@@ -264,7 +264,7 @@ def test_store_rows_event_document_link_created(tmp_db):
 
 
 def test_store_rows_url_dedup(tmp_db):
-    """Stessa SOURCEURL → solo 1 raw_document inserito."""
+    """Same SOURCEURL → only 1 raw_document inserted."""
     rows = [
         make_gdelt_row(SOURCEURL="https://example.com/same"),
         make_gdelt_row(SOURCEURL="https://example.com/same", Actor1Name="RUSSIA"),
@@ -277,7 +277,7 @@ def test_store_rows_url_dedup(tmp_db):
 
 
 def test_store_rows_event_key_dedup(tmp_db):
-    """Stessa chiave semantica (actor1+actor2+eventroot+date+geo) → 1 evento."""
+    """Same semantic key (actor1+actor2+eventroot+date+geo) → 1 event."""
     rows = [
         make_gdelt_row(SOURCEURL="https://example.com/a"),
         make_gdelt_row(SOURCEURL="https://example.com/b"),
@@ -290,7 +290,7 @@ def test_store_rows_event_key_dedup(tmp_db):
 
 
 def test_store_rows_different_events(tmp_db):
-    """Chiavi diverse → 2 eventi distinti."""
+    """Different keys → 2 distinct events."""
     rows = [
         make_gdelt_row(SOURCEURL="https://ex.com/a", Actor1CountryCode="CN"),
         make_gdelt_row(SOURCEURL="https://ex.com/b", Actor1CountryCode="RU"),
@@ -310,7 +310,7 @@ def test_store_rows_skips_row_without_url(tmp_db):
 
 
 def test_store_rows_severity_mapping(tmp_db):
-    """Goldstein -8 → severity alta (4 o 5)."""
+    """Goldstein -8 → high severity (4 or 5)."""
     rows = [make_gdelt_row(GoldsteinScale="-8.0")]
     with tmp_db:
         store_rows(tmp_db, rows)
@@ -363,7 +363,7 @@ def test_extract_csv_returns_content():
 
 
 def test_extract_csv_finds_csv_entry():
-    """Deve trovare il file .CSV anche se ci sono altri file nello zip."""
+    """Must find the .CSV file even if other files are present in the zip."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("readme.txt", "ignore me")

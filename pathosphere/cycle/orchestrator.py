@@ -1,14 +1,14 @@
 """
-Orchestratore del ciclo notturno.
+Nightly cycle orchestrator.
 
-Fasi (sequenziali, riprendibili):
-  1. ingest   — scarica documenti dalle fonti
-  2. embed    — calcola embeddings + dedup vettoriale
+Phases (sequential, resumable):
+  1. ingest   — download documents from sources
+  2. embed    — compute embeddings + vector dedup
   3. extract  — NER, geocoding, entity linking
-  4. cluster  — raggruppa articoli in eventi
-  5. brief    — genera brief mattutino con Qwen
+  4. cluster  — group articles into events
+  5. brief    — generate morning brief with Qwen
 
-Ogni fase è atomica: se interrotta, riprende dall'ultima completata.
+Each phase is atomic: if interrupted, resumes from the last completed phase.
 """
 
 from dataclasses import dataclass, field
@@ -45,7 +45,7 @@ def run_cycle(
     start_from: Phase | None = None,
     dry_run: bool = False,
 ) -> CycleState:
-    """Esegue il ciclo notturno in modo sequenziale e riprendibile."""
+    """Run the nightly cycle sequentially and resumably."""
     state = CycleState()
     skip = start_from is not None
 
@@ -54,23 +54,23 @@ def run_cycle(
             if phase == start_from:
                 skip = False
             else:
-                logger.info(f"Salto fase {phase.name} (ripresa da {start_from.name})")
+                logger.info(f"Skipping phase {phase.name} (resuming from {start_from.name})")
                 continue
 
-        logger.info(f"→ Fase {phase.name}")
+        logger.info(f"→ Phase {phase.name}")
 
         if dry_run:
-            logger.info(f"  [dry-run] {phase.name} simulata")
+            logger.info(f"  [dry-run] {phase.name} simulated")
             state.completed.add(phase)
             continue
 
         try:
             _run_phase(phase)
             state.completed.add(phase)
-            logger.success(f"✓ {phase.name} completata")
+            logger.success(f"✓ {phase.name} complete")
         except Exception as exc:
             state.errors[phase] = str(exc)
-            logger.error(f"✗ {phase.name} fallita: {exc}")
+            logger.error(f"✗ {phase.name} failed: {exc}")
             break
 
     return state
@@ -106,21 +106,21 @@ def _phase_ingest() -> None:
     )
     conn.close()
     logger.info(
-        f"INGEST: {result.events_inserted} eventi, {result.docs_inserted} doc"
+        f"INGEST: {result.events_inserted} events, {result.docs_inserted} docs"
     )
 
 
 def _phase_embed() -> None:
-    raise NotImplementedError("Embedding non ancora implementato (Fase 2)")
+    raise NotImplementedError("Embedding not yet implemented (Phase 2)")
 
 
 def _phase_extract() -> None:
-    raise NotImplementedError("Estrazione entità non ancora implementata (Fase 2)")
+    raise NotImplementedError("Entity extraction not yet implemented (Phase 2)")
 
 
 def _phase_cluster() -> None:
-    raise NotImplementedError("Clustering non ancora implementato (Fase 2)")
+    raise NotImplementedError("Clustering not yet implemented (Phase 2)")
 
 
 def _phase_brief() -> None:
-    raise NotImplementedError("Brief non ancora implementato (Fase 3)")
+    raise NotImplementedError("Brief not yet implemented (Phase 3)")

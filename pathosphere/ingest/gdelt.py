@@ -1,14 +1,14 @@
 """
-Ingestione GDELT 2.0 Events.
+GDELT 2.0 Events ingestion.
 
-GDELT pubblica file CSV compressi ogni 15 minuti:
+GDELT publishes compressed CSV files every 15 minutes:
   http://data.gdeltproject.org/gdeltv2/YYYYMMDDHHMMSS.export.CSV.zip
 
-Ogni file è TSV (tab-separated, no header) con 61 colonne.
-Filtriamo per QuadClass (conflitti) e NumMentions (rilevanza) prima di
-salvare, così l'LLM vede solo eventi significativi.
+Each file is TSV (tab-separated, no header) with 61 columns.
+We filter by QuadClass (conflicts) and NumMentions (relevance) before
+storing, so the LLM sees only significant events.
 
-Tabelle aggiornate: raw_documents, events, event_documents, gdelt_file_log.
+Tables updated: raw_documents, events, event_documents, gdelt_file_log.
 """
 
 import csv
@@ -25,12 +25,12 @@ from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Costanti
+# Constants
 # ──────────────────────────────────────────────────────────────────────────────
 
 GDELT_BASE = "http://data.gdeltproject.org/gdeltv2"
 
-# 61 colonne GDELT 2.0 Events (tab-separated, nessun header nel file)
+# 61 columns GDELT 2.0 Events (tab-separated, no header in file)
 GDELT_COLS = [
     "GlobalEventID", "SQLDATE", "MonthYear", "Year", "FractionDate",
     "Actor1Code", "Actor1Name", "Actor1CountryCode", "Actor1KnownGroupCode",
@@ -59,7 +59,7 @@ GDELT_COLS = [
 QUAD_CONFLICT = {3, 4}
 QUAD_ALL = {1, 2, 3, 4}
 
-# EventRootCode CAMEO → etichetta leggibile
+# EventRootCode CAMEO → human-readable label
 EVENT_TYPE_MAP: dict[str, str] = {
     "01": "statement", "02": "appeal", "03": "cooperate_intent",
     "04": "consult", "05": "diplomatic", "06": "material_coop",
@@ -72,7 +72,7 @@ EVENT_TYPE_MAP: dict[str, str] = {
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Dataclass risultato
+# Result dataclass
 # ──────────────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -89,13 +89,13 @@ class IngestResult:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Generazione URL
+# URL generation
 # ──────────────────────────────────────────────────────────────────────────────
 
 def generate_file_urls(n_days: int) -> list[tuple[str, str]]:
     """
-    Genera lista di (filename, url) per gli ultimi n_days giorni completi.
-    GDELT pubblica file ogni 15 minuti: HH:00, HH:15, HH:30, HH:45.
+    Generate list of (filename, url) for the last n_days complete days.
+    GDELT publishes files every 15 minutes: HH:00, HH:15, HH:30, HH:45.
     """
     urls = []
     today = date.today()
@@ -131,7 +131,7 @@ def _extract_csv(zip_bytes: bytes) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Parsing e filtraggio
+# Parsing and filtering
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _parse_rows(csv_text: str) -> Iterator[dict]:
@@ -166,14 +166,14 @@ def filter_rows(
     countries: set[str] | None,
 ) -> list[dict]:
     """
-    Filtra le righe GDELT per rilevanza.
+    Filter GDELT rows by relevance.
 
-    quad_classes  : insieme di QuadClass ammessi (1-4)
-    min_mentions  : soglia minima NumMentions
-    min_goldstein : se impostato, scarta eventi con GoldsteinScale > soglia
-                    (valori negativi = destabilizzanti)
-    countries     : se impostato, tieni solo eventi dove Actor1 o Actor2
-                    o ActionGeo appartengono a questi paesi (ISO 2)
+    quad_classes  : set of allowed QuadClass values (1-4)
+    min_mentions  : minimum NumMentions threshold
+    min_goldstein : if set, discard events with GoldsteinScale > threshold
+                    (negative values = destabilising)
+    countries     : if set, keep only events where Actor1, Actor2,
+                    or ActionGeo belongs to these countries (ISO 2)
     """
     kept = []
     for row in rows:
@@ -204,7 +204,7 @@ def filter_rows(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Persistenza
+# Persistence
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _sqldate_to_iso(sqldate: str) -> str:
@@ -216,10 +216,10 @@ def _sqldate_to_iso(sqldate: str) -> str:
 
 def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:  # type: ignore[name-defined]
     """
-    Inserisce eventi e documenti nel DB.
-    Ritorna (events_inserted, docs_inserted).
-    Dedup su SOURCEURL per raw_documents e su (actor1, actor2, event_root, date)
-    per events.
+    Insert events and documents into the DB.
+    Returns (events_inserted, docs_inserted).
+    Dedup on SOURCEURL for raw_documents and on (actor1, actor2, event_root, date)
+    for events.
     """
     events_ins = 0
     docs_ins = 0
@@ -229,7 +229,7 @@ def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:
         if not source_url:
             continue
 
-        # ── raw_document (dedup per URL) ──────────────────────────────────
+        # ── raw_document (dedup by URL) ───────────────────────────────────
         url_hash = hashlib.sha256(source_url.encode()).hexdigest()
         existing_doc = conn.execute(
             "SELECT id FROM raw_documents WHERE url = ?", (source_url,)
@@ -252,7 +252,7 @@ def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:
             doc_id = cur.lastrowid
             docs_ins += 1
 
-        # ── event (dedup su chiave semantica) ─────────────────────────────
+        # ── event (dedup by semantic key) ─────────────────────────────────
         event_key = (
             row.get("Actor1CountryCode", ""),
             row.get("Actor2CountryCode", ""),
@@ -304,7 +304,7 @@ def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:
             event_id = cur.lastrowid
             events_ins += 1
 
-        # ── link evento ↔ documento ────────────────────────────────────────
+        # ── event ↔ document link ─────────────────────────────────────────
         conn.execute(
             "INSERT OR IGNORE INTO event_documents (event_id, document_id) VALUES (?, ?)",
             (event_id, doc_id),
@@ -314,7 +314,7 @@ def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Entry point principale
+# Main entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
 def ingest_gdelt(
@@ -329,15 +329,15 @@ def ingest_gdelt(
     skip_existing: bool = True,
 ) -> IngestResult:
     """
-    Scarica e inserisce eventi GDELT per gli ultimi n_days giorni.
+    Download and insert GDELT events for the last n_days days.
 
-    n_days        : quanti giorni indietro (default 1)
-    quad_classes  : QuadClass da tenere ({3,4}=solo conflitti, {1,2,3,4}=tutto)
-    min_mentions  : filtro minimo per NumMentions
-    min_goldstein : mantieni solo eventi con GoldsteinScale ≤ soglia (es. -1.0)
-    countries     : filtra per codice paese ISO-2 (None = tutti)
-    max_files     : limita il numero di file (utile per test)
-    skip_existing : salta file già presenti in gdelt_file_log
+    n_days        : how many days back (default 1)
+    quad_classes  : QuadClass to keep ({3,4}=conflicts only, {1,2,3,4}=all)
+    min_mentions  : minimum filter for NumMentions
+    min_goldstein : keep only events with GoldsteinScale ≤ threshold (e.g. -1.0)
+    countries     : filter by ISO-2 country code (None = all)
+    max_files     : limit number of files (useful for testing)
+    skip_existing : skip files already present in gdelt_file_log
     """
     result = IngestResult()
     file_list = generate_file_urls(n_days)
@@ -345,8 +345,8 @@ def ingest_gdelt(
         file_list = file_list[:max_files]
 
     logger.info(
-        f"GDELT: {len(file_list)} file da scaricare "
-        f"(ultimi {n_days} giorni, quad={quad_classes}, min_mentions={min_mentions})"
+        f"GDELT: {len(file_list)} files to download "
+        f"(last {n_days} days, quad={quad_classes}, min_mentions={min_mentions})"
     )
 
     with httpx.Client(
@@ -356,7 +356,7 @@ def ingest_gdelt(
         for fname, url in file_list:
             result.files_attempted += 1
 
-            # skip se già scaricato
+            # skip if already downloaded
             if skip_existing:
                 already = conn.execute(
                     "SELECT id FROM gdelt_file_log WHERE filename = ?", (fname,)
@@ -366,11 +366,11 @@ def ingest_gdelt(
                     continue
 
             try:
-                logger.debug(f"Scarico {fname}")
+                logger.debug(f"Downloading {fname}")
                 zip_bytes = _fetch_zip(url, client)
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code == 404:
-                    # File non ancora disponibile (gap GDELT normale)
+                    # File not yet available (normal GDELT gap)
                     result.files_skipped += 1
                     conn.execute(
                         "INSERT OR IGNORE INTO gdelt_file_log (filename, url, rows_raw, rows_stored, status) VALUES (?,?,0,0,'skipped')",
@@ -380,12 +380,12 @@ def ingest_gdelt(
                     continue
                 result.files_error += 1
                 result.errors.append(f"{fname}: {exc}")
-                logger.warning(f"Errore HTTP {exc.response.status_code} per {fname}")
+                logger.warning(f"HTTP error {exc.response.status_code} for {fname}")
                 continue
             except Exception as exc:
                 result.files_error += 1
                 result.errors.append(f"{fname}: {exc}")
-                logger.warning(f"Errore download {fname}: {exc}")
+                logger.warning(f"Download error {fname}: {exc}")
                 continue
 
             try:
@@ -393,7 +393,7 @@ def ingest_gdelt(
             except Exception as exc:
                 result.files_error += 1
                 result.errors.append(f"{fname} (zip): {exc}")
-                logger.warning(f"Errore estrazione {fname}: {exc}")
+                logger.warning(f"Extraction error {fname}: {exc}")
                 continue
 
             raw_rows = list(_parse_rows(csv_text))
@@ -422,14 +422,14 @@ def ingest_gdelt(
 
             result.files_ok += 1
             logger.debug(
-                f"  {fname}: {len(raw_rows)} righe → {len(filtered)} filtrate "
-                f"(+{ev_ins} eventi, +{doc_ins} doc)"
+                f"  {fname}: {len(raw_rows)} rows → {len(filtered)} filtered "
+                f"(+{ev_ins} events, +{doc_ins} docs)"
             )
 
     logger.info(
-        f"GDELT completato: {result.files_ok} file ok, "
-        f"{result.files_skipped} saltati, {result.files_error} errori | "
-        f"{result.rows_raw} righe raw → {result.rows_filtered} filtrate → "
-        f"{result.events_inserted} eventi, {result.docs_inserted} doc inseriti"
+        f"GDELT complete: {result.files_ok} files ok, "
+        f"{result.files_skipped} skipped, {result.files_error} errors | "
+        f"{result.rows_raw} rows raw → {result.rows_filtered} filtered → "
+        f"{result.events_inserted} events, {result.docs_inserted} docs inserted"
     )
     return result

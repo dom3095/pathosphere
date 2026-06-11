@@ -1,5 +1,5 @@
 """
-Test schema SQLite: init, tabelle, sqlite-vec.
+Tests for SQLite schema: init, tables, sqlite-vec.
 """
 
 import sqlite3
@@ -48,10 +48,10 @@ def test_init_db_creates_all_tables(tmp_path: Path):
 
 
 def test_init_db_is_idempotent(tmp_path: Path):
-    """Chiamare init_db due volte non solleva errori (CREATE TABLE IF NOT EXISTS)."""
+    """Calling init_db twice raises no errors (CREATE TABLE IF NOT EXISTS)."""
     db_path = tmp_path / "test.db"
     init_db(db_path)
-    init_db(db_path)  # seconda chiamata: nessun errore
+    init_db(db_path)  # second call: no error
 
 
 def test_init_db_creates_db_file(tmp_path: Path):
@@ -65,7 +65,7 @@ def test_init_db_creates_db_file(tmp_path: Path):
 # ─────────────────────────────────────────────────────────────
 
 def test_get_connection_row_factory(tmp_db):
-    """Le righe devono essere accessibili per nome colonna."""
+    """Rows must be accessible by column name."""
     conn = tmp_db
     conn.execute(
         "INSERT INTO sources (name, country, geopolitical_block, state_control) "
@@ -92,7 +92,7 @@ def test_get_connection_wal_mode(tmp_db):
 # ─────────────────────────────────────────────────────────────
 
 def test_vec_documents_virtual_table_exists(tmp_db):
-    """vec_documents deve esistere come tabella virtuale."""
+    """vec_documents must exist as a virtual table."""
     rows = tmp_db.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='vec_documents'"
     ).fetchall()
@@ -100,17 +100,17 @@ def test_vec_documents_virtual_table_exists(tmp_db):
 
 
 def test_vec_documents_selectable(tmp_db):
-    """SELECT su tabella virtuale non deve sollevare errori."""
+    """SELECT on virtual table must not raise errors."""
     rows = tmp_db.execute("SELECT * FROM vec_documents LIMIT 1").fetchall()
     assert rows == []
 
 
 # ─────────────────────────────────────────────────────────────
-# Schema integrità
+# Schema integrity
 # ─────────────────────────────────────────────────────────────
 
 def test_raw_documents_content_hash_unique(tmp_db):
-    """content_hash UNIQUE: secondo insert con stesso hash deve fallire."""
+    """content_hash UNIQUE: second insert with same hash must fail."""
     tmp_db.execute(
         "INSERT INTO raw_documents (url, content_hash) VALUES ('http://a.com', 'abc123')"
     )
@@ -122,7 +122,7 @@ def test_raw_documents_content_hash_unique(tmp_db):
 
 
 def test_raw_documents_url_unique(tmp_db):
-    """url UNIQUE: secondo insert con stesso URL deve fallire."""
+    """url UNIQUE: second insert with same URL must fail."""
     tmp_db.execute(
         "INSERT INTO raw_documents (url, content_hash) VALUES ('http://dup.com', 'hash1')"
     )
@@ -145,7 +145,7 @@ def test_portfolios_name_unique(tmp_db):
 
 
 def test_event_documents_insert_or_ignore(tmp_db):
-    """INSERT OR IGNORE su event_documents non deve fallire su duplicato."""
+    """INSERT OR IGNORE on event_documents must not fail on duplicate."""
     tmp_db.execute(
         "INSERT INTO events (title, first_seen, last_seen) VALUES ('E', '2026-01-01', '2026-01-01')"
     )
