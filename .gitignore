@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# macOS
+.DS_Store
+
+# Dati locali (non versionare)
+data/db/
+data/parquet/
+data/logs/
+
+# Pytest / mypy
+.pytest_cache/
+.mypy_cache/
+
+# Claude Code project settings (locale, non versionare)
+.claude/
