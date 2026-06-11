@@ -76,4 +76,23 @@ download → dedup (GDELT è ridondante: stesso evento in decine di articoli) �
 **MVP verticale**: task 1-4 + embeddings/clustering + brief mattutino su filiera semiconduttori (pochi attori, chokepoint chiari, geopolitica intensa). Il resto a strati.
 
 ## Stato attuale
-Brainstorming completato. Nessun codice scritto. **Partire dalla Fase 0.**
+**Fase 0 e Fase 1 (GDELT) completate.**
+
+Codice presente e funzionante:
+- `pathosphere/config.py` — settings da .env (pydantic-settings)
+- `pathosphere/logging_setup.py` — loguru, rotazione giornaliera
+- `pathosphere/db/schema.py` — DDL completo + sqlite-vec, `init_db`, `get_connection`
+- `pathosphere/cli.py` — CLI `pathos` (db, sources, ingest, cycle, config)
+- `pathosphere/cycle/orchestrator.py` — ciclo notturno sequenziale riprendibile (5 fasi; 2-5 stub)
+- `pathosphere/ingest/gdelt.py` — downloader GDELT 2.0: ciclo incrementale + bootstrap storico
+
+Documentazione:
+- `README.md` — setup, comandi, architettura
+- `docs/schema.md` — ER diagram Mermaid completo + vincoli
+- `useful_queries.sql` — 20 query annotate
+
+Strumenti:
+- `caveman` skill installato (7 skill in `.agents/`), sempre attivo via questo file
+
+**Prossimo passo: Fase 1 restante** — RSS multi-blocco, PortWatch, Comtrade semiconduttori, USGS/FIRMS.
+Poi Fase 2: NER + geocoding + Wikidata, embeddings e5-small, clustering → eventi.
