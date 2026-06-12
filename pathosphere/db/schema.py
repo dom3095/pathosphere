@@ -54,12 +54,16 @@ CREATE TABLE IF NOT EXISTS raw_documents (
     fetched_at      TEXT    NOT NULL DEFAULT (datetime('now')),
     language        TEXT,
     content_hash    TEXT    UNIQUE,             -- SHA-256 of body for exact dedup
-    embedded        INTEGER NOT NULL DEFAULT 0  -- 0=not yet; 1=embedding computed
+    embedded        INTEGER NOT NULL DEFAULT 0, -- 0=not yet; 1=embedding computed
+    is_duplicate    INTEGER NOT NULL DEFAULT 0, -- 1 = near-duplicate of another doc
+    duplicate_of    INTEGER REFERENCES raw_documents(id),
+    dedup_checked   INTEGER NOT NULL DEFAULT 0  -- 1 after dedup phase ran on this doc
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_doc_source    ON raw_documents(source_id);
 CREATE INDEX IF NOT EXISTS idx_raw_doc_published ON raw_documents(published_at);
 CREATE INDEX IF NOT EXISTS idx_raw_doc_embedded  ON raw_documents(embedded);
+CREATE INDEX IF NOT EXISTS idx_raw_doc_dedup     ON raw_documents(is_duplicate, dedup_checked);
 
 -- ──────────────────────────────────────────────
 -- EVENTS (article clusters)
@@ -236,6 +240,23 @@ USING vec0(
 """
 
 
+_RAW_DOCUMENTS_MIGRATIONS = [
+    "ALTER TABLE raw_documents ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE raw_documents ADD COLUMN duplicate_of INTEGER REFERENCES raw_documents(id)",
+    "ALTER TABLE raw_documents ADD COLUMN dedup_checked INTEGER NOT NULL DEFAULT 0",
+]
+
+
+def migrate_db(conn: sqlite3.Connection) -> None:
+    """Apply schema migrations idempotently (safe to run on every init)."""
+    for sql in _RAW_DOCUMENTS_MIGRATIONS:
+        try:
+            conn.execute(sql)
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
 def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -252,4 +273,5 @@ def init_db(db_path: Path) -> None:
     with conn:
         conn.executescript(DDL)
         conn.executescript(SQLITE_VEC_VIRTUAL)
+    migrate_db(conn)
     conn.close()
