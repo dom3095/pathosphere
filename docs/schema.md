@@ -35,6 +35,9 @@ erDiagram
         TEXT language "ISO 639-1"
         TEXT content_hash "SHA-256 — dedup esatto"
         INTEGER embedded "0=da fare  1=embedding calcolato"
+        INTEGER is_duplicate "1=near-duplicate di altro doc"
+        INTEGER duplicate_of FK "id del doc canonico"
+        INTEGER dedup_checked "1=dedup già processato"
     }
 
     events {
@@ -248,12 +251,13 @@ graph TD
 
 ## Vincoli e garanzie di integrità
 
-### Dedup documenti (doppio livello)
+### Dedup documenti (tre livelli)
 
 ```
-Livello 1 — Esatto:   content_hash SHA-256 UNIQUE in raw_documents
-Livello 2 — Semantico: chiave (actor1_country, actor2_country, event_root_code,
-                                sqldate, action_geo_country) in events
+Livello 1 — Esatto URL:      url UNIQUE in raw_documents
+Livello 2 — Esatto contenuto: content_hash SHA-256 UNIQUE in raw_documents
+Livello 3 — Semantico KNN:   is_duplicate=1 se cosine >= 0.92 in finestra 72h
+                              calcolato da semantic/dedup.py via sqlite-vec KNN
 ```
 
 ### No lookahead bias nel paper trading
@@ -286,6 +290,6 @@ brier_score = (probability - outcome)²
 
 | Componente | Note |
 |---|---|
-| `vec_documents` | Già presente; popolata nella Fase 2 con multilingual-e5-small (384 dim) |
+| `vec_documents` | ✅ Popolata da `semantic/embedder.py` — multilingual-e5-small 384-dim, vettori unitari, blob `struct.pack("384f")` |
 | Parquet raw | Storico >90 giorni archiviato in `data/parquet/`, interrogabile con DuckDB |
 | Turso/libSQL | Drop-in replacement per SQLite con replica cloud automatica |
