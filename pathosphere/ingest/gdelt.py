@@ -214,12 +214,35 @@ def _sqldate_to_iso(sqldate: str) -> str:
     return sqldate
 
 
-def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:  # type: ignore[name-defined]
+def build_lookup_caches(conn: "sqlite3.Connection") -> tuple[dict, dict]:  # type: ignore[name-defined]
+    """
+    Pre-load known URLs and event keys into dicts for O(1) in-memory dedup.
+    Call once before the ingest loop; pass the dicts to store_rows.
+    """
+    url_to_id: dict[str, int] = {
+        r[0]: r[1]
+        for r in conn.execute("SELECT url, id FROM raw_documents WHERE url IS NOT NULL")
+    }
+    event_key_to_id: dict[str, int] = {
+        r[0]: r[1]
+        for r in conn.execute("SELECT title, id FROM events")
+    }
+    return url_to_id, event_key_to_id
+
+
+def store_rows(
+    conn: "sqlite3.Connection",  # type: ignore[name-defined]
+    rows: list[dict],
+    url_to_id: dict[str, int] | None = None,
+    event_key_to_id: dict[str, int] | None = None,
+) -> tuple[int, int]:
     """
     Insert events and documents into the DB.
     Returns (events_inserted, docs_inserted).
-    Dedup on SOURCEURL for raw_documents and on (actor1, actor2, event_root, date)
-    for events.
+
+    Pass url_to_id and event_key_to_id (from build_lookup_caches) to avoid
+    per-row SELECT queries — critical for bulk historical ingestion.
+    When None, falls back to SELECT-based dedup (backward compatible).
     """
     events_ins = 0
     docs_ins = 0
@@ -230,14 +253,16 @@ def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:
             continue
 
         # ── raw_document (dedup by URL) ───────────────────────────────────
-        url_hash = hashlib.sha256(source_url.encode()).hexdigest()
-        existing_doc = conn.execute(
-            "SELECT id FROM raw_documents WHERE url = ?", (source_url,)
-        ).fetchone()
-
-        if existing_doc:
-            doc_id = existing_doc["id"]
+        if url_to_id is not None:
+            doc_id = url_to_id.get(source_url)
         else:
+            existing = conn.execute(
+                "SELECT id FROM raw_documents WHERE url = ?", (source_url,)
+            ).fetchone()
+            doc_id = existing["id"] if existing else None
+
+        if doc_id is None:
+            url_hash = hashlib.sha256(source_url.encode()).hexdigest()
             cur = conn.execute(
                 """INSERT INTO raw_documents
                    (url, title, published_at, content_hash, embedded)
@@ -251,24 +276,27 @@ def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:
             )
             doc_id = cur.lastrowid
             docs_ins += 1
+            if url_to_id is not None:
+                url_to_id[source_url] = doc_id
 
         # ── event (dedup by semantic key) ─────────────────────────────────
-        event_key = (
+        event_key_str = "|".join((
             row.get("Actor1CountryCode", ""),
             row.get("Actor2CountryCode", ""),
             row.get("EventRootCode", ""),
             row.get("SQLDATE", ""),
             row.get("ActionGeo_CountryCode", ""),
-        )
-        event_key_str = "|".join(event_key)
+        ))
 
-        existing_event = conn.execute(
-            "SELECT id FROM events WHERE title = ?", (event_key_str,)
-        ).fetchone()
-
-        if existing_event:
-            event_id = existing_event["id"]
+        if event_key_to_id is not None:
+            event_id = event_key_to_id.get(event_key_str)
         else:
+            existing = conn.execute(
+                "SELECT id FROM events WHERE title = ?", (event_key_str,)
+            ).fetchone()
+            event_id = existing["id"] if existing else None
+
+        if event_id is None:
             event_type = EVENT_TYPE_MAP.get(row.get("EventRootCode", ""), "other")
             gs = _safe_float(row.get("GoldsteinScale", "0"))
             severity = max(1, min(5, int(abs(gs) / 2) + 1)) if gs != 0 else 1
@@ -303,6 +331,8 @@ def store_rows(conn: "sqlite3.Connection", rows: list[dict]) -> tuple[int, int]:
             )
             event_id = cur.lastrowid
             events_ins += 1
+            if event_key_to_id is not None:
+                event_key_to_id[event_key_str] = event_id
 
         # ── event ↔ document link ─────────────────────────────────────────
         conn.execute(
@@ -348,6 +378,9 @@ def ingest_gdelt(
         f"GDELT: {len(file_list)} files to download "
         f"(last {n_days} days, quad={quad_classes}, min_mentions={min_mentions})"
     )
+
+    url_to_id, event_key_to_id = build_lookup_caches(conn)
+    logger.debug(f"Lookup caches: {len(url_to_id)} urls, {len(event_key_to_id)} event keys")
 
     with httpx.Client(
         headers={"User-Agent": "pathosphere/0.1 OSINT research"},
@@ -409,7 +442,7 @@ def ingest_gdelt(
             result.rows_filtered += len(filtered)
 
             with conn:
-                ev_ins, doc_ins = store_rows(conn, filtered)
+                ev_ins, doc_ins = store_rows(conn, filtered, url_to_id, event_key_to_id)
                 result.events_inserted += ev_ins
                 result.docs_inserted += doc_ins
 

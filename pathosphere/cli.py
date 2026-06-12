@@ -269,6 +269,7 @@ def ingest_gdelt_history(
         _extract_csv,
         _fetch_zip,
         _parse_rows,
+        build_lookup_caches,
         filter_rows,
         store_rows,
     )
@@ -318,6 +319,9 @@ def ingest_gdelt_history(
     import httpx
 
     conn = get_connection(settings.db_path)
+    url_to_id, event_key_to_id = build_lookup_caches(conn)
+    click.echo(f"Lookup caches: {len(url_to_id):,} urls, {len(event_key_to_id):,} event keys")
+
     files_ok = files_skip = files_err = 0
     rows_raw_total = rows_filt_total = ev_total = doc_total = 0
 
@@ -369,7 +373,7 @@ def ingest_gdelt_history(
             )
 
             with conn:
-                ev_ins, doc_ins = store_rows(conn, filtered)
+                ev_ins, doc_ins = store_rows(conn, filtered, url_to_id, event_key_to_id)
                 conn.execute(
                     "INSERT OR IGNORE INTO gdelt_file_log (filename, url, rows_raw, rows_stored, status) VALUES (?,?,?,?,'ok')",
                     (fname, url, len(raw_rows), len(filtered)),
