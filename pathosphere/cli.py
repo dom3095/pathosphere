@@ -316,7 +316,6 @@ def ingest_gdelt_history(
     click.echo(f"Estimate: ~{est_hours:.1f}h ({est_hours/8:.1f} 8h-nights). Resumable with Ctrl+C.\n")
 
     import httpx
-    from pathosphere.ingest.gdelt import _fetch_zip
 
     conn = get_connection(settings.db_path)
     files_ok = files_skip = files_err = 0

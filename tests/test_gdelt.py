@@ -80,7 +80,7 @@ def test_generate_file_urls_day_is_yesterday():
 # ─────────────────────────────────────────────────────────────
 
 def test_sqldate_to_iso_valid():
-    assert _sqldate_to_iso("20260611") == "2026-06-11"
+    assert _sqldate_to_iso("20260611") == "2026-06-11T00:00:00"
 
 
 def test_sqldate_to_iso_passthrough_if_not_8():

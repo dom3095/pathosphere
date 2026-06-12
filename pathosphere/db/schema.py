@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS events (
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_events_title ON events(title);
+
 CREATE TABLE IF NOT EXISTS event_documents (
     event_id        INTEGER REFERENCES events(id) ON DELETE CASCADE,
     document_id     INTEGER REFERENCES raw_documents(id) ON DELETE CASCADE,
