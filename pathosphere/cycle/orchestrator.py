@@ -94,20 +94,29 @@ def _phase_ingest() -> None:
     from pathosphere.config import get_settings
     from pathosphere.db.schema import get_connection
     from pathosphere.ingest.gdelt import QUAD_CONFLICT, ingest_gdelt
+    from pathosphere.ingest.rss import ingest_rss
 
     settings = get_settings()
     conn = get_connection(settings.db_path)
-    result = ingest_gdelt(
+
+    gdelt = ingest_gdelt(
         conn,
         n_days=1,
         quad_classes=QUAD_CONFLICT,
         min_mentions=10,
         skip_existing=True,
     )
-    conn.close()
     logger.info(
-        f"INGEST: {result.events_inserted} events, {result.docs_inserted} docs"
+        f"INGEST/GDELT: {gdelt.events_inserted} events, {gdelt.docs_inserted} docs"
     )
+
+    rss = ingest_rss(conn, max_age_days=2)
+    logger.info(
+        f"INGEST/RSS: {rss.sources_ok} sources ok, +{rss.docs_inserted} docs "
+        f"({rss.sources_error} errors)"
+    )
+
+    conn.close()
 
 
 def _phase_embed() -> None:
