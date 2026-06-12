@@ -41,13 +41,18 @@ uv run pathos ingest gdelt-history --start 2024-01-01
 uv run pathos ingest rss                            # tutte le fonti attive, ultimi 2 giorni
 uv run pathos ingest rss --max-age-days 7           # ultimi 7 giorni
 
+# Pipeline semantica (Fase 2)
+uv run pathos embed                                 # embed + dedup semantica + clustering → eventi
+uv run pathos embed --batch-size 16                 # batch più piccoli (meno RAM)
+uv run pathos embed --skip-dedup                    # solo embedding
+
 # Ciclo notturno
 uv run pathos cycle
 uv run pathos cycle --dry-run
 uv run pathos cycle --from-phase embed
 
 # Test
-uv run pytest
+uv run pytest                    # 81 test
 ```
 
 ## Struttura repo
@@ -59,7 +64,8 @@ pathosphere/
 │   ├── config.py       settings da .env
 │   ├── db/schema.py    DDL SQLite + sqlite-vec
 │   ├── cycle/          orchestratore ciclo notturno
-│   └── ingest/         ingestori (GDELT ✅; RSS 49 fonti ✅; PortWatch/Comtrade TODO)
+│   │   ├── ingest/         ingestori (GDELT ✅; RSS 49 fonti ✅; PortWatch/Comtrade TODO)
+│   └── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; NER TODO)
 ├── tests/              66 test, ~0.4s
 ├── docs/
 │   ├── wiki.md         documentazione completa
@@ -74,6 +80,8 @@ pathosphere/
 - [x] **Fase 1** — GDELT 2.0 (incrementale + bootstrap storico)
 - [x] **Fase 1** — RSS multi-blocco (49 fonti, 7 blocchi geopolitici, 6 lingue)
 - [ ] **Fase 1** — PortWatch, Comtrade, USGS/FIRMS
-- [ ] **Fase 2** — NER, geocoding, Wikidata, embedding e5-small, clustering
+- [x] **Fase 2** — Embedding multilingual-e5-small + dedup semantica KNN
+- [x] **Fase 2** — Clustering articoli → eventi (union-find)
+- [ ] **Fase 2** — NER, geocoding, Wikidata, grafo entità
 - [ ] **Fase 3** — Brief, tesi, paper trading, calibrazione Tetlock
 - [ ] **Fase 4** — Dashboard Streamlit

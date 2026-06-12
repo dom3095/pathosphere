@@ -27,14 +27,18 @@ Sistema personale di intelligence OSINT. Paper trading virtuale come metrica di 
    - 4.4 [Evoluzione pianificata](#44-evoluzione-pianificata)
 5. [Ingestori](#5-ingestori)
    - 5.1 [GDELT 2.0](#51-gdelt-20)
-   - 5.2 [RSS multi-blocco](#52-rss-multi-blocco-fase-1)
-   - 5.3 [PortWatch / Comtrade / USGS](#53-portwatch--comtrade--usgs-fase-1)
-6. [Ciclo notturno](#6-ciclo-notturno)
-7. [CLI Reference](#7-cli-reference)
-8. [Fonti dati](#8-fonti-dati)
-9. [Valutazione del modello](#9-valutazione-del-modello)
-10. [Testing](#10-testing)
-11. [Roadmap](#11-roadmap)
+   - 5.2 [RSS multi-blocco](#52-rss-multi-blocco)
+   - 5.3 [PortWatch / Comtrade / USGS](#53-portwatch--comtrade--usgs)
+6. [Pipeline semantica (Fase 2)](#6-pipeline-semantica-fase-2)
+   - 6.1 [Embedding](#61-embedding)
+   - 6.2 [Dedup semantica](#62-dedup-semantica)
+   - 6.3 [Clustering → eventi](#63-clustering--eventi)
+7. [Ciclo notturno](#7-ciclo-notturno)
+8. [CLI Reference](#8-cli-reference)
+9. [Fonti dati](#9-fonti-dati)
+10. [Valutazione del modello](#10-valutazione-del-modello)
+11. [Testing](#11-testing)
+12. [Roadmap](#12-roadmap)
 
 ---
 
@@ -83,7 +87,7 @@ ollama pull qwen3:4b
 ### 2.2 Installazione
 
 ```bash
-uv sync                         # installa dipendenze (incl. sqlite-vec, httpx, feedparser)
+uv sync                         # installa dipendenze (incl. sqlite-vec, httpx, feedparser, sentence-transformers)
 cp .env.example .env            # crea configurazione locale
 uv run pathos db init           # crea schema SQLite + tabella virtuale sqlite-vec
 uv run pathos sources seed      # inserisce 49 fonti predefinite (7 blocchi geopolitici)
@@ -94,7 +98,7 @@ Verifica:
 ```bash
 uv run pathos db info           # conta righe per tabella
 uv run pathos cycle --dry-run   # simula ciclo senza I/O
-uv run pytest                   # 66 test, ~0.4s
+uv run pytest                   # 81 test, ~0.8s
 ```
 
 ### 2.3 Variabili d'ambiente
@@ -122,7 +126,7 @@ Tutte opzionali — i default funzionano out-of-the-box.
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                        CLI  (pathos)                         │
-│   db · sources · ingest · cycle · config                     │
+│   db · sources · ingest · embed · cycle · config             │
 └──────────────┬───────────────────────────────────────────────┘
                │
                ▼
@@ -135,9 +139,9 @@ Tutte opzionali — i default funzionano out-of-the-box.
        ▼          ▼           ▼
   ┌─────────┐ ┌────────┐ ┌────────────┐
   │ Ingest  │ │Semantic│ │   Agent    │
-  │ GDELT   │ │NER+emb │ │brief+tesi  │
-  │ RSS     │ │cluster │ │paper trade │
-  │ ...     │ │grafo   │ │calibraz.   │
+  │ GDELT   │ │embed   │ │brief+tesi  │
+  │ RSS     │ │dedup   │ │paper trade │
+  │ ...     │ │cluster │ │calibraz.   │
   └────┬────┘ └───┬────┘ └─────┬──────┘
        │          │             │
        └──────────┴─────────────┘
@@ -162,15 +166,18 @@ pathosphere/
 ├── config.py           Settings da .env (pydantic-settings). Singleton get_settings().
 ├── logging_setup.py    Loguru: stderr colorato + rotazione giornaliera su file.
 ├── db/
-│   └── schema.py       DDL SQLite + sqlite-vec. get_connection() + init_db().
-├── cli.py              Entry point `pathos` (Click). Gruppi: db, sources, ingest, cycle, config.
+│   └── schema.py       DDL SQLite + sqlite-vec. get_connection() + init_db() + migrate_db().
+├── cli.py              Entry point `pathos` (Click). Gruppi: db, sources, ingest, embed, cycle, config.
 ├── cycle/
-│   └── orchestrator.py 5 fasi sequenziali riprendibili. Fasi 2-5: stub NotImplementedError.
+│   └── orchestrator.py 5 fasi sequenziali riprendibili. EMBED+CLUSTER: ✅. EXTRACT+BRIEF: stub.
 ├── ingest/
 │   ├── gdelt.py        Downloader GDELT 2.0. Incrementale + bootstrap storico.
 │   ├── rss.py          Ingestor RSS multi-blocco. 49 fonti, 7 blocchi geopolitici.
 │   └── sources_seed.py Catalogo fonti: lista completa + seed_sources(conn).
-├── semantic/           (Fase 2) NER, embedding, clustering — TODO
+├── semantic/
+│   ├── embedder.py     Batch embedding multilingual-e5-small → vec_documents.
+│   ├── dedup.py        KNN dedup semantica via sqlite-vec (cosine ≥ 0.92).
+│   └── cluster.py      Union-find clustering → events + event_documents.
 └── agent/              (Fase 3) brief, tesi, paper trading — TODO
 ```
 
@@ -179,12 +186,12 @@ pathosphere/
 ```
 Sorgenti esterne          Pipeline interna              Output tabelle
 ─────────────────         ─────────────────────         ─────────────────────
-GDELT (ogni 15min)    →   download + dedup          →   raw_documents
-RSS multi-blocco      →   NER + geocoding           →   entities
-PortWatch, Comtrade   →   embedding e5-small (384d) →   vec_documents
-USGS, FIRMS, IODA     →   clustering → eventi       →   events
+GDELT (ogni 15min)    →   download + dedup esatto   →   raw_documents
+RSS multi-blocco      →   embedding e5-small (384d) →   vec_documents
+PortWatch, Comtrade   →   dedup semantica KNN       →   raw_documents.is_duplicate
+USGS, FIRMS, IODA     →   clustering → eventi       →   events + event_documents
 yfinance (EOD)        →   confronto narrazioni      →   narrative_divergences
-                      →   grafo entità              →   entity_links
+                      →   NER + grafo entità        →   entities + entity_links
                       →   brief + tesi              →   theses
                       →   approvazione utente       →   trades, predictions
                       →   EOD prices yfinance       →   portfolios (P&L)
@@ -213,7 +220,7 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 | Tabella | Righe tipiche | Scopo |
 |---|---|---|
 | `sources` | ~15-50 | Catalogo fonti (paese, blocco, controllo statale) |
-| `raw_documents` | 10k-500k | Documenti grezzi (URL, titolo, hash dedup) |
+| `raw_documents` | 10k-500k | Documenti grezzi (URL, titolo, hash dedup, flag semantici) |
 | `events` | 1k-50k | Eventi aggregati da cluster di articoli |
 | `event_documents` | N:M | Join eventi ↔ documenti |
 | `narrative_divergences` | 100-5k | Divergenza narrativa per blocco geopolitico |
@@ -229,12 +236,24 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 
 ### 4.2 Dedup e integrità
 
-Due livelli:
+Tre livelli:
 
-- **Esatto** (`raw_documents`): `url UNIQUE` + `content_hash UNIQUE` (SHA-256 del body).
-- **Semantico** (`events`): chiave composita `actor1+actor2+event_root+date+geo`. Stesso evento da fonti diverse → 1 evento, N documenti.
+- **Esatto URL** (`raw_documents`): `url UNIQUE` — duplica bloccato in insert.
+- **Esatto contenuto** (`raw_documents`): `content_hash UNIQUE` (SHA-256 del body) — stesso articolo da URL diversi bloccato.
+- **Semantico** (`raw_documents`): colonne `is_duplicate`, `duplicate_of`, `dedup_checked` — calcolato dalla fase EMBED tramite KNN su `vec_documents` (cosine ≥ 0.92 in finestra 72h).
 
-Constraint: `PRAGMA foreign_keys = ON` impostato su ogni connessione (pragma per-sessione, non persiste tra connessioni).
+Colonne semantiche su `raw_documents`:
+
+| Colonna | Default | Significato |
+|---|---|---|
+| `embedded` | 0 | 0=da processare, 1=embedding calcolato |
+| `is_duplicate` | 0 | 1=near-duplicate di un altro documento |
+| `duplicate_of` | NULL | FK al documento canonico |
+| `dedup_checked` | 0 | 1=fase dedup ha già processato questo doc |
+
+`migrate_db(conn)` aggiunge queste colonne ai DB esistenti in modo idempotente (safe su ogni `db init`).
+
+Constraint: `PRAGMA foreign_keys = ON` impostato su ogni connessione.
 
 ### 4.3 sqlite-vec
 
@@ -248,15 +267,18 @@ USING vec0(
 );
 ```
 
-Query nearest-neighbour:
+Query nearest-neighbour (usata da `dedup.py` e `cluster.py`):
 
 ```sql
-SELECT d.url, d.title, v.distance
-FROM vec_documents v
-JOIN raw_documents d ON d.id = v.document_id
-WHERE v.embedding MATCH (SELECT embedding FROM vec_documents WHERE document_id = ?)
-  AND k = 5;
+SELECT document_id, distance
+FROM vec_documents
+WHERE embedding MATCH ?   -- blob: struct.pack("384f", *unit_vector)
+  AND k = 20
+ORDER BY distance;
 ```
+
+Distanza L2 su vettori normalizzati ≈ distanza coseno: `L2 = sqrt(2*(1-cos_sim))`.  
+Soglie: dedup `cos≥0.92` → `L2<0.4` · cluster `cos≥0.75` → `L2<0.71`.
 
 ### 4.4 Evoluzione pianificata
 
@@ -326,7 +348,7 @@ uv run pathos ingest gdelt-history --start 2021-01-01 \
     --sample-hours 2                                            # più veloce, 1 file ogni 2h
 ```
 
-### 5.2 RSS multi-blocco _(Fase 1)_
+### 5.2 RSS multi-blocco
 
 **Stato: ✅ Implementato** — `pathosphere/ingest/rss.py`
 
@@ -359,9 +381,9 @@ uv run pathos ingest rss --source-ids 1,2,3      # solo queste sorgenti
 
 **HTTP:** httpx (user-agent, timeout 20s, follow_redirects). Parsing: feedparser 6.x. Errori per singola fonte non bloccanti — si logga warning e si continua.
 
-### 5.3 PortWatch / Comtrade / USGS _(Fase 1)_
+### 5.3 PortWatch / Comtrade / USGS
 
-**Stato: ⬜ Non implementato**
+**Stato: ⬜ Non implementato** (post Fase 2, vedi [ADR-001](decisions.md))
 
 | Fonte | Dati | Chokepoint/tema |
 |---|---|---|
@@ -374,7 +396,89 @@ uv run pathos ingest rss --source-ids 1,2,3      # solo queste sorgenti
 
 ---
 
-## 6. Ciclo notturno
+## 6. Pipeline semantica (Fase 2)
+
+**Stato: ✅ Implementato** — `pathosphere/semantic/`
+
+La pipeline semantica trasforma `raw_documents` in segnali strutturati eliminando il rumore prima che l'LLM lo veda. Tre step in sequenza, lanciabili con un unico comando:
+
+```bash
+uv run pathos embed                          # embed + dedup + cluster
+uv run pathos embed --batch-size 16          # batch più piccoli (meno RAM)
+uv run pathos embed --skip-dedup             # solo embedding, no dedup
+uv run pathos embed --skip-cluster           # embedding + dedup, no clustering
+```
+
+### 6.1 Embedding
+
+**File:** `pathosphere/semantic/embedder.py`
+
+Modello: **`intfloat/multilingual-e5-small`** (~500 MB, HuggingFace/sentence-transformers).  
+Output: vettori 384-dim normalizzati a norma unitaria.
+
+| Parametro | Valore |
+|---|---|
+| Dimensione embedding | 384 float32 |
+| Batch size default | 32 documenti |
+| Prefisso testo | `"passage: "` (convenzione intfloat/e5) |
+| Troncamento | 1024 caratteri prima del tokenizer |
+| Storage | blob `struct.pack("384f", ...)` in `vec_documents` |
+
+Processo per ogni batch:
+1. Legge `raw_documents WHERE embedded = 0`
+2. Costruisce `"passage: " + title + " " + body[:1024]`
+3. Encode con `normalize_embeddings=True` → vettori unitari
+4. `INSERT OR REPLACE INTO vec_documents`
+5. `UPDATE raw_documents SET embedded = 1`
+
+Documenti senza title e body: `embedded=1` (nessun vettore inserito), contati in `docs_skipped`.
+
+Vincolo RAM: un solo modello in memoria alla volta. Il modello viene caricato una volta e usato per tutti i batch del ciclo.
+
+### 6.2 Dedup semantica
+
+**File:** `pathosphere/semantic/dedup.py`
+
+Marca near-duplicati (stesso articolo ripreso da più fonti) prima che arrivino al clustering.
+
+| Parametro | Default | Note |
+|---|---|---|
+| Soglia coseno | 0.92 | `L2 < sqrt(2*0.08) ≈ 0.4` su vettori unitari |
+| Finestra temporale | 72h | Confronto solo tra articoli vicini nel tempo |
+| K nearest neighbours | 20 | Query sqlite-vec KNN per doc |
+
+Algoritmo (ordine cronologico ASC → il documento più vecchio è canonico):
+1. Per ogni `embedded=1, is_duplicate=0, dedup_checked=0` (ordinati per `published_at ASC`)
+2. KNN query su `vec_documents`
+3. Se un neighbour ha `id < corrente` e `distance < soglia` e `published_at` nella finestra: `is_duplicate=1, duplicate_of=<nb_id>`
+4. `dedup_checked=1` in ogni caso
+
+Risultato: `is_duplicate=0` = documento canonico da mostrare all'LLM.
+
+### 6.3 Clustering → eventi
+
+**File:** `pathosphere/semantic/cluster.py`
+
+Raggruppa articoli canonici (non-duplicati) che parlano dello stesso evento in record `events`.
+
+| Parametro | Default | Note |
+|---|---|---|
+| Soglia coseno | 0.75 | Più bassa del dedup — aggrega storie correlate |
+| Finestra temporale | 72h | Solo articoli recenti (COALESCE published_at, fetched_at) |
+| K nearest neighbours | 20 | Query KNN per candidato |
+
+Algoritmo union-find:
+1. Candidati: `embedded=1, is_duplicate=0`, non già in `event_documents`, pubblicati nelle ultime 72h
+2. Per ogni candidato: KNN → union se `distance < soglia`
+3. Componenti connesse → un record `events` per componente
+4. Titolo evento: primo documento (più vecchio) con titolo non-NULL
+5. `INSERT OR IGNORE INTO event_documents` per ogni doc nel cluster
+
+Output: tabella `events` popolata, `event_documents` collegata.
+
+---
+
+## 7. Ciclo notturno
 
 **File:** `pathosphere/cycle/orchestrator.py`
 
@@ -382,15 +486,15 @@ Cinque fasi sequenziali, riprendibili da qualsiasi punto. Ogni fase è atomica: 
 
 ```
 INGEST → EMBED → EXTRACT → CLUSTER → BRIEF
-  ✅        ⬜       ⬜        ⬜       ⬜
+  ✅       ✅        ⬜         ✅        ⬜
 ```
 
 | Fase | Funzione | Stato | Descrizione |
 |---|---|---|---|
-| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 49 fonti (+ futuro PortWatch) |
-| `EMBED` | `_phase_embed` | ⬜ stub | Calcola embedding e5-small su `raw_documents.embedded=0` |
+| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 49 fonti |
+| `EMBED` | `_phase_embed` | ✅ | Embedding e5-small + dedup semantica KNN |
 | `EXTRACT` | `_phase_extract` | ⬜ stub | NER, geocoding, entity linking (Qwen3 4B) |
-| `CLUSTER` | `_phase_cluster` | ⬜ stub | Clustering documenti → eventi, confronto narrazioni |
+| `CLUSTER` | `_phase_cluster` | ✅ | Union-find clustering → eventi |
 | `BRIEF` | `_phase_brief` | ⬜ stub | Genera brief + tesi (Claude SDK) |
 
 **Comandi:**
@@ -399,19 +503,20 @@ INGEST → EMBED → EXTRACT → CLUSTER → BRIEF
 uv run pathos cycle                         # ciclo completo
 uv run pathos cycle --dry-run               # simula senza I/O
 uv run pathos cycle --from-phase embed      # riprendi da EMBED (salta INGEST)
+uv run pathos cycle --from-phase cluster    # riprendi da CLUSTER
 uv run pathos cycle --from-phase brief      # solo brief mattutino
 ```
 
 ---
 
-## 7. CLI Reference
+## 8. CLI Reference
 
 Entry point: `uv run pathos`
 
 ```
 pathos
 ├── db
-│   ├── init            Crea/aggiorna schema SQLite + sqlite-vec
+│   ├── init            Crea/aggiorna schema SQLite + sqlite-vec + migrate_db
 │   └── info            Mostra conteggi per tabella
 ├── sources
 │   ├── list            Lista fonti configurate
@@ -420,7 +525,11 @@ pathos
 │   ├── gdelt           Ciclo incrementale GDELT (ultimi N giorni)
 │   ├── gdelt-history   Bootstrap storico GDELT (range date)
 │   └── rss             Fetch RSS da tutte le fonti attive
-├── cycle               Esegui ciclo notturno
+├── embed               Embedding + dedup semantica + clustering → eventi
+│   ├── --batch-size    Doc per chiamata encode() [default: 32]
+│   ├── --skip-dedup    Solo embedding, no dedup
+│   └── --skip-cluster  Embedding + dedup, no clustering
+├── cycle               Esegui ciclo notturno (INGEST→EMBED→EXTRACT→CLUSTER→BRIEF)
 │   ├── --dry-run       Simula tutte le fasi senza I/O
 │   └── --from-phase    Riprendi da fase specifica (ingest|embed|extract|cluster|brief)
 └── config              Mostra configurazione attiva (.env + defaults)
@@ -428,7 +537,7 @@ pathos
 
 ---
 
-## 8. Fonti dati
+## 9. Fonti dati
 
 ### Blocchi geopolitici
 
@@ -443,20 +552,21 @@ pathos
 | Africa | `africa` | AllAfrica, Daily Maverick, Jeune Afrique, The East African, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard |
 | Altro | `other` | Dawn, Geo News (PK); Armenpress, EVN Report (AM); Trend, AzerNews (AZ) |
 
-### Segnali fisici (Fase 1)
+### Segnali fisici
 
-| Fonte | Tipo | Frequenza |
-|---|---|---|
-| GDELT 2.0 | Conflitti/politica (multilingua) | 15 min |
-| ACLED, UCDP | Conflitti armati | Settimanale |
-| WHO DON, ProMED | Epidemie | Quotidiana |
-| IMF PortWatch | Traffico chokepoint marittimo | Quotidiana |
-| UN Comtrade | Flussi commerciali (HS code) | Mensile |
-| USGS | Terremoti | Realtime |
-| NASA FIRMS | Incendi | 3h |
-| IODA | Blackout internet | Realtime |
-| yfinance | Prezzi EOD | Giornaliero |
-| FRED | Macro (tassi, CPI…) | Varia |
+| Fonte | Tipo | Frequenza | Stato |
+|---|---|---|---|
+| GDELT 2.0 | Conflitti/politica (multilingua) | 15 min | ✅ |
+| RSS multi-blocco | Notizie 7 blocchi geopolitici | Asincrono | ✅ |
+| ACLED, UCDP | Conflitti armati | Settimanale | ⬜ |
+| WHO DON, ProMED | Epidemie | Quotidiana | ⬜ |
+| IMF PortWatch | Traffico chokepoint marittimo | Quotidiana | ⬜ |
+| UN Comtrade | Flussi commerciali (HS code) | Mensile | ⬜ |
+| USGS | Terremoti | Realtime | ⬜ |
+| NASA FIRMS | Incendi | 3h | ⬜ |
+| IODA | Blackout internet | Realtime | ⬜ |
+| yfinance | Prezzi EOD | Giornaliero | ⬜ |
+| FRED | Macro (tassi, CPI…) | Varia | ⬜ |
 
 ### Divergenza narrativa come segnale
 
@@ -464,7 +574,7 @@ Ogni `raw_document` porta il `source_id` → `geopolitical_block`. Quando CNN e 
 
 ---
 
-## 9. Valutazione del modello
+## 10. Valutazione del modello
 
 ### Portafogli di controllo
 
@@ -503,25 +613,26 @@ Tabella `predictions` per anticipazioni non finanziarie:
 
 ---
 
-## 10. Testing
+## 11. Testing
 
 ```
 tests/
 ├── conftest.py          Fixture tmp_db (SQLite in-memory), make_gdelt_row()
 ├── test_db.py           Schema init, tabelle, sqlite-vec, integrità FK
 ├── test_gdelt.py        URL gen, parsing, filtraggio, storage, dedup
-└── test_orchestrator.py dry_run, from_phase, gestione errori
+├── test_orchestrator.py dry_run, from_phase, gestione errori
+└── test_semantic.py     embed, dedup semantica, clustering (MockModel, no download)
 ```
 
 **Esecuzione:**
 
 ```bash
-uv run pytest            # 66 test, ~0.4s, zero chiamate HTTP reali
+uv run pytest            # 81 test, ~0.8s, zero chiamate HTTP/modello reali
 uv run pytest -v         # output verboso
-uv run pytest tests/test_gdelt.py   # solo GDELT
+uv run pytest tests/test_semantic.py   # solo pipeline semantica
 ```
 
-**Filosofia:** nessuna chiamata HTTP reale nei test. Le funzioni sotto `ingest_gdelt` (parsing, filtraggio, storage) sono testabili in isolamento. `tmp_db` fixture crea un DB SQLite temporaneo per ogni test.
+**Filosofia:** nessuna chiamata HTTP reale, nessun download di modello nei test. `MockModel` restituisce vettori unitari deterministici (seed da hash del testo). `tmp_db` fixture crea un DB SQLite temporaneo per ogni test.
 
 **Fixture riutilizzabili:**
 
@@ -529,11 +640,17 @@ uv run pytest tests/test_gdelt.py   # solo GDELT
 # conftest.py
 tmp_db      → sqlite3.Connection con schema completo, FK ON, WAL
 make_gdelt_row(**overrides)  → dict con tutti i 61 campi GDELT (default: CN-TW conflict)
+
+# test_semantic.py (helper locali)
+MockModel            → encode() deterministico, no sentence-transformers download
+_insert_doc(conn)    → inserisce raw_document e ritorna id
+_insert_vec(conn, doc_id, vec)  → inserisce blob in vec_documents, setta embedded=1
+_unit_vec(seed)      → genera vettore unitario riproducibile
 ```
 
 ---
 
-## 11. Roadmap
+## 12. Roadmap
 
 | Fase | Componente | Stato |
 |---|---|---|
@@ -545,9 +662,10 @@ make_gdelt_row(**overrides)  → dict con tutti i 61 campi GDELT (default: CN-TW
 | **1** | PortWatch + Comtrade semiconduttori | ⬜ |
 | **1** | USGS + NASA FIRMS + IODA | ⬜ |
 | **1** | Storicizzazione Parquet | ⬜ |
+| **2** | Embedding e5-small + dedup semantica KNN | ✅ |
+| **2** | Clustering articoli → eventi | ✅ |
 | **2** | NER + geocoding (spaCy + Nominatim) | ⬜ |
 | **2** | Wikidata entity linking | ⬜ |
-| **2** | Embedding e5-small + clustering → eventi | ⬜ |
 | **2** | Grafo entità | ⬜ |
 | **3** | Brief mattutino (Claude SDK) | ⬜ |
 | **3** | Generatore tesi con catene causali | ⬜ |
