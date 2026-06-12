@@ -432,3 +432,44 @@ def ingest_rss(max_age_days: int, source_ids: str | None) -> None:
     )
     if result.errors:
         click.echo(f"\nFirst errors: {result.errors[:5]}")
+
+
+# ─── embed ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--batch-size", default=32, show_default=True, help="Docs per encode() call.")
+@click.option("--skip-dedup", is_flag=True, help="Only embed; skip near-duplicate detection.")
+@click.option("--skip-cluster", is_flag=True, help="Skip event clustering.")
+def embed(batch_size: int, skip_dedup: bool, skip_cluster: bool) -> None:
+    """Embed unprocessed docs, dedup near-duplicates, cluster into events."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.embedder import embed_documents
+    from pathosphere.semantic.dedup import dedup_documents
+    from pathosphere.semantic.cluster import cluster_documents
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    embed_result = embed_documents(conn, batch_size=batch_size)
+    click.echo(
+        f"\nEmbed: {embed_result.docs_processed} embedded | "
+        f"{embed_result.docs_skipped} skipped (no text) | "
+        f"{embed_result.errors} errors"
+    )
+
+    if not skip_dedup:
+        dedup_result = dedup_documents(conn)
+        click.echo(
+            f"Dedup: {dedup_result.docs_checked} checked | "
+            f"{dedup_result.duplicates_found} duplicates marked"
+        )
+
+    if not skip_cluster:
+        cluster_result = cluster_documents(conn)
+        click.echo(
+            f"Cluster: {cluster_result.events_created} events created | "
+            f"{cluster_result.docs_assigned} docs assigned"
+        )
+
+    conn.close()

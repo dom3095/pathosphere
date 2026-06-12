@@ -120,7 +120,26 @@ def _phase_ingest() -> None:
 
 
 def _phase_embed() -> None:
-    raise NotImplementedError("Embedding not yet implemented (Phase 2)")
+    from pathosphere.config import get_settings
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.embedder import embed_documents
+    from pathosphere.semantic.dedup import dedup_documents
+
+    settings = get_settings()
+    conn = get_connection(settings.db_path)
+
+    embed = embed_documents(conn)
+    logger.info(
+        f"EMBED: {embed.docs_processed} embedded, {embed.docs_skipped} skipped, "
+        f"{embed.errors} errors"
+    )
+
+    dedup = dedup_documents(conn)
+    logger.info(
+        f"DEDUP: {dedup.docs_checked} checked, {dedup.duplicates_found} duplicates"
+    )
+
+    conn.close()
 
 
 def _phase_extract() -> None:
@@ -128,7 +147,19 @@ def _phase_extract() -> None:
 
 
 def _phase_cluster() -> None:
-    raise NotImplementedError("Clustering not yet implemented (Phase 2)")
+    from pathosphere.config import get_settings
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.cluster import cluster_documents
+
+    settings = get_settings()
+    conn = get_connection(settings.db_path)
+
+    cluster = cluster_documents(conn)
+    logger.info(
+        f"CLUSTER: {cluster.events_created} events, {cluster.docs_assigned} docs assigned"
+    )
+
+    conn.close()
 
 
 def _phase_brief() -> None:
