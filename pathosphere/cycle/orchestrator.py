@@ -143,7 +143,7 @@ def _phase_embed() -> None:
 
 
 def _phase_extract() -> None:
-    raise NotImplementedError("Entity extraction not yet implemented (Phase 2)")
+    logger.warning("EXTRACT: NER not yet implemented — skipping (Phase 3)")
 
 
 def _phase_cluster() -> None:
