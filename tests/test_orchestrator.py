@@ -101,19 +101,11 @@ def test_ingest_error_stops_cycle():
     assert Phase.EMBED not in state.completed
 
 
-def test_embed_phase_raises_not_implemented():
-    """_phase_embed is a stub: NotImplementedError recorded in state.errors."""
-    with patch("pathosphere.cycle.orchestrator._phase_ingest"):
-        state = run_cycle(dry_run=False)
-    assert Phase.INGEST in state.completed
-    assert Phase.EMBED in state.errors
-    assert "NotImplementedError" in state.errors[Phase.EMBED] or \
-           "Embedding not yet" in state.errors[Phase.EMBED]
-
-
 def test_error_stops_subsequent_phases():
     """After error in EMBED, EXTRACT/CLUSTER/BRIEF must not run."""
-    with patch("pathosphere.cycle.orchestrator._phase_ingest"):
+    with patch("pathosphere.cycle.orchestrator._phase_ingest"), \
+         patch("pathosphere.cycle.orchestrator._phase_embed",
+               side_effect=RuntimeError("embed failed")):
         state = run_cycle(dry_run=False)
     assert Phase.EXTRACT not in state.completed
     assert Phase.CLUSTER not in state.completed
@@ -122,7 +114,9 @@ def test_error_stops_subsequent_phases():
 
 def test_phase_error_message_stored(capsys):
     """The error message must be saved in state.errors."""
-    with patch("pathosphere.cycle.orchestrator._phase_ingest"):
+    with patch("pathosphere.cycle.orchestrator._phase_ingest"), \
+         patch("pathosphere.cycle.orchestrator._phase_embed",
+               side_effect=RuntimeError("embed msg")):
         state = run_cycle(dry_run=False)
     assert isinstance(state.errors[Phase.EMBED], str)
     assert len(state.errors[Phase.EMBED]) > 0
@@ -132,8 +126,9 @@ def test_phase_error_message_stored(capsys):
 # Combination from_phase + errors
 # ─────────────────────────────────────────────────────────────
 
-def test_from_phase_embed_hits_not_implemented():
-    """Resume from EMBED: INGEST skipped, EMBED fails with NotImplementedError."""
-    state = run_cycle(start_from=Phase.EMBED, dry_run=False)
+def test_from_phase_embed_runs_embed():
+    """Resume from EMBED: INGEST skipped, EMBED and later phases run."""
+    state = run_cycle(start_from=Phase.EMBED, dry_run=True)
     assert Phase.INGEST not in state.completed
-    assert Phase.EMBED in state.errors
+    assert Phase.EMBED in state.completed
+    assert Phase.BRIEF in state.completed
