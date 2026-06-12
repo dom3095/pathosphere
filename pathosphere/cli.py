@@ -132,42 +132,14 @@ def sources_list() -> None:
 
 @sources.command("seed")
 def sources_seed() -> None:
-    """Populate the catalogue with the project's default sources."""
+    """Populate the catalogue with the project's default sources (49 sources, 7 blocks)."""
     from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.sources_seed import seed_sources
     settings = get_settings()
     conn = get_connection(settings.db_path)
-    _seed_sources(conn)
+    inserted = seed_sources(conn)
     conn.close()
-    logger.success("Default sources inserted.")
-
-
-def _seed_sources(conn: "sqlite3.Connection") -> None:  # type: ignore[name-defined]
-    import sqlite3
-    DEFAULT_SOURCES = [
-        # name, url, country, block, orientation, state_control, language
-        ("Reuters", "https://feeds.reuters.com/reuters/worldNews", "GB", "western", "independent", 0, "en"),
-        ("BBC World", "http://feeds.bbci.co.uk/news/world/rss.xml", "GB", "western", "public", 1, "en"),
-        ("Al Jazeera", "https://www.aljazeera.com/xml/rss/all.xml", "QA", "arab", "state", 2, "en"),
-        ("Xinhua", "http://www.xinhuanet.com/english/rss/worldrss.xml", "CN", "china", "state", 3, "en"),
-        ("Global Times", "https://www.globaltimes.cn/rss/outbrain.xml", "CN", "china", "state", 3, "en"),
-        ("TASS", "https://tass.com/rss/v2.xml", "RU", "russia", "state", 3, "en"),
-        ("RT", "https://www.rt.com/rss/news/", "RU", "russia", "state", 3, "en"),
-        ("Press TV", "https://www.presstv.ir/homepageVideos.xml", "IR", "arab", "state", 3, "en"),
-        ("Anadolu Agency", "https://www.aa.com.tr/en/rss/default?cat=world", "TR", "arab", "state", 1, "en"),
-        ("The Hindu", "https://www.thehindu.com/news/international/?service=rss", "IN", "india", "independent", 0, "en"),
-        ("Folha de São Paulo", "https://feeds.folha.uol.com.br/mundo/rss091.xml", "BR", "latam", "independent", 0, "pt"),
-        ("AllAfrica", "https://allafrica.com/tools/headlines/rdf/latest/headlines.rdf", "ZA", "africa", "independent", 0, "en"),
-        ("AP News", "https://rsshub.app/apnews/topics/world-news", "US", "western", "independent", 0, "en"),
-        ("France 24", "https://www.france24.com/en/rss", "FR", "western", "public", 1, "en"),
-        ("DW World", "https://rss.dw.com/xml/rss-en-world", "DE", "western", "public", 1, "en"),
-    ]
-    conn.executemany(
-        """INSERT OR IGNORE INTO sources
-           (name, url, country, geopolitical_block, orientation, state_control, language)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        DEFAULT_SOURCES,
-    )
-    conn.commit()
+    logger.success(f"Sources seed complete: {inserted} new rows inserted.")
 
 
 # ─── ingest ───────────────────────────────────────────────────────────────────
@@ -425,3 +397,38 @@ def ingest_gdelt_history(
         f"  Rows:   {rows_raw_total:,} raw → {rows_filt_total:,} filtered\n"
         f"  Insert: {ev_total:,} events | {doc_total:,} documents"
     )
+
+
+@ingest.command("rss")
+@click.option(
+    "--max-age-days", default=2, show_default=True,
+    help="Skip articles older than N days (0 = no limit).",
+)
+@click.option(
+    "--source-ids", default=None,
+    help="Comma-separated source IDs to fetch (default: all active).",
+)
+def ingest_rss(max_age_days: int, source_ids: str | None) -> None:
+    """Fetch RSS feeds from all active sources and insert into raw_documents."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.rss import ingest_rss as _ingest_rss
+
+    settings = get_settings()
+    _require_db(settings)
+
+    ids: list[int] | None = None
+    if source_ids:
+        ids = [int(x.strip()) for x in source_ids.split(",")]
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_rss(conn, source_ids=ids, max_age_days=max_age_days)
+    conn.close()
+
+    click.echo(
+        f"\nRSS result:\n"
+        f"  Sources: {result.sources_ok} ok | {result.sources_error} errors "
+        f"(of {result.sources_attempted} attempted)\n"
+        f"  Docs:    +{result.docs_inserted:,} inserted | {result.docs_skipped:,} skipped"
+    )
+    if result.errors:
+        click.echo(f"\nFirst errors: {result.errors[:5]}")
