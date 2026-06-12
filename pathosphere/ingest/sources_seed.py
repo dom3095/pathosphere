@@ -317,6 +317,7 @@ SOURCES: list[tuple] = [
 
 def seed_sources(conn: "sqlite3.Connection") -> int:  # type: ignore[name-defined]
     """Insert default sources. Returns number of rows inserted."""
+    before = conn.total_changes
     conn.executemany(
         """INSERT OR IGNORE INTO sources
            (name, url, country, geopolitical_block, orientation, state_control, language, active, notes)
@@ -324,5 +325,4 @@ def seed_sources(conn: "sqlite3.Connection") -> int:  # type: ignore[name-define
         SOURCES,
     )
     conn.commit()
-    rows = conn.execute("SELECT changes()").fetchone()[0]
-    return rows
+    return conn.total_changes - before

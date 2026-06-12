@@ -61,6 +61,8 @@ def embed_documents(
     batch_size: int = BATCH_SIZE,
 ) -> EmbedResult:
     """Embed all raw_documents with embedded=0. Returns counts."""
+    import gc
+
     _own_model = model is None
     if _own_model:
         model = load_model()
@@ -125,5 +127,9 @@ def embed_documents(
         logger.debug(
             f"Embedded batch {batch_start // batch_size + 1}: {len(valid_ids)} docs"
         )
+
+    if _own_model:
+        del model
+        gc.collect()
 
     return result

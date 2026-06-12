@@ -120,19 +120,19 @@ def cluster_documents(
         root = _find(parent, doc_id)
         components.setdefault(root, []).append(doc_id)
 
-    # Create one event per component
-    for cluster_ids in components.values():
-        cluster_rows = [id_to_row[i] for i in cluster_ids]
-        # Title from oldest doc with a non-empty title
-        title = next(
-            (r["title"] for r in cluster_rows if r["title"]),
-            f"Event {cluster_ids[0]}",
-        )
-        pub_times = [r["pub_at"] for r in cluster_rows if r["pub_at"]]
-        first_seen = min(pub_times) if pub_times else cutoff
-        last_seen = max(pub_times) if pub_times else cutoff
+    # Create one event per component — single transaction for all clusters
+    with conn:
+        for cluster_ids in components.values():
+            cluster_rows = [id_to_row[i] for i in cluster_ids]
+            # Title from oldest doc with a non-empty title
+            title = next(
+                (r["title"] for r in cluster_rows if r["title"]),
+                f"Event {cluster_ids[0]}",
+            )
+            pub_times = [r["pub_at"] for r in cluster_rows if r["pub_at"]]
+            first_seen = min(pub_times) if pub_times else cutoff
+            last_seen = max(pub_times) if pub_times else cutoff
 
-        with conn:
             cur = conn.execute(
                 "INSERT INTO events (title, first_seen, last_seen) VALUES (?, ?, ?)",
                 (title, first_seen, last_seen),
@@ -142,9 +142,8 @@ def cluster_documents(
                 "INSERT OR IGNORE INTO event_documents (event_id, document_id) VALUES (?, ?)",
                 [(event_id, did) for did in cluster_ids],
             )
-
-        result.events_created += 1
-        result.docs_assigned += len(cluster_ids)
+            result.events_created += 1
+            result.docs_assigned += len(cluster_ids)
 
     logger.info(
         f"Cluster complete: {result.events_created} events, {result.docs_assigned} docs"

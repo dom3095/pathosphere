@@ -208,9 +208,9 @@ def filter_rows(
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _sqldate_to_iso(sqldate: str) -> str:
-    """YYYYMMDD → YYYY-MM-DD"""
+    """YYYYMMDD → YYYY-MM-DDT00:00:00 (full ISO for consistent datetime comparisons)"""
     if len(sqldate) == 8:
-        return f"{sqldate[:4]}-{sqldate[4:6]}-{sqldate[6:]}"
+        return f"{sqldate[:4]}-{sqldate[4:6]}-{sqldate[6:]}T00:00:00"
     return sqldate
 
 
