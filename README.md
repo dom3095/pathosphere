@@ -19,7 +19,7 @@ brew install ollama && ollama pull qwen3:4b
 uv sync
 cp .env.example .env
 uv run pathos db init
-uv run pathos sources seed
+uv run pathos sources seed      # 49 fonti, 7 blocchi geopolitici
 ```
 
 ## Comandi principali
@@ -34,8 +34,12 @@ uv run pathos ingest gdelt                          # ieri, conflitti
 uv run pathos ingest gdelt --days 3                 # ultimi 3 giorni
 uv run pathos ingest gdelt --countries CN,TW,US     # filtra per paese
 
-# Bootstrap storico (una-tantum, ripartibile)
+# Bootstrap storico GDELT (una-tantum, ripartibile)
 uv run pathos ingest gdelt-history --start 2024-01-01
+
+# Ingestione RSS (49 fonti, 7 blocchi geopolitici)
+uv run pathos ingest rss                            # tutte le fonti attive, ultimi 2 giorni
+uv run pathos ingest rss --max-age-days 7           # ultimi 7 giorni
 
 # Ciclo notturno
 uv run pathos cycle
@@ -55,7 +59,7 @@ pathosphere/
 │   ├── config.py       settings da .env
 │   ├── db/schema.py    DDL SQLite + sqlite-vec
 │   ├── cycle/          orchestratore ciclo notturno
-│   └── ingest/         ingestori (GDELT; RSS/PortWatch/Comtrade TODO)
+│   └── ingest/         ingestori (GDELT ✅; RSS 49 fonti ✅; PortWatch/Comtrade TODO)
 ├── tests/              66 test, ~0.4s
 ├── docs/
 │   ├── wiki.md         documentazione completa
@@ -68,7 +72,8 @@ pathosphere/
 
 - [x] **Fase 0** — Config, SQLite+sqlite-vec, CLI, logging, ciclo orchestrator
 - [x] **Fase 1** — GDELT 2.0 (incrementale + bootstrap storico)
-- [ ] **Fase 1** — RSS multi-blocco, PortWatch, Comtrade, USGS/FIRMS
+- [x] **Fase 1** — RSS multi-blocco (49 fonti, 7 blocchi geopolitici, 6 lingue)
+- [ ] **Fase 1** — PortWatch, Comtrade, USGS/FIRMS
 - [ ] **Fase 2** — NER, geocoding, Wikidata, embedding e5-small, clustering
 - [ ] **Fase 3** — Brief, tesi, paper trading, calibrazione Tetlock
 - [ ] **Fase 4** — Dashboard Streamlit

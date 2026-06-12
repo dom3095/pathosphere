@@ -83,10 +83,10 @@ ollama pull qwen3:4b
 ### 2.2 Installazione
 
 ```bash
-uv sync                         # installa dipendenze (incl. sqlite-vec, httpx, pydantic-settings)
+uv sync                         # installa dipendenze (incl. sqlite-vec, httpx, feedparser)
 cp .env.example .env            # crea configurazione locale
 uv run pathos db init           # crea schema SQLite + tabella virtuale sqlite-vec
-uv run pathos sources seed      # inserisce 15 fonti predefinite (7 blocchi geopolitici)
+uv run pathos sources seed      # inserisce 49 fonti predefinite (7 blocchi geopolitici)
 ```
 
 Verifica:
@@ -167,7 +167,9 @@ pathosphere/
 ├── cycle/
 │   └── orchestrator.py 5 fasi sequenziali riprendibili. Fasi 2-5: stub NotImplementedError.
 ├── ingest/
-│   └── gdelt.py        Downloader GDELT 2.0. Incrementale + bootstrap storico.
+│   ├── gdelt.py        Downloader GDELT 2.0. Incrementale + bootstrap storico.
+│   ├── rss.py          Ingestor RSS multi-blocco. 49 fonti, 7 blocchi geopolitici.
+│   └── sources_seed.py Catalogo fonti: lista completa + seed_sources(conn).
 ├── semantic/           (Fase 2) NER, embedding, clustering — TODO
 └── agent/              (Fase 3) brief, tesi, paper trading — TODO
 ```
@@ -326,21 +328,36 @@ uv run pathos ingest gdelt-history --start 2021-01-01 \
 
 ### 5.2 RSS multi-blocco _(Fase 1)_
 
-**Stato: ⬜ Non implementato**
+**Stato: ✅ Implementato** — `pathosphere/ingest/rss.py`
 
-Un feed per blocco geopolitico. Ogni articolo → `raw_documents` con `source_id` che porta il blocco.
+Fetches RSS feeds da tutte le fonti attive in `sources`. Ogni articolo → `raw_documents` con `source_id` → blocco geopolitico. Dedup su `url UNIQUE` + `content_hash UNIQUE` (SHA-256 del body).
 
-Fonti pianificate:
+**Comando:**
 
-| Blocco | Fonte | Lingua | Controllo statale |
-|---|---|---|---|
-| western | Reuters, BBC | EN | 0 |
-| china | Xinhua, Global Times | EN/ZH | 3 |
-| russia | TASS, RT | EN/RU | 3 |
-| arab | Al Jazeera, Anadolu | EN/AR | 1-2 |
-| india | The Hindu | EN | 0 |
-| latam | Folha de São Paulo | PT | 0 |
-| africa | AllAfrica | EN | 0-1 |
+```bash
+uv run pathos ingest rss                         # tutte le fonti attive, ultimi 2 giorni
+uv run pathos ingest rss --max-age-days 7        # ultimi 7 giorni
+uv run pathos ingest rss --source-ids 1,2,3      # solo queste sorgenti
+```
+
+**49 fonti, 7 blocchi geopolitici, 6 lingue:**
+
+| Blocco | Fonti | Lingue |
+|---|---|---|
+| `western` | Reuters, AP¹, AFP¹, ANSA, DPA¹, EFE, Kyodo, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, Focus Taiwan, DIGITIMES, HK Free Press | en/it/es |
+| `china` | Xinhua, Global Times, SCMP | en |
+| `russia` | TASS, RT | en |
+| `arab` | Al Jazeera, Anadolu, Press TV, Arab News | en |
+| `india` | ANI, The Hindu | en |
+| `latam` | Folha de S.Paulo | pt |
+| `africa` | APO¹, AllAfrica, Daily Maverick, RFI Afrique, Jeune Afrique, The East African, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard | en/fr |
+| `other` | Dawn, Geo News (PK); Armenpress, EVN Report (AM); Trend, AzerNews (AZ) | en |
+
+¹ `active=0`: nessun RSS pubblico.
+
+**Principio:** divergenza narrativa tra blocchi = segnale analitico. Stessa notizia da Xinhua e BBC con frame opposti → `narrative_divergences.divergence_score` alto → input per tesi.
+
+**HTTP:** httpx (user-agent, timeout 20s, follow_redirects). Parsing: feedparser 6.x. Errori per singola fonte non bloccanti — si logga warning e si continua.
 
 ### 5.3 PortWatch / Comtrade / USGS _(Fase 1)_
 
@@ -370,7 +387,7 @@ INGEST → EMBED → EXTRACT → CLUSTER → BRIEF
 
 | Fase | Funzione | Stato | Descrizione |
 |---|---|---|---|
-| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT (+ futuro RSS, PortWatch) |
+| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 49 fonti (+ futuro PortWatch) |
 | `EMBED` | `_phase_embed` | ⬜ stub | Calcola embedding e5-small su `raw_documents.embedded=0` |
 | `EXTRACT` | `_phase_extract` | ⬜ stub | NER, geocoding, entity linking (Qwen3 4B) |
 | `CLUSTER` | `_phase_cluster` | ⬜ stub | Clustering documenti → eventi, confronto narrazioni |
@@ -398,10 +415,11 @@ pathos
 │   └── info            Mostra conteggi per tabella
 ├── sources
 │   ├── list            Lista fonti configurate
-│   └── seed            Inserisce le 15 fonti predefinite
+│   └── seed            Inserisce le 49 fonti predefinite (7 blocchi)
 ├── ingest
-│   ├── gdelt           Ciclo incrementale (ultimi N giorni)
-│   └── gdelt-history   Bootstrap storico (range date)
+│   ├── gdelt           Ciclo incrementale GDELT (ultimi N giorni)
+│   ├── gdelt-history   Bootstrap storico GDELT (range date)
+│   └── rss             Fetch RSS da tutte le fonti attive
 ├── cycle               Esegui ciclo notturno
 │   ├── --dry-run       Simula tutte le fasi senza I/O
 │   └── --from-phase    Riprendi da fase specifica (ingest|embed|extract|cluster|brief)
@@ -414,15 +432,16 @@ pathos
 
 ### Blocchi geopolitici
 
-| Blocco | Codice DB | Esempi |
+| Blocco | Codice DB | Fonti attive |
 |---|---|---|
-| Occidentale | `western` | Reuters, BBC, AP, NYT, Le Monde |
-| Cina | `china` | Xinhua, Global Times, CGTN |
-| Russia | `russia` | TASS, RT, Kommersant |
-| Mondo arabo | `arab` | Al Jazeera, Anadolu, Press TV |
-| India | `india` | The Hindu, NDTV, Times of India |
-| America Latina | `latam` | Folha de São Paulo, Infobae, La Jornada |
-| Africa | `africa` | AllAfrica, Daily Maverick |
+| Occidentale | `western` | Reuters, ANSA, EFE, Kyodo, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, Focus Taiwan, DIGITIMES, HK Free Press, RFI Afrique |
+| Cina | `china` | Xinhua, Global Times, SCMP |
+| Russia | `russia` | TASS, RT |
+| Mondo arabo | `arab` | Al Jazeera, Anadolu, Press TV, Arab News |
+| India | `india` | ANI, The Hindu |
+| America Latina | `latam` | Folha de S.Paulo |
+| Africa | `africa` | AllAfrica, Daily Maverick, Jeune Afrique, The East African, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard |
+| Altro | `other` | Dawn, Geo News (PK); Armenpress, EVN Report (AM); Trend, AzerNews (AZ) |
 
 ### Segnali fisici (Fase 1)
 
@@ -522,7 +541,7 @@ make_gdelt_row(**overrides)  → dict con tutti i 61 campi GDELT (default: CN-TW
 | **0** | SQLite schema + sqlite-vec | ✅ |
 | **0** | Ciclo orchestrator (struttura) | ✅ |
 | **1** | GDELT 2.0 ingestor (incrementale + bootstrap) | ✅ |
-| **1** | RSS multi-blocco (7 blocchi geopolitici) | ⬜ |
+| **1** | RSS multi-blocco (49 fonti, 7 blocchi, 6 lingue) | ✅ |
 | **1** | PortWatch + Comtrade semiconduttori | ⬜ |
 | **1** | USGS + NASA FIRMS + IODA | ⬜ |
 | **1** | Storicizzazione Parquet | ⬜ |
@@ -540,4 +559,4 @@ make_gdelt_row(**overrides)  → dict con tutti i 61 campi GDELT (default: CN-TW
 
 ---
 
-*Documenti correlati: [architecture.md](architecture.md) · [schema.md](schema.md) · [../useful_queries.sql](../useful_queries.sql)*
+*Documenti correlati: [architecture.md](architecture.md) · [schema.md](schema.md) · [decisions.md](decisions.md) · [../useful_queries.sql](../useful_queries.sql)*
