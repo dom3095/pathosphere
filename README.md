@@ -41,9 +41,15 @@ uv run pathos ingest gdelt-history --start 2024-01-01
 uv run pathos ingest rss                            # tutte le fonti attive, ultimi 2 giorni
 uv run pathos ingest rss --max-age-days 7           # ultimi 7 giorni
 
+# Segnali fisici e flussi (Fase 1)
+uv run pathos ingest portwatch                      # transiti chokepoint IMF → anomalie
+uv run pathos ingest comtrade                       # flussi semiconduttori HS 8541/8542/8486
+uv run pathos ingest usgs                            # terremoti significativi USGS
+uv run pathos ingest firms                           # incendi NASA FIRMS (richiede FIRMS_MAP_KEY)
+
 # Pipeline semantica (Fase 2)
 uv run pathos embed                                 # embed + dedup semantica + clustering → eventi
-uv run pathos embed --batch-size 16                 # batch più piccoli (meno RAM)
+uv run pathos extract                                # NER + geocoding + Wikidata entity linking
 uv run pathos embed --skip-dedup                    # solo embedding
 
 # Ciclo notturno
@@ -52,7 +58,7 @@ uv run pathos cycle --dry-run
 uv run pathos cycle --from-phase embed
 
 # Test
-uv run pytest                    # 81 test
+uv run pytest                    # 137 test
 ```
 
 ## Struttura repo
@@ -64,9 +70,9 @@ pathosphere/
 │   ├── config.py       settings da .env
 │   ├── db/schema.py    DDL SQLite + sqlite-vec
 │   ├── cycle/          orchestratore ciclo notturno
-│   │   ├── ingest/         ingestori (GDELT ✅; RSS 49 fonti ✅; PortWatch/Comtrade TODO)
-│   └── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; NER TODO)
-├── tests/              66 test, ~0.4s
+│   │   ├── ingest/         ingestori (GDELT, RSS, PortWatch, Comtrade, USGS, FIRMS ✅)
+│   └── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; extract NER+geo+Wikidata ✅)
+├── tests/              137 test, ~1s
 ├── docs/
 │   ├── wiki.md         documentazione completa
 │   ├── architecture.md architettura dettagliata
@@ -79,9 +85,9 @@ pathosphere/
 - [x] **Fase 0** — Config, SQLite+sqlite-vec, CLI, logging, ciclo orchestrator
 - [x] **Fase 1** — GDELT 2.0 (incrementale + bootstrap storico)
 - [x] **Fase 1** — RSS multi-blocco (49 fonti, 7 blocchi geopolitici, 6 lingue)
-- [ ] **Fase 1** — PortWatch, Comtrade, USGS/FIRMS
+- [x] **Fase 1** — PortWatch (anomalie chokepoint), Comtrade (semiconduttori), USGS, FIRMS
 - [x] **Fase 2** — Embedding multilingual-e5-small + dedup semantica KNN
 - [x] **Fase 2** — Clustering articoli → eventi (union-find)
-- [ ] **Fase 2** — NER, geocoding, Wikidata, grafo entità
+- [x] **Fase 2** — NER, geocoding (Nominatim), Wikidata entity linking
 - [ ] **Fase 3** — Brief, tesi, paper trading, calibrazione Tetlock
 - [ ] **Fase 4** — Dashboard Streamlit

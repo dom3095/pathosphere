@@ -95,6 +95,7 @@ def _phase_ingest() -> None:
     from pathosphere.db.schema import get_connection
     from pathosphere.ingest.comtrade import ingest_comtrade
     from pathosphere.ingest.gdelt import QUAD_CONFLICT, ingest_gdelt
+    from pathosphere.ingest.physical import ingest_firms, ingest_usgs
     from pathosphere.ingest.portwatch import ingest_portwatch
     from pathosphere.ingest.rss import ingest_rss
 
@@ -129,6 +130,20 @@ def _phase_ingest() -> None:
         f"INGEST/COMTRADE: {ct.records_fetched} records, +{ct.docs_inserted} docs "
         f"({len(ct.errors)} errors)"
     )
+
+    usgs = ingest_usgs(conn)
+    logger.info(
+        f"INGEST/USGS: {usgs.quakes_fetched} quakes, +{usgs.events_created} events"
+    )
+
+    firms = ingest_firms(conn, map_key=settings.firms_map_key)
+    if firms.skipped_no_key:
+        logger.info("INGEST/FIRMS: skipped (no FIRMS_MAP_KEY)")
+    else:
+        logger.info(
+            f"INGEST/FIRMS: {firms.detections_total} detections, "
+            f"+{firms.events_created} events"
+        )
 
     conn.close()
 

@@ -511,6 +511,62 @@ def ingest_comtrade(periods: str | None, reporters: str | None) -> None:
         click.echo(f"\nFirst errors: {result.errors[:5]}")
 
 
+@ingest.command("usgs")
+@click.option("--min-magnitude", default=5.0, show_default=True,
+              help="Minimum earthquake magnitude to keep.")
+@click.option("--days", default=1, show_default=True, help="How many days back.")
+def ingest_usgs(min_magnitude: float, days: int) -> None:
+    """Fetch significant USGS earthquakes as hazard events."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.physical import ingest_usgs as _ingest_usgs
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_usgs(conn, min_magnitude=min_magnitude, days=days)
+    conn.close()
+
+    click.echo(
+        f"\nUSGS result:\n"
+        f"  Quakes: {result.quakes_fetched} fetched\n"
+        f"  Events: +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
+@ingest.command("firms")
+@click.option("--days", default=1, show_default=True, help="How many days back.")
+@click.option("--threshold", default=50, show_default=True,
+              help="Detections per area to warrant a hazard event.")
+def ingest_firms(days: int, threshold: int) -> None:
+    """Summarize NASA FIRMS active-fire detections per area (needs FIRMS_MAP_KEY)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.physical import ingest_firms as _ingest_firms
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_firms(
+        conn, map_key=settings.firms_map_key, days=days, threshold=threshold
+    )
+    conn.close()
+
+    if result.skipped_no_key:
+        click.echo("FIRMS skipped: set FIRMS_MAP_KEY in .env (free registration).")
+        return
+    click.echo(
+        f"\nFIRMS result:\n"
+        f"  Areas:      {result.areas_checked} checked\n"
+        f"  Detections: {result.detections_total}\n"
+        f"  Events:     +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
 # ─── embed ────────────────────────────────────────────────────────────────────
 
 @cli.command()
