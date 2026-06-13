@@ -439,6 +439,47 @@ def ingest_rss(max_age_days: int, source_ids: str | None) -> None:
         click.echo(f"\nFirst errors: {result.errors[:5]}")
 
 
+@ingest.command("portwatch")
+@click.option("--days", default=90, show_default=True,
+              help="Daily records to fetch per chokepoint.")
+@click.option("--baseline-days", default=30, show_default=True,
+              help="Trailing window for the anomaly baseline.")
+@click.option("--z-threshold", default=2.0, show_default=True,
+              help="|z-score| above which a transit anomaly becomes an event.")
+@click.option("--portids", default=None,
+              help="Comma-separated chokepoint ids (default: strategic set).")
+def ingest_portwatch(
+    days: int, baseline_days: int, z_threshold: float, portids: str | None
+) -> None:
+    """Fetch IMF PortWatch chokepoint transits; flag anomalies as events."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.portwatch import ingest_portwatch as _ingest_portwatch
+
+    settings = get_settings()
+    _require_db(settings)
+
+    ids = [x.strip() for x in portids.split(",")] if portids else None
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_portwatch(
+        conn,
+        portids=ids,
+        days=days,
+        baseline_days=baseline_days,
+        z_threshold=z_threshold,
+    )
+    conn.close()
+
+    click.echo(
+        f"\nPortWatch result:\n"
+        f"  Chokepoints: {result.chokepoints_fetched} fetched\n"
+        f"  Metrics:     {result.metrics_upserted:,} upserted\n"
+        f"  Events:      {result.events_created} anomalies | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nFirst errors: {result.errors[:5]}")
+
+
 # ─── embed ────────────────────────────────────────────────────────────────────
 
 @cli.command()

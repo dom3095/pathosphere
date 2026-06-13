@@ -94,6 +94,7 @@ def _phase_ingest() -> None:
     from pathosphere.config import get_settings
     from pathosphere.db.schema import get_connection
     from pathosphere.ingest.gdelt import QUAD_CONFLICT, ingest_gdelt
+    from pathosphere.ingest.portwatch import ingest_portwatch
     from pathosphere.ingest.rss import ingest_rss
 
     settings = get_settings()
@@ -114,6 +115,12 @@ def _phase_ingest() -> None:
     logger.info(
         f"INGEST/RSS: {rss.sources_ok} sources ok, +{rss.docs_inserted} docs "
         f"({rss.sources_error} errors)"
+    )
+
+    pw = ingest_portwatch(conn)
+    logger.info(
+        f"INGEST/PORTWATCH: {pw.chokepoints_fetched} chokepoints, "
+        f"{pw.events_created} anomaly events ({len(pw.errors)} errors)"
     )
 
     conn.close()
