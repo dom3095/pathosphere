@@ -93,6 +93,7 @@ def _run_phase(phase: Phase) -> None:
 def _phase_ingest() -> None:
     from pathosphere.config import get_settings
     from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.comtrade import ingest_comtrade
     from pathosphere.ingest.gdelt import QUAD_CONFLICT, ingest_gdelt
     from pathosphere.ingest.portwatch import ingest_portwatch
     from pathosphere.ingest.rss import ingest_rss
@@ -121,6 +122,12 @@ def _phase_ingest() -> None:
     logger.info(
         f"INGEST/PORTWATCH: {pw.chokepoints_fetched} chokepoints, "
         f"{pw.events_created} anomaly events ({len(pw.errors)} errors)"
+    )
+
+    ct = ingest_comtrade(conn)
+    logger.info(
+        f"INGEST/COMTRADE: {ct.records_fetched} records, +{ct.docs_inserted} docs "
+        f"({len(ct.errors)} errors)"
     )
 
     conn.close()

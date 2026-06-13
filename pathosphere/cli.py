@@ -480,6 +480,37 @@ def ingest_portwatch(
         click.echo(f"\nFirst errors: {result.errors[:5]}")
 
 
+@ingest.command("comtrade")
+@click.option("--periods", default=None,
+              help="Comma-separated YYYYMM (default: 3 recent months, ~2mo lag).")
+@click.option("--reporters", default=None,
+              help="Comma-separated ISO numeric reporter codes (default: pilot set).")
+def ingest_comtrade(periods: str | None, reporters: str | None) -> None:
+    """Fetch monthly semiconductor trade flows (HS 8541/8542/8486) as documents."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.comtrade import ingest_comtrade as _ingest_comtrade
+
+    settings = get_settings()
+    _require_db(settings)
+
+    p = [x.strip() for x in periods.split(",")] if periods else None
+    r = [int(x.strip()) for x in reporters.split(",")] if reporters else None
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_comtrade(conn, periods=p, reporters=r)
+    conn.close()
+
+    click.echo(
+        f"\nComtrade result:\n"
+        f"  Periods: {', '.join(result.periods)}\n"
+        f"  Records: {result.records_fetched} fetched\n"
+        f"  Docs:    +{result.docs_inserted} inserted | {result.docs_skipped} skipped | "
+        f"{len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nFirst errors: {result.errors[:5]}")
+
+
 # ─── embed ────────────────────────────────────────────────────────────────────
 
 @cli.command()

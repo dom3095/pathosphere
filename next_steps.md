@@ -15,14 +15,18 @@
   (latest escluso, no lookahead) → `events` `event_type=infrastructure` con
   `location_name`=portname (geocode phase riempie lat/lon). Comando
   `pathos ingest portwatch` + wired in `_phase_ingest`. 15 test.
+- **4. Comtrade** implementato in `ingest/comtrade.py`: API preview gratuita
+  (`public/v1/preview/C/M/HS`, no key, ≤500 rec/call). HS 8541/8542/8486,
+  9 reporter pilota vs World, import+export mensili. Filtri ai totali
+  (`motCode=0`, `customsCode=C00`, `partner2Code=0`) per evitare il troncamento
+  a 500 dovuto alla disaggregazione. Ogni record → `raw_document` sintetico
+  (source "UN Comtrade", url `comtrade://...` per dedup) così la pipeline
+  semantica tratta i flussi come documenti. Comando `pathos ingest comtrade`
+  + wired in `_phase_ingest`. 11 test.
 
 ---
 
 ## Branch corrente: `feature/ner-phase1-remaining`
-
-### 4. UN Comtrade ingestor (filiera semiconduttori)
-HS codes: **8541/8542** (semiconduttori) + **8486** (macchinari produzione chip).
-Dati mensili → `raw_documents` con `source_id` filiera pilota.
 
 ### 5. USGS + NASA FIRMS
 - USGS earthquakes API (JSON) → eventi fisici in `events`
