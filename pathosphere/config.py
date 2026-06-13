@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # Geocoding
     nominatim_user_agent: str = "pathosphere/0.1"
 
+    # NASA FIRMS (free MAP_KEY from https://firms.modaps.eosdis.nasa.gov/api/)
+    firms_map_key: str | None = None
+
     @field_validator("log_level")
     @classmethod
     def log_level_upper(cls, v: str) -> str:
