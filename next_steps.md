@@ -1,35 +1,18 @@
 # Next steps
 
-## Pendente prima del nuovo branch
+## ✅ Fatto
 
-- Mergare `feature/rss_feed`: autenticati con `gh auth login --web`, poi:
-  ```bash
-  export PATH="/opt/homebrew/bin:$PATH"
-  gh pr create \
-    --title "feat: Phase 1 RSS ingestor + Phase 2 semantic pipeline" \
-    --base main \
-    --body "..."
-  ```
-  Scegli **Rebase and merge** su GitHub. Poi elimina il branch:
-  ```bash
-  git push origin --delete feature/rss_feed
-  git branch -d feature/rss_feed
-  ```
+- `feature/rss_feed` merged in main (rebase), contenuto identico — branch eliminabile.
+- **1. Ottimizzazione GDELT** committata: `build_lookup_caches` elimina ~2 SELECT/riga.
+- **2. NER + geocoding + Wikidata** implementati in `semantic/extract.py`:
+  spaCy `xx_ent_wiki_sm` → `entities` + `document_entities`; Nominatim con
+  `geocode_cache` (1 req/s) → `events.lat/lon`; `wbsearchentities` → QID +
+  canonical_name. Wired in `_phase_extract` + comando `pathos extract`.
+  Nota: dopo pull eseguire `uv sync` e `pathos db init` (migrazioni additive).
 
 ---
 
-## Nuovo branch: `feature/ner-phase1-remaining`
-
-### 1. Commit ottimizzazione GDELT (già pronta in working tree)
-`build_lookup_caches` in `gdelt.py` + `cli.py` — pre-carica url/event-key in dict Python,
-elimina ~2 SELECT per riga GDELT → ~17M query risparmiate sul download storico 5 anni.
-
-### 2. NER + geocoding + Wikidata entity linking
-Implementa `_phase_extract` in `cycle/orchestrator.py`:
-- **spaCy** per entity extraction (persone, organizzazioni, luoghi, commodity)
-- **Nominatim** per geocoding → `lat/lon` su `events`
-- **Wikidata QID lookup** per entity linking → popola `entities` + `entity_links`
-- Tabelle: `entities`, `entity_links` (già in schema)
+## Branch corrente: `feature/ner-phase1-remaining`
 
 ### 3. PortWatch ingestor
 IMF PortWatch API — chokepoint: Suez, Hormuz, Panama, Bab el-Mandeb.

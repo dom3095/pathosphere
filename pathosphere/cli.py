@@ -476,3 +476,57 @@ def embed(batch_size: int, skip_dedup: bool, skip_cluster: bool) -> None:
         )
 
     conn.close()
+
+
+# ─── extract ──────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--limit", default=None, type=int, help="Max docs to run NER on.")
+@click.option("--max-lookups", default=50, show_default=True,
+              help="Network lookup budget for geocoding and Wikidata (each).")
+@click.option("--skip-geocode", is_flag=True, help="Skip Nominatim geocoding.")
+@click.option("--skip-wikidata", is_flag=True, help="Skip Wikidata entity linking.")
+def extract(
+    limit: int | None, max_lookups: int, skip_geocode: bool, skip_wikidata: bool
+) -> None:
+    """Run NER, geocode events, link entities to Wikidata."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.extract import (
+        extract_entities,
+        geocode_events,
+        link_wikidata,
+    )
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    ner = extract_entities(conn, limit=limit)
+    click.echo(
+        f"\nNER: {ner.docs_processed} docs | +{ner.entities_created} entities | "
+        f"{ner.mentions_recorded} mentions | {ner.docs_skipped} skipped"
+    )
+
+    if not skip_geocode:
+        geo = geocode_events(
+            conn,
+            user_agent=settings.nominatim_user_agent,
+            max_lookups=max_lookups,
+        )
+        click.echo(
+            f"Geocode: {geo.events_geocoded} events | {geo.lookups} lookups | "
+            f"{geo.cache_hits} cache hits | {geo.misses} misses"
+        )
+
+    if not skip_wikidata:
+        wd = link_wikidata(
+            conn,
+            user_agent=settings.nominatim_user_agent,
+            max_lookups=max_lookups,
+        )
+        click.echo(
+            f"Wikidata: {wd.qids_found} QIDs | {wd.entities_checked} checked | "
+            f"{wd.conflicts} conflicts"
+        )
+
+    conn.close()
