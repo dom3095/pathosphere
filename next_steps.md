@@ -9,14 +9,16 @@
   `geocode_cache` (1 req/s) → `events.lat/lon`; `wbsearchentities` → QID +
   canonical_name. Wired in `_phase_extract` + comando `pathos extract`.
   Nota: dopo pull eseguire `uv sync` e `pathos db init` (migrazioni additive).
+- **3. PortWatch** implementato in `ingest/portwatch.py`: ArcGIS FeatureServer
+  `Daily_Chokepoints_Data`, 7 chokepoint strategici → tabella `chokepoint_metrics`
+  (timeseries giornaliera). Anomaly detection z-score vs baseline trailing 30g
+  (latest escluso, no lookahead) → `events` `event_type=infrastructure` con
+  `location_name`=portname (geocode phase riempie lat/lon). Comando
+  `pathos ingest portwatch` + wired in `_phase_ingest`. 15 test.
 
 ---
 
 ## Branch corrente: `feature/ner-phase1-remaining`
-
-### 3. PortWatch ingestor
-IMF PortWatch API — chokepoint: Suez, Hormuz, Panama, Bab el-Mandeb.
-Segnale fisico su rotte marittime → `events` con `event_type=infrastructure`.
 
 ### 4. UN Comtrade ingestor (filiera semiconduttori)
 HS codes: **8541/8542** (semiconduttori) + **8486** (macchinari produzione chip).

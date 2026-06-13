@@ -155,6 +155,28 @@ CREATE TABLE IF NOT EXISTS geocode_cache (
 );
 
 -- ──────────────────────────────────────────────
+-- PORTWATCH (daily chokepoint transit timeseries)
+-- ──────────────────────────────────────────────
+-- Raw daily counts per chokepoint; anomalies vs trailing baseline are
+-- promoted to events (event_type=infrastructure). Baseline is computed
+-- from this table only — no lookahead.
+CREATE TABLE IF NOT EXISTS chokepoint_metrics (
+    portid          TEXT    NOT NULL,            -- e.g. chokepoint1
+    portname        TEXT,                        -- e.g. Suez Canal
+    date            TEXT    NOT NULL,            -- ISO YYYY-MM-DD
+    n_total         INTEGER,
+    n_tanker        INTEGER,
+    n_container     INTEGER,
+    n_dry_bulk      INTEGER,
+    n_cargo         INTEGER,
+    capacity        REAL,
+    fetched_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (portid, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chokepoint_date ON chokepoint_metrics(portid, date);
+
+-- ──────────────────────────────────────────────
 -- WATCHLIST (observable indicators per scenario)
 -- ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS watchlist_items (
