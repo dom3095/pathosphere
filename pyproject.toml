@@ -17,6 +17,8 @@ dependencies = [
     "sentence-transformers>=2.0",
     "numpy>=1.26",
     "caveman>=1.0",
+    "spacy>=3.7",
+    "xx-ent-wiki-sm",
 ]
 
 [project.scripts]
@@ -37,3 +39,6 @@ packages = ["pathosphere"]
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.uv.sources]
+xx-ent-wiki-sm = { url = "https://github.com/explosion/spacy-models/releases/download/xx_ent_wiki_sm-3.8.0/xx_ent_wiki_sm-3.8.0-py3-none-any.whl" }

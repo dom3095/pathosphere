@@ -133,6 +133,25 @@ CREATE TABLE IF NOT EXISTS entity_links (
 CREATE INDEX IF NOT EXISTS idx_elink_a ON entity_links(entity_a);
 CREATE INDEX IF NOT EXISTS idx_elink_b ON entity_links(entity_b);
 
+-- Entity mentions per document (NER output)
+CREATE TABLE IF NOT EXISTS document_entities (
+    document_id     INTEGER REFERENCES raw_documents(id) ON DELETE CASCADE,
+    entity_id       INTEGER REFERENCES entities(id) ON DELETE CASCADE,
+    mentions        INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (document_id, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_docent_entity ON document_entities(entity_id);
+
+-- Nominatim lookup cache (misses cached with NULL lat/lon)
+CREATE TABLE IF NOT EXISTS geocode_cache (
+    query           TEXT    PRIMARY KEY,
+    lat             REAL,
+    lon             REAL,
+    display_name    TEXT,
+    fetched_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ──────────────────────────────────────────────
 -- WATCHLIST (observable indicators per scenario)
 -- ──────────────────────────────────────────────
@@ -242,21 +261,25 @@ USING vec0(
 """
 
 
-_RAW_DOCUMENTS_MIGRATIONS = [
+_MIGRATIONS = [
     "ALTER TABLE raw_documents ADD COLUMN is_duplicate INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE raw_documents ADD COLUMN duplicate_of INTEGER REFERENCES raw_documents(id)",
     "ALTER TABLE raw_documents ADD COLUMN dedup_checked INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE raw_documents ADD COLUMN ner_done INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE entities ADD COLUMN wikidata_checked INTEGER NOT NULL DEFAULT 0",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_name_type ON entities(name, entity_type)",
+    "CREATE INDEX IF NOT EXISTS idx_raw_doc_ner ON raw_documents(ner_done)",
 ]
 
 
 def migrate_db(conn: sqlite3.Connection) -> None:
     """Apply schema migrations idempotently (safe to run on every init)."""
-    for sql in _RAW_DOCUMENTS_MIGRATIONS:
+    for sql in _MIGRATIONS:
         try:
             conn.execute(sql)
             conn.commit()
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass  # column or index already exists
 
 
 def get_connection(db_path: Path) -> sqlite3.Connection:

@@ -143,7 +143,36 @@ def _phase_embed() -> None:
 
 
 def _phase_extract() -> None:
-    logger.warning("EXTRACT: NER not yet implemented — skipping (Phase 3)")
+    from pathosphere.config import get_settings
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.extract import (
+        extract_entities,
+        geocode_events,
+        link_wikidata,
+    )
+
+    settings = get_settings()
+    conn = get_connection(settings.db_path)
+
+    ner = extract_entities(conn)
+    logger.info(
+        f"EXTRACT/NER: {ner.docs_processed} docs, +{ner.entities_created} entities, "
+        f"{ner.mentions_recorded} mentions"
+    )
+
+    geo = geocode_events(conn, user_agent=settings.nominatim_user_agent)
+    logger.info(
+        f"EXTRACT/GEO: {geo.events_geocoded} events geocoded "
+        f"({geo.lookups} lookups, {geo.cache_hits} cache hits)"
+    )
+
+    wd = link_wikidata(conn, user_agent=settings.nominatim_user_agent)
+    logger.info(
+        f"EXTRACT/WIKIDATA: {wd.qids_found} QIDs on {wd.entities_checked} checked "
+        f"({wd.conflicts} conflicts)"
+    )
+
+    conn.close()
 
 
 def _phase_cluster() -> None:
