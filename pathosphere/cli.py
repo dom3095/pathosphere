@@ -386,9 +386,11 @@ def ingest_gdelt_history(
             doc_total += doc_ins
 
             if i % 20 == 0 or i == total:
+                from datetime import datetime as _dt
                 pct = i / total * 100
+                ts = _dt.now().strftime("%H:%M:%S")
                 click.echo(
-                    f"[{pct:5.1f}%] {i}/{total} | "
+                    f"[{ts}] [{pct:5.1f}%] {i}/{total} | "
                     f"ok={files_ok} skip={files_skip} err={files_err} | "
                     f"events={ev_total:,} docs={doc_total:,}"
                 )
