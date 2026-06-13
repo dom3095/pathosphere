@@ -108,7 +108,7 @@ def ingest_rss(
             try:
                 resp = client.get(url)
                 resp.raise_for_status()
-                feed = feedparser.parse(resp.text)
+                feed = feedparser.parse(resp.content)
             except httpx.HTTPStatusError as exc:
                 result.sources_error += 1
                 msg = f"{name}: HTTP {exc.response.status_code}"

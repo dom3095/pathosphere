@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS raw_documents (
     embedded        INTEGER NOT NULL DEFAULT 0, -- 0=not yet; 1=embedding computed
     is_duplicate    INTEGER NOT NULL DEFAULT 0, -- 1 = near-duplicate of another doc
     duplicate_of    INTEGER REFERENCES raw_documents(id),
-    dedup_checked   INTEGER NOT NULL DEFAULT 0  -- 1 after dedup phase ran on this doc
+    dedup_checked   INTEGER NOT NULL DEFAULT 0, -- 1 after dedup phase ran on this doc
+    ner_done        INTEGER NOT NULL DEFAULT 0  -- 1 after NER phase ran on this doc
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_doc_source    ON raw_documents(source_id);
@@ -111,6 +112,7 @@ CREATE TABLE IF NOT EXISTS entities (
     canonical_name  TEXT,
     entity_type     TEXT    NOT NULL,           -- country, company, commodity, infrastructure, person, other
     wikidata_qid    TEXT    UNIQUE,
+    wikidata_checked INTEGER NOT NULL DEFAULT 0, -- 1 after Wikidata lookup attempted
     aliases         TEXT,                       -- JSON array
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );

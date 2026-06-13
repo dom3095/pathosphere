@@ -16,7 +16,7 @@ import hashlib
 import io
 import zipfile
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -98,7 +98,7 @@ def generate_file_urls(n_days: int) -> list[tuple[str, str]]:
     GDELT publishes files every 15 minutes: HH:00, HH:15, HH:30, HH:45.
     """
     urls = []
-    today = date.today()
+    today = datetime.now(timezone.utc).date()
     for delta in range(1, n_days + 1):
         day = today - timedelta(days=delta)
         day_str = day.strftime("%Y%m%d")

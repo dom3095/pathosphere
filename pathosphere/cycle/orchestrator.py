@@ -192,4 +192,4 @@ def _phase_cluster() -> None:
 
 
 def _phase_brief() -> None:
-    raise NotImplementedError("Brief not yet implemented (Phase 3)")
+    logger.info("BRIEF phase not yet implemented (Phase 3) — skipping")
