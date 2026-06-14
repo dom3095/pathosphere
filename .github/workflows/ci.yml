@@ -32,10 +32,15 @@ jobs:
         with:
           fetch-depth: 0   # full history so gitleaks scans every commit
 
+      # Gitleaks CLI directly — the v2 action needs pull-requests:read API
+      # access; the CLI scans git history with no token and no API calls.
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+
       - name: Gitleaks secret detection
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gitleaks detect --source . --no-banner --redact
 
   cve-scan:
     runs-on: ubuntu-latest
