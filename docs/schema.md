@@ -27,6 +27,7 @@ erDiagram
     raw_documents {
         INTEGER id PK
         INTEGER source_id FK
+        TEXT origin "ingestor: gdelt|rss|comtrade|portwatch|usgs|firms"
         TEXT url "UNIQUE"
         TEXT title
         TEXT body
@@ -47,6 +48,7 @@ erDiagram
         TEXT first_seen "ISO 8601"
         TEXT last_seen "ISO 8601"
         TEXT event_type "conflict|epidemic|trade|infrastructure|political|other"
+        TEXT origin "ingestor: gdelt|rss|comtrade|portwatch|usgs|firms"
         INTEGER severity "1-5"
         TEXT location_name "nome human-readable"
         REAL lat
@@ -58,6 +60,35 @@ erDiagram
     event_documents {
         INTEGER event_id FK
         INTEGER document_id FK
+    }
+
+    gdelt_events {
+        INTEGER global_event_id PK "GDELT GlobalEventID (1 riga GDELT)"
+        INTEGER event_id FK "cluster 5-tupla in events"
+        INTEGER document_id FK "URL fonte"
+        TEXT sqldate "grezzo, inaffidabile (audit)"
+        TEXT date_added "DATEADDED → ISO, data canonica"
+        TEXT event_code "CAMEO EventCode pieno"
+        TEXT event_root_code "CAMEO root → events.event_type"
+        INTEGER quad_class "1..4 coop/conflitto x verbale/materiale"
+        REAL goldstein "-10..+10 impatto teorico"
+        REAL avg_tone "tono medio articoli"
+        INTEGER num_mentions
+        INTEGER num_sources
+        INTEGER num_articles
+    }
+
+    comtrade_flows {
+        INTEGER id PK
+        INTEGER document_id FK "doc sintetico"
+        INTEGER reporter_code "ISO numerico reporter"
+        TEXT reporter_iso
+        INTEGER partner_code "0 = World"
+        TEXT cmd_code "HS 8541|8542|8486"
+        TEXT flow_code "M import | X export"
+        TEXT period "YYYYMM"
+        REAL primary_value "valore commerciale USD"
+        REAL net_weight "kg, se presente"
     }
 
     narrative_divergences {
@@ -172,6 +203,9 @@ erDiagram
     sources          ||--o{  raw_documents        : "source_id"
     raw_documents    ||--o{  event_documents      : "document_id"
     events           ||--o{  event_documents      : "event_id"
+    events           ||--o{  gdelt_events         : "event_id"
+    raw_documents    ||--o{  gdelt_events         : "document_id"
+    raw_documents    ||--o{  comtrade_flows       : "document_id"
     events           ||--o{  narrative_divergences: "event_id"
     events           ||--o{  theses               : "trigger_event"
     events           ||--o{  entity_links         : "source_event"
@@ -233,9 +267,11 @@ graph TD
 | Tabella | Fase | Righe tipiche | Note |
 |---|---|---|---|
 | `sources` | 0 | ~20 | Seeded una volta, aggiornate raramente |
-| `raw_documents` | 1 | migliaia/giorno | `content_hash` previene duplicati esatti |
-| `events` | 2 | centinaia/giorno | Aggregano N documenti sullo stesso evento |
+| `raw_documents` | 1 | migliaia/giorno | `content_hash` previene duplicati esatti; `origin` = ingestor di provenienza |
+| `events` | 2 | centinaia/giorno | Aggregano N documenti sullo stesso evento; `origin` = ingestor |
 | `event_documents` | 2 | join N:M | |
+| `gdelt_events` | 1 | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions) → `events` |
+| `comtrade_flows` | 1 | 1/record commerciale | Valori numerici flussi (USD, kg) accanto al doc sintetico |
 | `narrative_divergences` | 2 | decine/giorno | Solo eventi con ≥2 blocchi coperti |
 | `entities` | 2 | crescita lenta | Deduplicate via `wikidata_qid` |
 | `entity_links` | 2 | crescita lenta | Grafo relazionale entità |

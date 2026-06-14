@@ -27,3 +27,7 @@ data/logs/
 # Claude Code project settings (locale, non versionare)
 .claude/
 data/skills/*
+
+# Stray GDELT export files (manual tests)
+*.export.CSV
+*.export.CSV.zip

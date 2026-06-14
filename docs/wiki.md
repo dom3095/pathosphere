@@ -90,7 +90,7 @@ ollama pull qwen3:4b
 uv sync                         # installa dipendenze (incl. sqlite-vec, httpx, feedparser, sentence-transformers)
 cp .env.example .env            # crea configurazione locale
 uv run pathos db init           # crea schema SQLite + tabella virtuale sqlite-vec
-uv run pathos sources seed      # inserisce 49 fonti predefinite (7 blocchi geopolitici)
+uv run pathos sources seed      # inserisce 49 fonti (45 attive) predefinite (7 blocchi geopolitici)
 ```
 
 Verifica:
@@ -172,7 +172,7 @@ pathosphere/
 │   └── orchestrator.py 5 fasi sequenziali riprendibili. EMBED+CLUSTER: ✅. EXTRACT+BRIEF: stub.
 ├── ingest/
 │   ├── gdelt.py        Downloader GDELT 2.0. Incrementale + bootstrap storico.
-│   ├── rss.py          Ingestor RSS multi-blocco. 49 fonti, 7 blocchi geopolitici.
+│   ├── rss.py          Ingestor RSS multi-blocco. 49 fonti (45 attive), 7 blocchi geopolitici.
 │   └── sources_seed.py Catalogo fonti: lista completa + seed_sources(conn).
 ├── semantic/
 │   ├── embedder.py     Batch embedding multilingual-e5-small → vec_documents.
@@ -220,9 +220,11 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 | Tabella | Righe tipiche | Scopo |
 |---|---|---|
 | `sources` | ~15-50 | Catalogo fonti (paese, blocco, controllo statale) |
-| `raw_documents` | 10k-500k | Documenti grezzi (URL, titolo, hash dedup, flag semantici) |
-| `events` | 1k-50k | Eventi aggregati da cluster di articoli |
+| `raw_documents` | 10k-500k | Documenti grezzi (URL, titolo, hash dedup, flag semantici, `origin`) |
+| `events` | 1k-50k | Eventi aggregati da cluster di articoli (`origin` = ingestor) |
 | `event_documents` | N:M | Join eventi ↔ documenti |
+| `gdelt_events` | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions) |
+| `comtrade_flows` | 1/record | Valori numerici flussi commerciali (USD, kg) |
 | `narrative_divergences` | 100-5k | Divergenza narrativa per blocco geopolitico |
 | `entities` | 500-10k | Paesi, aziende, commodity, infrastrutture |
 | `entity_links` | 1k-50k | Grafo relazioni (depends_on, supplies, sanctions…) |
@@ -333,6 +335,17 @@ GDELT Events pubblica file TSV di 61 colonne ogni 15 minuti, estratti da migliai
 | `ActionGeo_*` | TEXT/REAL | Luogo dell'azione (nome, lat, lon, paese) |
 | `SOURCEURL` | TEXT | URL articolo originale (chiave dedup) |
 
+**Data dell'evento:** si usa **DATEADDED** (quando GDELT ha osservato l'evento)
+come data canonica → `published_at` / `first_seen`. `SQLDATE` è inaffidabile
+(bug noti di anno: rollover −100 e off-by-1yr) e resta solo come fallback. Vedi
+[data-semantics.md](data-semantics.md).
+
+**Dettaglio numerico:** ogni riga GDELT (`GlobalEventID`) è salvata in
+**`gdelt_events`** con i segnali numerici per-riga (`goldstein`, `avg_tone`,
+`quad_class`, `num_mentions`/`sources`/`articles`, `event_code`, `date_added`),
+legata al cluster `events` e al documento. `raw_documents.origin` / `events.origin`
+= `gdelt`.
+
 **HTTP:** httpx + tenacity (3 retry, backoff esponenziale). Ctrl+C safe.
 
 **Esempi:**
@@ -362,37 +375,47 @@ uv run pathos ingest rss --max-age-days 7        # ultimi 7 giorni
 uv run pathos ingest rss --source-ids 1,2,3      # solo queste sorgenti
 ```
 
-**49 fonti, 7 blocchi geopolitici, 6 lingue:**
+**45 fonti attive, 7 blocchi geopolitici** (aggiornato 2026-06-14):
 
-| Blocco | Fonti | Lingue |
+| Blocco | Fonti attive | Lingue |
 |---|---|---|
-| `western` | Reuters, AP¹, AFP¹, ANSA, DPA¹, EFE, Kyodo, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, Focus Taiwan, DIGITIMES, HK Free Press | en/it/es |
-| `china` | Xinhua, Global Times, SCMP | en |
-| `russia` | TASS, RT | en |
+| `western` | ANSA, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, DIGITIMES, HK Free Press, **The Diplomat**, **ChinaFile** | en/it |
+| `china` | Global Times (state), SCMP, **China Digital Times**, **TechNode** | en |
+| `russia` | TASS, RT (via Tor), **The Moscow Times**, **Russia in Global Affairs** | en |
 | `arab` | Al Jazeera, Anadolu, Press TV, Arab News | en |
-| `india` | ANI, The Hindu | en |
+| `india` | The Hindu, **NDTV**, **Scroll.in** | en |
 | `latam` | Folha de S.Paulo | pt |
-| `africa` | APO¹, AllAfrica, Daily Maverick, RFI Afrique, Jeune Afrique, The East African, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard | en/fr |
-| `other` | Dawn, Geo News (PK); Armenpress, EVN Report (AM); Trend, AzerNews (AZ) | en |
+| `africa` | AllAfrica, Daily Maverick, RFI Afrique, Jeune Afrique, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard | en/fr |
+| `other` | Dawn, Geo News (PK); EVN Report (AM); Trend, AzerNews (AZ) | en |
 
-¹ `active=0`: nessun RSS pubblico.
+In grassetto le fonti aggiunte il 2026-06-14 (pluralità di controllo statale per blocco).
 
-**Principio:** divergenza narrativa tra blocchi = segnale analitico. Stessa notizia da Xinhua e BBC con frame opposti → `narrative_divergences.divergence_score` alto → input per tesi.
+**Principio:** divergenza narrativa tra blocchi = segnale analitico. Stessa notizia da Xinhua e The Moscow Times con frame opposti → `narrative_divergences.divergence_score` alto → input per tesi.
 
-**HTTP:** httpx (user-agent, timeout 20s, follow_redirects). Parsing: feedparser 6.x. Errori per singola fonte non bloccanti — si logga warning e si continua.
+**Fonti disabilitate** (`active=0`, conservate nel seed):
+- *Nessun RSS pubblico*: AP, AFP, DPA, APO Group.
+- *Feed morto/bloccato 2026-06-14* (commentate in `sources_seed.py`): Reuters (DNS), EFE (500), Kyodo (404), ANI (404), Focus Taiwan (404), The East African (403), Armenpress (403 Cloudflare), Xinhua (feed congelato al 2018 — voce statale cinese ora via Global Times).
 
-### 5.3 PortWatch / Comtrade / USGS
+**HTTP / anti-blocco:** httpx con header browser completi (UA + `Accept-Language` + `Sec-Fetch-*` + `Upgrade-Insecure-Requests`) — necessari oltre i bot-check stile Cloudflare (es. Arab News). Timeout 20s, follow_redirects. Parsing: feedparser 6.x. Errori per singola fonte non bloccanti.
 
-**Stato: ⬜ Non implementato** (post Fase 2, vedi [ADR-001](decisions.md))
+**Fonti geo-bloccate via Tor:** `TOR_SOURCES` in `rss.py` (oggi `{"RT"}`, sanzionata UE → connessione rifiutata diretta). [`tor_proxy.py`](../pathosphere/ingest/tor_proxy.py) riusa un proxy Tor attivo (Tor Browser 9150 / daemon 9050) o avvia un **daemon `tor` effimero** (bootstrap → fetch → stop). Config: `tor_socks_proxy`. Se Tor non è disponibile, quelle fonti vengono saltate senza bloccare le altre. Richiede il binario `tor` (`brew install tor`) per il daemon.
 
-| Fonte | Dati | Chokepoint/tema |
-|---|---|---|
-| IMF PortWatch | Traffico marittimo | Suez, Hormuz, Panama, Malacca |
-| UN Comtrade | Flussi commerciali | Semiconduttori HS 8541/8542, macchinari 8486 |
-| USGS | Terremoti | Infrastrutture fisiche |
-| NASA FIRMS | Incendi | Conflitti, infrastrutture |
-| IODA / Cloudflare Radar | Blackout internet | Censura, conflitti |
-| yfinance | Prezzi EOD | Valutazione paper trading |
+### 5.3 PortWatch / Comtrade / USGS / FIRMS
+
+**Stato: ✅ Implementati** — `ingest/portwatch.py`, `ingest/comtrade.py`, `ingest/physical.py`
+
+| Fonte | Dati | Tabelle | Note |
+|---|---|---|---|
+| IMF PortWatch | Transiti chokepoint | `chokepoint_metrics` + `events` (anomalie) | `--full` = backfill ~2019→oggi (paginato) |
+| UN Comtrade | Flussi commerciali HS 8541/8542/8486 | `raw_documents` (doc sintetico) + `comtrade_flows` (numerico) | `--start YYYYMM` backfill, backoff su 429 |
+| USGS | Terremoti significativi | `events` (`origin=usgs`, `event_type=hazard`) | `--min-magnitude` |
+| NASA FIRMS | Incendi attivi | `events` (`origin=firms`, `event_type=hazard`) | richiede `FIRMS_MAP_KEY` |
+
+Tutti gli ingestor valorizzano `origin`. Comtrade salva i **valori numerici** dei
+flussi (USD, kg) in `comtrade_flows`, oltre al documento sintetico.
+
+**Ancora da agganciare:** IODA / Cloudflare Radar (blackout internet), yfinance
+(prezzi EOD per il paper trading).
 
 ---
 
@@ -491,7 +514,7 @@ INGEST → EMBED → EXTRACT → CLUSTER → BRIEF
 
 | Fase | Funzione | Stato | Descrizione |
 |---|---|---|---|
-| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 49 fonti |
+| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 49 fonti (45 attive) |
 | `EMBED` | `_phase_embed` | ✅ | Embedding e5-small + dedup semantica KNN |
 | `EXTRACT` | `_phase_extract` | ⬜ stub | NER, geocoding, entity linking (Qwen3 4B) |
 | `CLUSTER` | `_phase_cluster` | ✅ | Union-find clustering → eventi |
@@ -520,7 +543,7 @@ pathos
 │   └── info            Mostra conteggi per tabella
 ├── sources
 │   ├── list            Lista fonti configurate
-│   └── seed            Inserisce le 49 fonti predefinite (7 blocchi)
+│   └── seed            Inserisce le 49 fonti (45 attive) predefinite (7 blocchi)
 ├── ingest
 │   ├── gdelt           Ciclo incrementale GDELT (ultimi N giorni)
 │   ├── gdelt-history   Bootstrap storico GDELT (range date)
@@ -658,7 +681,7 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **0** | SQLite schema + sqlite-vec | ✅ |
 | **0** | Ciclo orchestrator (struttura) | ✅ |
 | **1** | GDELT 2.0 ingestor (incrementale + bootstrap) | ✅ |
-| **1** | RSS multi-blocco (49 fonti, 7 blocchi, 6 lingue) | ✅ |
+| **1** | RSS multi-blocco (49 fonti (45 attive), 7 blocchi, 6 lingue) | ✅ |
 | **1** | PortWatch + Comtrade semiconduttori | ⬜ |
 | **1** | USGS + NASA FIRMS + IODA | ⬜ |
 | **1** | Storicizzazione Parquet | ⬜ |
