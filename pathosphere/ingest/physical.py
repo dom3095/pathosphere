@@ -143,9 +143,9 @@ def ingest_usgs(
             )
             conn.execute(
                 """INSERT INTO events
-                   (title, summary, first_seen, last_seen, event_type,
+                   (title, summary, first_seen, last_seen, event_type, origin,
                     severity, location_name, lat, lon)
-                   VALUES (?, ?, ?, ?, 'hazard', ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, 'hazard', 'usgs', ?, ?, ?, ?)""",
                 (title, summary, iso_time, iso_time,
                  _quake_severity(mag), place, lat, lon),
             )
@@ -236,9 +236,9 @@ def ingest_firms(
             with conn:
                 conn.execute(
                     """INSERT INTO events
-                       (title, summary, first_seen, last_seen, event_type,
+                       (title, summary, first_seen, last_seen, event_type, origin,
                         severity, location_name, lat, lon)
-                       VALUES (?, ?, ?, ?, 'hazard', ?, ?, ?, ?)""",
+                       VALUES (?, ?, ?, ?, 'hazard', 'firms', ?, ?, ?, ?)""",
                     (title, summary, today, today, severity, name, lat, lon),
                 )
             result.events_created += 1

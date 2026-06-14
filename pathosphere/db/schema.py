@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE TABLE IF NOT EXISTS raw_documents (
     id              INTEGER PRIMARY KEY,
     source_id       INTEGER REFERENCES sources(id),
+    origin          TEXT,                       -- ingestor: gdelt|rss|comtrade|portwatch|usgs|firms
     url             TEXT    UNIQUE,
     title           TEXT,
     body            TEXT,
@@ -76,6 +77,7 @@ CREATE TABLE IF NOT EXISTS events (
     first_seen      TEXT    NOT NULL,
     last_seen       TEXT    NOT NULL,
     event_type      TEXT,                       -- conflict, epidemic, trade, infrastructure, political, other
+    origin          TEXT,                       -- ingestor: gdelt|rss|comtrade|portwatch|usgs|firms
     severity        INTEGER,                    -- 1-5
     location_name   TEXT,
     lat             REAL,
@@ -91,6 +93,31 @@ CREATE TABLE IF NOT EXISTS event_documents (
     document_id     INTEGER REFERENCES raw_documents(id) ON DELETE CASCADE,
     PRIMARY KEY (event_id, document_id)
 );
+
+-- ──────────────────────────────────────────────
+-- GDELT EVENT DETAIL (one row per GDELT GlobalEventID)
+-- ──────────────────────────────────────────────
+-- Full numeric fidelity per raw GDELT row, linked to our coarse 5-tuple
+-- `events` cluster and to the source document. Goldstein/tone/mention signals
+-- live here at GlobalEventID granularity and can be aggregated up to events.
+CREATE TABLE IF NOT EXISTS gdelt_events (
+    global_event_id INTEGER PRIMARY KEY,         -- GDELT GlobalEventID (unique per row)
+    event_id        INTEGER REFERENCES events(id) ON DELETE CASCADE,
+    document_id     INTEGER REFERENCES raw_documents(id) ON DELETE CASCADE,
+    sqldate         TEXT,                         -- raw SQLDATE (unreliable; kept for audit)
+    date_added      TEXT,                         -- DATEADDED → ISO (canonical observation date)
+    event_code      TEXT,                         -- full CAMEO EventCode
+    event_root_code TEXT,                         -- CAMEO root (maps to events.event_type)
+    quad_class      INTEGER,                      -- 1 verbal-coop, 2 material-coop, 3 verbal-conflict, 4 material-conflict
+    goldstein       REAL,                         -- -10..+10 theoretical impact
+    avg_tone        REAL,                         -- average article tone
+    num_mentions    INTEGER,
+    num_sources     INTEGER,
+    num_articles    INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_gdelt_ev_event ON gdelt_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_gdelt_ev_date  ON gdelt_events(date_added);
 
 -- Narrative divergence per event (comparison across geopolitical blocks)
 CREATE TABLE IF NOT EXISTS narrative_divergences (
@@ -175,6 +202,29 @@ CREATE TABLE IF NOT EXISTS chokepoint_metrics (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chokepoint_date ON chokepoint_metrics(portid, date);
+
+-- ──────────────────────────────────────────────
+-- COMTRADE (monthly trade-flow numeric detail)
+-- ──────────────────────────────────────────────
+-- Numeric trade values per (reporter, partner, commodity, flow, period),
+-- alongside the synthetic raw_document. Keyed by document_id so each flow row
+-- ties back to its document; period is YYYYMM.
+CREATE TABLE IF NOT EXISTS comtrade_flows (
+    id              INTEGER PRIMARY KEY,
+    document_id     INTEGER REFERENCES raw_documents(id) ON DELETE CASCADE,
+    reporter_code   INTEGER,                      -- ISO numeric reporter
+    reporter_iso    TEXT,
+    partner_code    INTEGER,                      -- 0 = World
+    cmd_code        TEXT,                         -- HS code (8541/8542/8486)
+    flow_code       TEXT,                         -- M import / X export
+    period          TEXT,                         -- YYYYMM
+    primary_value   REAL,                         -- trade value (USD)
+    net_weight      REAL,                         -- kg, when present
+    UNIQUE (reporter_code, cmd_code, flow_code, period, partner_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_comtrade_period ON comtrade_flows(period);
+CREATE INDEX IF NOT EXISTS idx_comtrade_cmd    ON comtrade_flows(cmd_code, flow_code);
 
 -- ──────────────────────────────────────────────
 -- WATCHLIST (observable indicators per scenario)
@@ -293,6 +343,8 @@ _MIGRATIONS = [
     "ALTER TABLE entities ADD COLUMN wikidata_checked INTEGER NOT NULL DEFAULT 0",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_entity_name_type ON entities(name, entity_type)",
     "CREATE INDEX IF NOT EXISTS idx_raw_doc_ner ON raw_documents(ner_done)",
+    "ALTER TABLE raw_documents ADD COLUMN origin TEXT",
+    "ALTER TABLE events ADD COLUMN origin TEXT",
 ]
 
 
@@ -321,6 +373,11 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
 
 def init_db(db_path: Path) -> None:
     conn = get_connection(db_path)
+    # Pre-migrate so column-adding ALTERs land before DDL indexes that
+    # reference the new columns (e.g. idx_raw_doc_dedup on is_duplicate).
+    # On a fresh DB these ALTERs no-op (tables absent) and DDL creates
+    # everything; the post-DDL pass then adds migration-only indexes.
+    migrate_db(conn)
     with conn:
         conn.executescript(DDL)
         conn.executescript(SQLITE_VEC_VIRTUAL)

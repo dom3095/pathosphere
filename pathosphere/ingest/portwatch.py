@@ -29,8 +29,10 @@ FEATURESERVER_URL = (
     "Daily_Chokepoints_Data/FeatureServer/0/query"
 )
 
-# Strategic chokepoints for the geopolitical/semiconductor focus. portid → name
-# is stable upstream; portname from the API overrides this on store.
+# All 28 chokepoints published by IMF PortWatch. portid → name is stable
+# upstream; portname from the API overrides this on store. The full set is
+# cheap to fetch; the z-score anomaly detection downstream decides what
+# surfaces as an event ("the LLM sees only the best").
 STRATEGIC_CHOKEPOINTS: dict[str, str] = {
     "chokepoint1": "Suez Canal",
     "chokepoint2": "Panama Canal",
@@ -38,7 +40,28 @@ STRATEGIC_CHOKEPOINTS: dict[str, str] = {
     "chokepoint4": "Bab el-Mandeb Strait",
     "chokepoint5": "Malacca Strait",
     "chokepoint6": "Strait of Hormuz",
+    "chokepoint7": "Cape of Good Hope",
+    "chokepoint8": "Gibraltar Strait",
+    "chokepoint9": "Dover Strait",
+    "chokepoint10": "Oresund Strait",
     "chokepoint11": "Taiwan Strait",
+    "chokepoint12": "Korea Strait",
+    "chokepoint13": "Tsugaru Strait",
+    "chokepoint14": "Luzon Strait",
+    "chokepoint15": "Lombok Strait",
+    "chokepoint16": "Ombai Strait",
+    "chokepoint17": "Bohai Strait",
+    "chokepoint18": "Torres Strait",
+    "chokepoint19": "Sunda Strait",
+    "chokepoint20": "Makassar Strait",
+    "chokepoint21": "Magellan Strait",
+    "chokepoint22": "Yucatan Channel",
+    "chokepoint23": "Windward Passage",
+    "chokepoint24": "Mona Passage",
+    "chokepoint25": "Balabac Strait",
+    "chokepoint26": "Bering Strait",
+    "chokepoint27": "Mindoro Strait",
+    "chokepoint28": "Kerch Strait",
 }
 
 _OUT_FIELDS = (
@@ -49,6 +72,8 @@ DEFAULT_DAYS = 90
 DEFAULT_BASELINE_DAYS = 30
 DEFAULT_Z_THRESHOLD = 2.0
 MIN_BASELINE_POINTS = 10
+PAGE_SIZE = 1000          # ArcGIS FeatureServer maxRecordCount
+FULL_HISTORY = 10**9      # sentinel for --full: fetch every record
 
 
 @dataclass
@@ -75,23 +100,37 @@ def _iso_date(value) -> str | None:
 def _fetch_chokepoint(
     client: httpx.Client, portid: str, days: int
 ) -> list[dict]:
-    """Most-recent `days` daily records for one chokepoint, newest first."""
-    resp = client.get(
-        FEATURESERVER_URL,
-        params={
-            "where": f"portid='{portid}'",
-            "outFields": _OUT_FIELDS,
-            "orderByFields": "date DESC",
-            "resultRecordCount": days,
-            "f": "json",
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    payload = resp.json()
-    if "error" in payload:
-        raise RuntimeError(f"ArcGIS error: {payload['error']}")
-    return [f["attributes"] for f in payload.get("features", [])]
+    """Most-recent `days` daily records for one chokepoint, newest first.
+
+    Pages through ArcGIS's 1000-record cap via resultOffset, so `days` can
+    exceed it (use FULL_HISTORY to pull the whole timeseries back to 2019).
+    """
+    collected: list[dict] = []
+    offset = 0
+    while len(collected) < days:
+        page = min(PAGE_SIZE, days - len(collected))
+        resp = client.get(
+            FEATURESERVER_URL,
+            params={
+                "where": f"portid='{portid}'",
+                "outFields": _OUT_FIELDS,
+                "orderByFields": "date DESC",
+                "resultOffset": offset,
+                "resultRecordCount": page,
+                "f": "json",
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if "error" in payload:
+            raise RuntimeError(f"ArcGIS error: {payload['error']}")
+        rows = [f["attributes"] for f in payload.get("features", [])]
+        collected.extend(rows)
+        if len(rows) < page:
+            break  # server exhausted — no more records
+        offset += len(rows)
+    return collected
 
 
 def _upsert_metrics(conn, portid: str, rows: list[dict]) -> int:
@@ -187,9 +226,9 @@ def _detect_anomaly(
     with conn:
         conn.execute(
             """INSERT INTO events
-               (title, summary, first_seen, last_seen, event_type,
+               (title, summary, first_seen, last_seen, event_type, origin,
                 severity, location_name)
-               VALUES (?, ?, ?, ?, 'infrastructure', ?, ?)""",
+               VALUES (?, ?, ?, ?, 'infrastructure', 'portwatch', ?, ?)""",
             (title, summary, date, date, severity, portname),
         )
     logger.info(f"PortWatch anomaly: {summary}")

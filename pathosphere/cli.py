@@ -442,6 +442,9 @@ def ingest_rss(max_age_days: int, source_ids: str | None) -> None:
 @ingest.command("portwatch")
 @click.option("--days", default=90, show_default=True,
               help="Daily records to fetch per chokepoint.")
+@click.option("--full", is_flag=True, default=False,
+              help="Backfill the full history (~2019→now), paginated. "
+                   "Overrides --days.")
 @click.option("--baseline-days", default=30, show_default=True,
               help="Trailing window for the anomaly baseline.")
 @click.option("--z-threshold", default=2.0, show_default=True,
@@ -449,11 +452,15 @@ def ingest_rss(max_age_days: int, source_ids: str | None) -> None:
 @click.option("--portids", default=None,
               help="Comma-separated chokepoint ids (default: strategic set).")
 def ingest_portwatch(
-    days: int, baseline_days: int, z_threshold: float, portids: str | None
+    days: int, full: bool, baseline_days: int, z_threshold: float,
+    portids: str | None
 ) -> None:
     """Fetch IMF PortWatch chokepoint transits; flag anomalies as events."""
     from pathosphere.db.schema import get_connection
-    from pathosphere.ingest.portwatch import ingest_portwatch as _ingest_portwatch
+    from pathosphere.ingest.portwatch import (
+        FULL_HISTORY,
+        ingest_portwatch as _ingest_portwatch,
+    )
 
     settings = get_settings()
     _require_db(settings)
@@ -464,7 +471,7 @@ def ingest_portwatch(
     result = _ingest_portwatch(
         conn,
         portids=ids,
-        days=days,
+        days=FULL_HISTORY if full else days,
         baseline_days=baseline_days,
         z_threshold=z_threshold,
     )
@@ -483,29 +490,47 @@ def ingest_portwatch(
 @ingest.command("comtrade")
 @click.option("--periods", default=None,
               help="Comma-separated YYYYMM (default: 3 recent months, ~2mo lag).")
+@click.option("--start", default=None,
+              help="Backfill from this YYYYMM to most recent (e.g. 201801). "
+                   "Overrides --periods.")
+@click.option("--end", default=None,
+              help="End YYYYMM for --start backfill (default: most recent).")
+@click.option("--delay", default=None, type=float,
+              help="Seconds between period calls (default: 6; raise if 429).")
 @click.option("--reporters", default=None,
               help="Comma-separated ISO numeric reporter codes (default: pilot set).")
-def ingest_comtrade(periods: str | None, reporters: str | None) -> None:
+def ingest_comtrade(periods: str | None, start: str | None, end: str | None,
+                    delay: float | None, reporters: str | None) -> None:
     """Fetch monthly semiconductor trade flows (HS 8541/8542/8486) as documents."""
     from pathosphere.db.schema import get_connection
-    from pathosphere.ingest.comtrade import ingest_comtrade as _ingest_comtrade
+    from pathosphere.ingest.comtrade import (
+        DEFAULT_REQUEST_DELAY,
+        ingest_comtrade as _ingest_comtrade,
+        month_range,
+    )
 
     settings = get_settings()
     _require_db(settings)
 
-    p = [x.strip() for x in periods.split(",")] if periods else None
+    if start:
+        p = month_range(start, end)
+    elif periods:
+        p = [x.strip() for x in periods.split(",")]
+    else:
+        p = None
     r = [int(x.strip()) for x in reporters.split(",")] if reporters else None
+    req_delay = delay if delay is not None else DEFAULT_REQUEST_DELAY
 
     conn = get_connection(settings.db_path)
-    result = _ingest_comtrade(conn, periods=p, reporters=r)
+    result = _ingest_comtrade(conn, periods=p, reporters=r, request_delay=req_delay)
     conn.close()
 
     click.echo(
         f"\nComtrade result:\n"
         f"  Periods: {', '.join(result.periods)}\n"
         f"  Records: {result.records_fetched} fetched\n"
-        f"  Docs:    +{result.docs_inserted} inserted | {result.docs_skipped} skipped | "
-        f"{len(result.errors)} errors"
+        f"  Docs:    +{result.docs_inserted} inserted | {result.docs_skipped} skipped\n"
+        f"  Flows:   {result.flows_upserted} upserted | {len(result.errors)} errors"
     )
     if result.errors:
         click.echo(f"\nFirst errors: {result.errors[:5]}")

@@ -214,6 +214,18 @@ def _sqldate_to_iso(sqldate: str) -> str:
     return sqldate
 
 
+def _event_date_iso(row: dict) -> str:
+    """Canonical GDELT event date = DATEADDED (the moment GDELT observed the
+    event). SQLDATE is unreliable — it carries multiple date bugs (year-rollover
+    −100, e.g. 19200101 for 20200101; and off-by-one-year stamps) — so it is used
+    only as a fallback when DATEADDED is missing. Using the observation date also
+    keeps the pipeline no-lookahead: events are dated to when we could know them."""
+    dateadded = row.get("DATEADDED", "")[:8]   # YYYYMMDDHHMMSS → YYYYMMDD
+    if len(dateadded) == 8 and dateadded.isdigit():
+        return _sqldate_to_iso(dateadded)
+    return _sqldate_to_iso(row.get("SQLDATE", ""))
+
+
 def build_lookup_caches(conn: "sqlite3.Connection") -> tuple[dict, dict]:  # type: ignore[name-defined]
     """
     Pre-load known URLs and event keys into dicts for O(1) in-memory dedup.
@@ -265,12 +277,12 @@ def store_rows(
             url_hash = hashlib.sha256(source_url.encode()).hexdigest()
             cur = conn.execute(
                 """INSERT INTO raw_documents
-                   (url, title, published_at, content_hash, embedded)
-                   VALUES (?, ?, ?, ?, 0)""",
+                   (origin, url, title, published_at, content_hash, embedded)
+                   VALUES ('gdelt', ?, ?, ?, ?, 0)""",
                 (
                     source_url,
                     f"GDELT: {row.get('Actor1Name','')} → {row.get('Actor2Name','')} [{row.get('EventCode','')}]",
-                    _sqldate_to_iso(row.get("SQLDATE", "")),
+                    _event_date_iso(row),
                     url_hash,
                 ),
             )
@@ -306,12 +318,12 @@ def store_rows(
             lat = _safe_float(lat_str) if lat_str else None
             lon = _safe_float(lon_str) if lon_str else None
 
-            iso_date = _sqldate_to_iso(row.get("SQLDATE", ""))
+            iso_date = _event_date_iso(row)
             cur = conn.execute(
                 """INSERT INTO events
-                   (title, summary, first_seen, last_seen, event_type,
+                   (title, summary, first_seen, last_seen, event_type, origin,
                     severity, location_name, lat, lon)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, 'gdelt', ?, ?, ?, ?)""",
                 (
                     event_key_str,
                     (
@@ -339,6 +351,32 @@ def store_rows(
             "INSERT OR IGNORE INTO event_documents (event_id, document_id) VALUES (?, ?)",
             (event_id, doc_id),
         )
+
+        # ── numeric detail, one row per GDELT GlobalEventID ────────────────
+        gid = _safe_int(row.get("GlobalEventID", ""), 0)
+        if gid:
+            conn.execute(
+                """INSERT OR IGNORE INTO gdelt_events
+                   (global_event_id, event_id, document_id, sqldate, date_added,
+                    event_code, event_root_code, quad_class, goldstein, avg_tone,
+                    num_mentions, num_sources, num_articles)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    gid,
+                    event_id,
+                    doc_id,
+                    row.get("SQLDATE") or None,
+                    _event_date_iso(row),
+                    row.get("EventCode") or None,
+                    row.get("EventRootCode") or None,
+                    _safe_int(row.get("QuadClass", ""), 0) or None,
+                    _safe_float(row.get("GoldsteinScale", "")),
+                    _safe_float(row.get("AvgTone", "")),
+                    _safe_int(row.get("NumMentions", ""), 0),
+                    _safe_int(row.get("NumSources", ""), 0),
+                    _safe_int(row.get("NumArticles", ""), 0),
+                ),
+            )
 
     return events_ins, docs_ins
 
