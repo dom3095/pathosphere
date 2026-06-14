@@ -8,6 +8,7 @@ Tables updated: raw_documents
 """
 
 import hashlib
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from time import struct_time
@@ -15,6 +16,29 @@ from time import struct_time
 import feedparser
 import httpx
 from loguru import logger
+
+from pathosphere.config import get_settings
+from pathosphere.ingest.tor_proxy import tor_socks_proxy
+
+# Browser-like headers: several feeds (Arab News, …) return HTTP 403 unless the
+# full set (Accept-Language + Sec-Fetch-* + Upgrade-Insecure-Requests) is sent —
+# a minimal UA alone is not enough past Cloudflare-style bot checks.
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+# Sources unreachable directly (geo-block / sanctions) routed via the Tor SOCKS
+# proxy. RT is EU-sanctioned → connection refused at the ISP level from here.
+TOR_SOURCES: set[str] = {"RT"}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -92,92 +116,120 @@ def ingest_rss(
 
     logger.info(f"RSS: fetching {len(sources)} sources (max_age_days={max_age_days})")
 
-    with httpx.Client(
-        headers={"User-Agent": "pathosphere/0.1 OSINT research"},
-        timeout=20,
-        follow_redirects=True,
+    settings = get_settings()
+    # Only stand up Tor (reuse a running proxy or spawn an ephemeral daemon) if
+    # this run actually includes a geo-blocked source.
+    needs_tor = any(s["name"] in TOR_SOURCES for s in sources)
+    tor_cm = (
+        tor_socks_proxy(settings.tor_socks_proxy) if needs_tor else nullcontext(None)
+    )
+
+    with tor_cm as tor_proxy, httpx.Client(
+        headers=_HEADERS, timeout=20, follow_redirects=True,
     ) as client:
-        for source in sources:
-            source_id: int = source["id"]
-            name: str = source["name"]
-            url: str = source["url"]
-            language: str | None = source["language"]
+        tor_client = (
+            httpx.Client(headers=_HEADERS, timeout=40, follow_redirects=True,
+                         proxy=tor_proxy)
+            if tor_proxy else None
+        )
 
-            result.sources_attempted += 1
+        try:
+            for source in sources:
+                source_id: int = source["id"]
+                name: str = source["name"]
+                url: str = source["url"]
+                language: str | None = source["language"]
 
-            try:
-                resp = client.get(url)
-                resp.raise_for_status()
-                feed = feedparser.parse(resp.content)
-            except httpx.HTTPStatusError as exc:
-                result.sources_error += 1
-                msg = f"{name}: HTTP {exc.response.status_code}"
-                result.errors.append(msg)
-                logger.warning(f"RSS {msg}")
-                continue
-            except Exception as exc:
-                result.sources_error += 1
-                msg = f"{name}: {exc}"
-                result.errors.append(msg)
-                logger.warning(f"RSS fetch error {msg}")
-                continue
+                result.sources_attempted += 1
 
-            if not feed.entries:
-                result.sources_error += 1
-                msg = f"{name}: empty feed (bozo={feed.bozo})"
-                result.errors.append(msg)
-                logger.warning(f"RSS {msg}")
-                continue
-
-            inserted = skipped = 0
-
-            with conn:
-                for entry in feed.entries:
-                    link: str | None = getattr(entry, "link", None)
-                    if not link:
-                        skipped += 1
+                # Geo-blocked feeds (e.g. RT) go through Tor; skip if unavailable.
+                if name in TOR_SOURCES:
+                    if tor_client is None:
+                        result.sources_error += 1
+                        msg = f"{name}: Tor unavailable, skipped"
+                        result.errors.append(msg)
+                        logger.warning(f"RSS {msg}")
                         continue
+                    fetch_client = tor_client
+                else:
+                    fetch_client = client
 
-                    title: str | None = getattr(entry, "title", None) or None
-                    body: str = _extract_body(entry)
-                    published_at: str | None = _struct_to_iso(
-                        getattr(entry, "published_parsed", None)
-                        or getattr(entry, "updated_parsed", None)
-                    )
+                try:
+                    resp = fetch_client.get(url)
+                    resp.raise_for_status()
+                    feed = feedparser.parse(resp.content)
+                except httpx.HTTPStatusError as exc:
+                    result.sources_error += 1
+                    msg = f"{name}: HTTP {exc.response.status_code}"
+                    result.errors.append(msg)
+                    logger.warning(f"RSS {msg}")
+                    continue
+                except Exception as exc:
+                    result.sources_error += 1
+                    msg = f"{name}: {exc}"
+                    result.errors.append(msg)
+                    logger.warning(f"RSS fetch error {msg}")
+                    continue
 
-                    if cutoff and published_at:
-                        try:
-                            pub_dt = datetime.fromisoformat(published_at)
-                            if pub_dt.tzinfo is None:
-                                pub_dt = pub_dt.replace(tzinfo=timezone.utc)
-                            if pub_dt < cutoff:
-                                skipped += 1
-                                continue
-                        except ValueError:
-                            pass
+                if not feed.entries:
+                    result.sources_error += 1
+                    msg = f"{name}: empty feed (bozo={feed.bozo})"
+                    result.errors.append(msg)
+                    logger.warning(f"RSS {msg}")
+                    continue
 
-                    content_hash = (
-                        hashlib.sha256(body.encode()).hexdigest() if body else None
-                    )
+                inserted = skipped = 0
 
-                    conn.execute(
-                        """INSERT OR IGNORE INTO raw_documents
-                           (source_id, url, title, body, published_at, language,
-                            content_hash, embedded)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
-                        (source_id, link, title, body or None,
-                         published_at, language, content_hash),
-                    )
-                    changed = conn.execute("SELECT changes()").fetchone()[0]
-                    if changed:
-                        inserted += 1
-                    else:
-                        skipped += 1
+                with conn:
+                    for entry in feed.entries:
+                        link: str | None = getattr(entry, "link", None)
+                        if not link:
+                            skipped += 1
+                            continue
 
-            result.sources_ok += 1
-            result.docs_inserted += inserted
-            result.docs_skipped += skipped
-            logger.info(f"RSS {name}: +{inserted} inserted ({skipped} skipped)")
+                        title: str | None = getattr(entry, "title", None) or None
+                        body: str = _extract_body(entry)
+                        published_at: str | None = _struct_to_iso(
+                            getattr(entry, "published_parsed", None)
+                            or getattr(entry, "updated_parsed", None)
+                        )
+
+                        if cutoff and published_at:
+                            try:
+                                pub_dt = datetime.fromisoformat(published_at)
+                                if pub_dt.tzinfo is None:
+                                    pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                                if pub_dt < cutoff:
+                                    skipped += 1
+                                    continue
+                            except ValueError:
+                                pass
+
+                        content_hash = (
+                            hashlib.sha256(body.encode()).hexdigest() if body else None
+                        )
+
+                        conn.execute(
+                            """INSERT OR IGNORE INTO raw_documents
+                               (origin, source_id, url, title, body, published_at, language,
+                                content_hash, embedded)
+                               VALUES ('rss', ?, ?, ?, ?, ?, ?, ?, 0)""",
+                            (source_id, link, title, body or None,
+                             published_at, language, content_hash),
+                        )
+                        changed = conn.execute("SELECT changes()").fetchone()[0]
+                        if changed:
+                            inserted += 1
+                        else:
+                            skipped += 1
+
+                result.sources_ok += 1
+                result.docs_inserted += inserted
+                result.docs_skipped += skipped
+                logger.info(f"RSS {name}: +{inserted} inserted ({skipped} skipped)")
+        finally:
+            if tor_client is not None:
+                tor_client.close()
 
     logger.info(
         f"RSS complete: {result.sources_ok}/{result.sources_attempted} sources ok | "

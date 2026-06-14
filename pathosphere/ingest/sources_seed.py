@@ -9,12 +9,13 @@ active:        1=fetch in RSS cycle  0=disabled (no feed or unreliable)
 
 SOURCES: list[tuple] = [
     # ── Wire agencies ─────────────────────────────────────────────────────────
-    (
-        "Reuters",
-        "https://feeds.reuters.com/reuters/worldNews",
-        "GB", "western", "independent", 0, "en", 1,
-        "Legacy URL; Reuters dropped public RSS ~2020 but this still circulates",
-    ),
+    # DISABLED 2026-06-14: hostname no longer resolves; Reuters dropped public RSS.
+    # (
+    #     "Reuters",
+    #     "https://feeds.reuters.com/reuters/worldNews",
+    #     "GB", "western", "independent", 0, "en", 1,
+    #     "Legacy URL; Reuters dropped public RSS ~2020 but this still circulates",
+    # ),
     (
         "AP News",
         None,
@@ -39,36 +40,43 @@ SOURCES: list[tuple] = [
         "DE", "western", "independent", 0, "de", 0,
         "No public RSS; paid wire only",
     ),
-    (
-        "EFE",
-        "https://www.efe.com/efe/english/4/rss",
-        "ES", "western", "state-affiliated", 1, "es", 1,
-        None,
-    ),
-    (
-        "Kyodo News",
-        "https://english.kyodonews.net/rss/all.xml",
-        "JP", "western", "independent", 0, "en", 1,
-        None,
-    ),
-    (
-        "Xinhua",
-        "http://www.xinhuanet.com/english/rss/worldrss.xml",
-        "CN", "china", "state", 3, "en", 1,
-        "HTTP only (no HTTPS on this domain)",
-    ),
+    # DISABLED 2026-06-14: feed returns HTTP 500 / empty; no working EFE feed found.
+    # (
+    #     "EFE",
+    #     "https://www.efe.com/efe/english/4/rss",
+    #     "ES", "western", "state-affiliated", 1, "es", 1,
+    #     None,
+    # ),
+    # DISABLED 2026-06-14: RSS 404 on all known paths; no working Kyodo feed found.
+    # (
+    #     "Kyodo News",
+    #     "https://english.kyodonews.net/rss/all.xml",
+    #     "JP", "western", "independent", 0, "en", 1,
+    #     None,
+    # ),
+    # DISABLED 2026-06-14: all Xinhua RSS feeds frozen at 2018 (worldrss.xml and
+    # english.news.cn identical, stale). Xinhua abandoned RSS; no working feed.
+    # State-China voice retained via Global Times. (See China Digital Times /
+    # TechNode / SCMP for non-state China coverage.)
+    # (
+    #     "Xinhua",
+    #     "http://www.xinhuanet.com/english/rss/worldrss.xml",
+    #     "CN", "china", "state", 3, "en", 1,
+    #     "HTTP only (no HTTPS on this domain)",
+    # ),
     (
         "TASS",
         "https://tass.com/rss/v2.xml",
         "RU", "russia", "state", 3, "en", 1,
         None,
     ),
-    (
-        "ANI",
-        "https://www.aninews.in/rss-feed/world/",
-        "IN", "india", "independent", 0, "en", 1,
-        None,
-    ),
+    # DISABLED 2026-06-14: RSS 404 on all known paths; no working ANI feed found.
+    # (
+    #     "ANI",
+    #     "https://www.aninews.in/rss-feed/world/",
+    #     "IN", "india", "independent", 0, "en", 1,
+    #     None,
+    # ),
     (
         "APO Group",
         None,
@@ -142,12 +150,13 @@ SOURCES: list[tuple] = [
         "TW", "western", "independent", 0, "en", 1,
         None,
     ),
-    (
-        "Focus Taiwan (CNA)",
-        "https://focustaiwan.tw/rss",
-        "TW", "western", "state-affiliated", 1, "en", 1,
-        "Central News Agency Taiwan; feed URL uncertain, verify",
-    ),
+    # DISABLED 2026-06-14: no working RSS found (404 on /rss, /feed, /rss/news.xml).
+    # (
+    #     "Focus Taiwan (CNA)",
+    #     "https://focustaiwan.tw/rss",
+    #     "TW", "western", "state-affiliated", 1, "en", 1,
+    #     "Central News Agency Taiwan; feed URL uncertain, verify",
+    # ),
     (
         "DIGITIMES",
         "https://www.digitimes.com/rss/daily.xml",
@@ -178,7 +187,7 @@ SOURCES: list[tuple] = [
         "RT",
         "https://www.rt.com/rss/news/",
         "RU", "russia", "state", 3, "en", 1,
-        None,
+        "EU-sanctioned: refused directly, fetched via Tor (TOR_SOURCES in rss.py)",
     ),
     # ── Arab / Middle East ────────────────────────────────────────────────────
     (
@@ -189,21 +198,21 @@ SOURCES: list[tuple] = [
     ),
     (
         "Anadolu Agency",
-        "http://www.aa.com.tr/rss/ajansgunceleng.xml",
+        "https://www.aa.com.tr/en/rss/default?cat=world",
         "TR", "arab", "state-affiliated", 2, "en", 1,
-        "HTTP only",
+        "URL updated 2026-06-14 (old ajansgunceleng.xml dead)",
     ),
     (
         "Press TV",
-        "https://www.presstv.ir/rss/rss.xml",
+        "https://www.presstv.ir/rss.xml",
         "IR", "arab", "state", 3, "en", 1,
-        None,
+        "URL updated 2026-06-14 (old /rss/rss.xml was 404)",
     ),
     (
         "Arab News",
-        "https://www.arabnews.com/cat/3/rss.xml",
+        "https://www.arabnews.com/rss.xml",
         "SA", "arab", "state-affiliated", 2, "en", 1,
-        "Saudi government-aligned; Gulf perspective",
+        "Saudi government-aligned; needs browser UA (else 403); URL updated 2026-06-14",
     ),
     # ── India ─────────────────────────────────────────────────────────────────
     (
@@ -244,12 +253,13 @@ SOURCES: list[tuple] = [
         "TN", "africa", "independent", 0, "fr", 1,
         "Pan-African; some content paywalled; may return 403",
     ),
-    (
-        "The East African",
-        "https://www.theeastafrican.co.ke/tea/news/feed",
-        "KE", "africa", "independent", 0, "en", 1,
-        "Nation Media Group; may block direct fetch",
-    ),
+    # DISABLED 2026-06-14: HTTP 403/404 on all known paths; Nation Media blocks fetch.
+    # (
+    #     "The East African",
+    #     "https://www.theeastafrican.co.ke/tea/news/feed",
+    #     "KE", "africa", "independent", 0, "en", 1,
+    #     "Nation Media Group; may block direct fetch",
+    # ),
     (
         "Premium Times",
         "https://www.premiumtimesng.com/feed",
@@ -288,12 +298,13 @@ SOURCES: list[tuple] = [
         "Pakistan; /rss/1/2 = world news",
     ),
     # ── South Caucasus ────────────────────────────────────────────────────────
-    (
-        "Armenpress",
-        "https://armenpress.am/eng/rss/",
-        "AM", "other", "state-affiliated", 2, "en", 1,
-        "Returns 403 on some requests; verify manually",
-    ),
+    # DISABLED 2026-06-14: HTTP 403 (Cloudflare bot block) even with browser UA.
+    # (
+    #     "Armenpress",
+    #     "https://armenpress.am/eng/rss/",
+    #     "AM", "other", "state-affiliated", 2, "en", 1,
+    #     "Returns 403 on some requests; verify manually",
+    # ),
     (
         "EVN Report",
         "https://evnreport.com/feed",
@@ -311,6 +322,55 @@ SOURCES: list[tuple] = [
         "https://www.azernews.az/feed.php",
         "AZ", "other", "state-affiliated", 2, "en", 1,
         None,
+    ),
+    # ── Added 2026-06-14 (verified via rsscatalog.com): plurality per bloc ─────
+    (
+        "The Diplomat",
+        "https://thediplomat.com/feed/",
+        "US", "western", "independent", 0, "en", 1,
+        "Asia-Pacific geopolitics analysis; relevant to Taiwan/semiconductor pilot",
+    ),
+    (
+        "ChinaFile",
+        "https://feeds.feedburner.com/chinafile/All",
+        "US", "western", "independent", 0, "en", 1,
+        "Asia Society; long-form China analysis",
+    ),
+    (
+        "China Digital Times",
+        "https://chinadigitaltimes.net/feed/",
+        "US", "china", "independent", 0, "en", 1,
+        "US-based, critical of Beijing; censorship watch (non-state China voice)",
+    ),
+    (
+        "TechNode",
+        "https://technode.com/feed/",
+        "CN", "china", "independent", 0, "en", 1,
+        "Shanghai-based tech media; China semiconductors/hardware",
+    ),
+    (
+        "The Moscow Times",
+        "https://www.themoscowtimes.com/rss/news",
+        "RU", "russia", "independent", 0, "en", 1,
+        "In exile (Amsterdam); independent Russian voice vs state TASS/RT",
+    ),
+    (
+        "Russia in Global Affairs",
+        "https://globalaffairs.ru/feed/",
+        "RU", "russia", "establishment", 1, "en", 1,
+        "Russian foreign-policy establishment perspective",
+    ),
+    (
+        "NDTV",
+        "https://feeds.feedburner.com/NDTV-LatestNews",
+        "IN", "india", "independent", 0, "en", 1,
+        "Major Indian broadcaster",
+    ),
+    (
+        "Scroll.in",
+        "https://feeds.feedburner.com/ScrollinArticles.rss",
+        "IN", "india", "independent", 0, "en", 1,
+        "Independent Indian digital news",
     ),
 ]
 
