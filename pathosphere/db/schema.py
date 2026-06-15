@@ -227,6 +227,28 @@ CREATE INDEX IF NOT EXISTS idx_comtrade_period ON comtrade_flows(period);
 CREATE INDEX IF NOT EXISTS idx_comtrade_cmd    ON comtrade_flows(cmd_code, flow_code);
 
 -- ──────────────────────────────────────────────
+-- FIRMS (daily active-fire detections per monitored area)
+-- ──────────────────────────────────────────────
+-- Raw daily detection counts + FRP per chokepoint-aligned area; anomalies vs
+-- trailing baseline are promoted to events (event_type=hazard). Mirrors
+-- chokepoint_metrics: timeseries stays out of the LLM's view, only z-score
+-- anomalies surface. Baseline computed from this table only — no lookahead.
+CREATE TABLE IF NOT EXISTS fire_metrics (
+    area            TEXT    NOT NULL,            -- chokepoint-aligned area name
+    date            TEXT    NOT NULL,            -- ISO YYYY-MM-DD (acq_date)
+    n_detections    INTEGER,
+    frp_sum         REAL,                        -- total fire radiative power (MW)
+    frp_max         REAL,                        -- peak single-pixel FRP (MW)
+    lat             REAL,                        -- detection centroid
+    lon             REAL,
+    source          TEXT,                        -- VIIRS_SNPP_NRT | VIIRS_SNPP_SP | …
+    fetched_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (area, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fire_metrics_date ON fire_metrics(area, date);
+
+-- ──────────────────────────────────────────────
 -- WATCHLIST (observable indicators per scenario)
 -- ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS watchlist_items (
