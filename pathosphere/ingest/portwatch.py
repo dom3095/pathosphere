@@ -17,12 +17,13 @@ the anomaly events surface (principle: "the LLM sees only the best").
 Tables updated: chokepoint_metrics, events
 """
 
-import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 import httpx
 from loguru import logger
+
+from pathosphere.ingest.anomaly import find_anomalies
 
 FEATURESERVER_URL = (
     "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/ArcGIS/rest/services/"
@@ -71,7 +72,6 @@ _OUT_FIELDS = (
 DEFAULT_DAYS = 90
 DEFAULT_BASELINE_DAYS = 30
 DEFAULT_Z_THRESHOLD = 2.0
-MIN_BASELINE_POINTS = 10
 PAGE_SIZE = 1000          # ArcGIS FeatureServer maxRecordCount
 FULL_HISTORY = 10**9      # sentinel for --full: fetch every record
 
@@ -170,6 +170,71 @@ def _upsert_metrics(conn, portid: str, rows: list[dict]) -> int:
     return upserted
 
 
+def _emit_anomalies(
+    conn,
+    portid: str,
+    *,
+    baseline_days: int,
+    z_threshold: float,
+    whole_history: bool,
+) -> int:
+    """Promote transit anomalies vs the trailing baseline to events.
+
+    whole_history=False checks only the latest day (incremental); True sweeps
+    the entire stored timeseries (backfill) so historical anomalies — not just
+    the most recent — become events. Baseline excludes the point itself (no
+    lookahead). Returns the number of events created.
+    """
+    rows = conn.execute(
+        """SELECT date, portname, n_total FROM chokepoint_metrics
+           WHERE portid = ? AND n_total IS NOT NULL
+           ORDER BY date ASC""",
+        (portid,),
+    ).fetchall()
+
+    anomalies = find_anomalies(
+        [dict(r) for r in rows],
+        value_key="n_total",
+        baseline_days=baseline_days,
+        z_threshold=z_threshold,
+        direction="both",
+        whole_history=whole_history,
+    )
+
+    created = 0
+    for a in anomalies:
+        p = a.point
+        portname = p["portname"] or STRATEGIC_CHOKEPOINTS.get(portid, portid)
+        date = p["date"]
+        title = f"{portname} transit anomaly {date}"
+
+        exists = conn.execute(
+            "SELECT 1 FROM events WHERE title = ?", (title,)
+        ).fetchone()
+        if exists:
+            continue
+
+        direction = "drop" if a.z < 0 else "surge"
+        severity = max(1, min(5, round(abs(a.z))))
+        summary = (
+            f"{portname}: {p['n_total']} vessel transits on {date}, "
+            f"{a.pct:+.0f}% vs {baseline_days}d baseline "
+            f"({a.mean:.0f}±{a.stdev:.0f}, z={a.z:+.1f}) — transit {direction}."
+        )
+
+        with conn:
+            conn.execute(
+                """INSERT INTO events
+                   (title, summary, first_seen, last_seen, event_type, origin,
+                    severity, location_name)
+                   VALUES (?, ?, ?, ?, 'infrastructure', 'portwatch', ?, ?)""",
+                (title, summary, date, date, severity, portname),
+            )
+        logger.info(f"PortWatch anomaly: {summary}")
+        created += 1
+    return created
+
+
 def _detect_anomaly(
     conn,
     portid: str,
@@ -177,62 +242,13 @@ def _detect_anomaly(
     baseline_days: int,
     z_threshold: float,
 ) -> int:
-    """Create an event if the latest n_total deviates from the trailing baseline.
-
-    Baseline = the `baseline_days` records immediately preceding the latest
-    one (latest excluded → no lookahead). Returns 1 if an event was created.
-    """
-    rows = conn.execute(
-        """SELECT date, portname, n_total FROM chokepoint_metrics
-           WHERE portid = ? AND n_total IS NOT NULL
-           ORDER BY date DESC
-           LIMIT ?""",
-        (portid, baseline_days + 1),
-    ).fetchall()
-
-    if len(rows) < MIN_BASELINE_POINTS + 1:
-        return 0
-
-    latest = rows[0]
-    baseline = [r["n_total"] for r in rows[1:]]
-    mean = statistics.fmean(baseline)
-    stdev = statistics.stdev(baseline)
-    if stdev == 0:
-        return 0
-
-    z = (latest["n_total"] - mean) / stdev
-    if abs(z) < z_threshold:
-        return 0
-
-    portname = latest["portname"] or STRATEGIC_CHOKEPOINTS.get(portid, portid)
-    date = latest["date"]
-    title = f"{portname} transit anomaly {date}"
-
-    exists = conn.execute(
-        "SELECT 1 FROM events WHERE title = ?", (title,)
-    ).fetchone()
-    if exists:
-        return 0
-
-    pct = (latest["n_total"] - mean) / mean * 100 if mean else 0.0
-    direction = "drop" if z < 0 else "surge"
-    severity = max(1, min(5, round(abs(z))))
-    summary = (
-        f"{portname}: {latest['n_total']} vessel transits on {date}, "
-        f"{pct:+.0f}% vs {baseline_days}d baseline "
-        f"({mean:.0f}±{stdev:.0f}, z={z:+.1f}) — transit {direction}."
+    """Latest-day anomaly check (back-compat wrapper over _emit_anomalies)."""
+    return _emit_anomalies(
+        conn, portid,
+        baseline_days=baseline_days,
+        z_threshold=z_threshold,
+        whole_history=False,
     )
-
-    with conn:
-        conn.execute(
-            """INSERT INTO events
-               (title, summary, first_seen, last_seen, event_type, origin,
-                severity, location_name)
-               VALUES (?, ?, ?, ?, 'infrastructure', 'portwatch', ?, ?)""",
-            (title, summary, date, date, severity, portname),
-        )
-    logger.info(f"PortWatch anomaly: {summary}")
-    return 1
 
 
 def ingest_portwatch(
@@ -242,11 +258,14 @@ def ingest_portwatch(
     days: int = DEFAULT_DAYS,
     baseline_days: int = DEFAULT_BASELINE_DAYS,
     z_threshold: float = DEFAULT_Z_THRESHOLD,
+    backfill_anomalies: bool = False,
     client: httpx.Client | None = None,
 ) -> PortWatchResult:
     """Fetch daily chokepoint transits, upsert timeseries, flag anomalies.
 
     portids: restrict to these chokepoint ids; None = STRATEGIC_CHOKEPOINTS.
+    backfill_anomalies: sweep the whole stored timeseries for anomalies (use
+      with --full); default checks only the latest day (incremental).
     """
     result = PortWatchResult()
     targets = portids or list(STRATEGIC_CHOKEPOINTS)
@@ -274,11 +293,12 @@ def ingest_portwatch(
 
             result.chokepoints_fetched += 1
             result.metrics_upserted += _upsert_metrics(conn, portid, rows)
-            result.events_created += _detect_anomaly(
+            result.events_created += _emit_anomalies(
                 conn,
                 portid,
                 baseline_days=baseline_days,
                 z_threshold=z_threshold,
+                whole_history=backfill_anomalies,
             )
     finally:
         if _own_client:
