@@ -134,7 +134,7 @@ Tutte opzionali — i default funzionano out-of-the-box.
                ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                    Ciclo notturno                            │
-│   INGEST → EMBED → EXTRACT → CLUSTER → BRIEF                │
+│   INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF        │
 │   (sequenziale, riprendibile da qualsiasi fase)              │
 └──────┬──────────┬───────────┬─────────────────────────────────┘
        │          │           │
@@ -171,7 +171,7 @@ pathosphere/
 │   └── schema.py       DDL SQLite + sqlite-vec. get_connection() + init_db() + migrate_db().
 ├── cli.py              Entry point `pathos` (Click). Gruppi: db, sources, ingest, embed, cycle, config.
 ├── cycle/
-│   └── orchestrator.py 5 fasi sequenziali riprendibili. EMBED+CLUSTER: ✅. EXTRACT+BRIEF: stub.
+│   └── orchestrator.py 6 fasi sequenziali riprendibili (INGEST→EMBED→EXTRACT→CLUSTER→GRAPH→BRIEF).
 ├── ingest/
 │   ├── gdelt.py        Downloader GDELT 2.0. Incrementale + bootstrap storico.
 │   ├── rss.py          Ingestor RSS multi-blocco. 52 fonti (48 attive), 7 blocchi geopolitici.
@@ -180,7 +180,8 @@ pathosphere/
 │   ├── embedder.py     Batch embedding multilingual-e5-small → vec_documents.
 │   ├── dedup.py        KNN dedup semantica via sqlite-vec (cosine ≥ 0.92).
 │   ├── cluster.py      Union-find clustering → events + event_documents.
-│   └── extract.py      NER (spaCy xx_ent_wiki_sm) + geocoding Nominatim + Wikidata QID.
+│   ├── extract.py      NER (spaCy xx_ent_wiki_sm) + geocoding Nominatim + Wikidata QID.
+│   └── graph.py        Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences.
 └── agent/              (Fase 3) brief, tesi, paper trading — TODO
 ```
 
@@ -528,6 +529,45 @@ Risultato campione (2026-06-15, 800 doc RSS 72h): 329 eventi, di cui 268 singlet
 
 **Nota GDELT**: GDELT escluso dall'embedding (opzione a) — `UPDATE raw_documents SET embedded=1 WHERE origin='gdelt'` prima di `pathos embed`. Body vuoto → titolo sintetico non utile per clustering semantico. Se in futuro si arricchisce via GKG, resettare `embedded=0` sui doc GDELT e ri-eseguire.
 
+### 6.5 Grafo entità + Divergenza narrativa
+
+**File:** `pathosphere/semantic/graph.py`  
+**Comando:** `uv run pathos graph`
+
+Due step indipendenti e riprendibili:
+
+| Step | Funzione | Output tabelle |
+|---|---|---|
+| Grafo co-occorrenze | `build_entity_links` | `entity_links` |
+| Divergenza narrativa | `compute_narrative_divergences` | `narrative_divergences` |
+
+**`build_entity_links`** — popola `entity_links` da co-occorrenze di entità all'interno degli stessi eventi:
+- Query SQL unica (no loop Python): `JOIN event_documents × document_entities` per coppia `(entity_a < entity_b)`
+- Conta quanti eventi distinti condividono la coppia → `strength = min(1.0, count / 10.0)`
+- `relation_type = 'co-occurs'` (tipi semantici come `sanctions`, `supplies` spettano a Fase 3/LLM)
+- Idempotente: `DELETE WHERE relation_type='co-occurs'` prima del re-insert
+
+**`compute_narrative_divergences`** — per ogni evento con ≥ 2 blocchi geopolitici:
+1. Raccoglie embeddings dei doc per blocco (via `event_documents → raw_documents → sources`)
+2. Calcola centroide per blocco → L2-normalizza
+3. `divergence_score = max(0, 1 - cos_sim)` — 0 = narrazioni identiche, 1 = opposte
+4. Inserisce una riga per ogni coppia `(block_a < block_b)` in `narrative_divergences`
+5. `summary = NULL` (Fase 3: LLM riempirà con testo esplicativo)
+
+**Parametri:**
+
+| Flag | Default | Note |
+|---|---|---|
+| `--skip-links` | off | Salta grafo co-occorrenze |
+| `--skip-divergence` | off | Salta calcolo divergenza |
+| `--min-cooccurrences` | 1 | Min eventi condivisi per creare un link |
+
+**Vincoli RAM:** loop per evento. Ogni evento carica al massimo ~30 vettori × 384 × 4B ≈ 46 KB. Safe su M1 8 GB.
+
+**Nota GDELT / source_id:** doc GDELT hanno `source_id=NULL` → esclusi automaticamente dalla divergenza (richiedono `source_id IS NOT NULL` per risalire al blocco). Solo RSS e Comtrade contribuiscono alla divergenza.
+
+---
+
 ### 6.4 NER + geocoding + Wikidata
 
 **File:** `pathosphere/semantic/extract.py`  
@@ -568,20 +608,21 @@ uv run python -m spacy download xx_ent_wiki_sm
 
 **File:** `pathosphere/cycle/orchestrator.py`
 
-Cinque fasi sequenziali, riprendibili da qualsiasi punto. Ogni fase è atomica: se fallisce, il ciclo si ferma e salva l'errore in `CycleState`.
+Sei fasi sequenziali, riprendibili da qualsiasi punto. Ogni fase è atomica: se fallisce, il ciclo si ferma e salva l'errore in `CycleState`.
 
 ```
-INGEST → EMBED → EXTRACT → CLUSTER → BRIEF
-  ✅       ✅        ✅         ✅        ⬜
+INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF
+  ✅       ✅        ✅         ✅        ✅       ⬜
 ```
 
 | Fase | Funzione | Stato | Descrizione |
 |---|---|---|---|
-| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 52 fonti (48 attive) |
+| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS |
 | `EMBED` | `_phase_embed` | ✅ | Embedding e5-small + dedup semantica KNN |
 | `EXTRACT` | `_phase_extract` | ✅ | NER (spaCy) + geocoding Nominatim + Wikidata QID |
 | `CLUSTER` | `_phase_cluster` | ✅ | Union-find clustering → eventi |
-| `BRIEF` | `_phase_brief` | ⬜ stub | Genera brief + tesi (Claude SDK) |
+| `GRAPH` | `_phase_graph` | ✅ | Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences |
+| `BRIEF` | `_phase_brief` | ⬜ stub | Genera brief + tesi (Claude SDK) — Fase 3 |
 
 **Comandi:**
 
@@ -590,6 +631,7 @@ uv run pathos cycle                         # ciclo completo
 uv run pathos cycle --dry-run               # simula senza I/O
 uv run pathos cycle --from-phase embed      # riprendi da EMBED (salta INGEST)
 uv run pathos cycle --from-phase cluster    # riprendi da CLUSTER
+uv run pathos cycle --from-phase graph      # solo graph + brief
 uv run pathos cycle --from-phase brief      # solo brief mattutino
 ```
 
@@ -648,9 +690,13 @@ pathos
 │   ├── --max-lookups   Budget lookup geocoding + Wikidata [default: 50]
 │   ├── --skip-geocode  Salta Nominatim
 │   └── --skip-wikidata Salta Wikidata
-├── cycle               Esegui ciclo notturno (INGEST→EMBED→EXTRACT→CLUSTER→BRIEF)
+├── graph               Grafo co-occorrenze + divergenza narrativa per blocco
+│   ├── --skip-links        Salta build_entity_links
+│   ├── --skip-divergence   Salta compute_narrative_divergences
+│   └── --min-cooccurrences Min eventi condivisi per creare link [default: 1]
+├── cycle               Esegui ciclo notturno (INGEST→EMBED→EXTRACT→CLUSTER→GRAPH→BRIEF)
 │   ├── --dry-run       Simula tutte le fasi senza I/O
-│   └── --from-phase    Riprendi da fase specifica (ingest|embed|extract|cluster|brief)
+│   └── --from-phase    Riprendi da fase specifica (ingest|embed|extract|cluster|graph|brief)
 └── config              Mostra configurazione attiva (.env + defaults)
 ```
 
@@ -739,8 +785,10 @@ tests/
 ├── conftest.py          Fixture tmp_db (SQLite in-memory), make_gdelt_row()
 ├── test_db.py           Schema init, tabelle, sqlite-vec, integrità FK
 ├── test_gdelt.py        URL gen, parsing, filtraggio, storage, dedup
-├── test_orchestrator.py dry_run, from_phase, gestione errori
+├── test_orchestrator.py dry_run, from_phase, gestione errori (6 fasi)
 ├── test_semantic.py     embed, dedup semantica, clustering (MockModel, no download)
+├── test_extract.py      NER, geocoding, Wikidata QID linking
+├── test_graph.py        build_entity_links, compute_narrative_divergences (10 test)
 ├── test_portwatch.py    PortWatch fetch, upsert, anomalie z-score
 ├── test_physical.py     USGS quake parse/store; FIRMS window logic, metrics, anomalie
 └── test_anomaly.py      find_anomalies: surge/drop/both, whole_history, min_value (8 test)
@@ -749,7 +797,7 @@ tests/
 **Esecuzione:**
 
 ```bash
-uv run pytest            # 150 test, ~8s, zero chiamate HTTP/modello reali
+uv run pytest            # 160 test, ~10s, zero chiamate HTTP/modello reali
 uv run pytest -v         # output verboso
 uv run pytest tests/test_semantic.py   # solo pipeline semantica
 ```
@@ -789,7 +837,8 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **2** | Clustering articoli → eventi | ✅ |
 | **2** | NER + geocoding (spaCy + Nominatim) | ✅ |
 | **2** | Wikidata entity linking | ✅ |
-| **2** | Grafo entità | ⬜ |
+| **2** | Grafo entità (co-occorrenze → `entity_links`) | ✅ |
+| **2** | Divergenza narrativa per blocco (→ `narrative_divergences`) | ✅ |
 | **3** | Brief mattutino (Claude SDK) | ⬜ |
 | **3** | Generatore tesi con catene causali | ⬜ |
 | **3** | Paper trading engine + approvazione CLI | ⬜ |

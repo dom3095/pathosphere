@@ -59,15 +59,17 @@ uv run pathos ingest firms --start 2018-01-01        # backfill storico (auto so
 # Pipeline semantica (Fase 2)
 uv run pathos embed                                 # embed + dedup semantica + clustering → eventi
 uv run pathos extract                                # NER + geocoding + Wikidata entity linking
+uv run pathos graph                                 # grafo co-occorrenze + divergenza narrativa
 uv run pathos embed --skip-dedup                    # solo embedding
 
 # Ciclo notturno
 uv run pathos cycle
 uv run pathos cycle --dry-run
 uv run pathos cycle --from-phase embed
+uv run pathos cycle --from-phase graph              # riprendi da GRAPH
 
 # Test
-uv run pytest                    # 150 test
+uv run pytest                    # 160 test
 ```
 
 ## Bootstrap storico vs aggiornamento incrementale
@@ -96,6 +98,7 @@ uv run pathos ingest firms --start 2026-01-01     # richiede FIRMS_MAP_KEY in .e
 sqlite3 data/db/pathosphere.db "UPDATE raw_documents SET embedded=1 WHERE origin='gdelt';"
 uv run pathos embed          # embed RSS+Comtrade + dedup KNN + clustering → eventi
 uv run pathos extract        # NER + geocoding Nominatim + Wikidata QID
+uv run pathos graph          # grafo co-occorrenze + divergenza narrativa
 
 # Verifica
 uv run pathos db info
@@ -119,6 +122,7 @@ uv run pathos ingest firms --start 2018-01-01            # incendi dal 2018 (aut
 sqlite3 data/db/pathosphere.db "UPDATE raw_documents SET embedded=1 WHERE origin='gdelt';"
 uv run pathos embed          # embed RSS+Comtrade + dedup + cluster → eventi
 uv run pathos extract        # NER + geocoding + Wikidata
+uv run pathos graph          # grafo co-occorrenze + divergenza narrativa
 ```
 
 ### Aggiornamento incrementale
@@ -135,6 +139,7 @@ uv run pathos ingest firms              # riprende da max(date) per ogni area
 
 uv run pathos embed                     # nuovi vettori + dedup + cluster
 uv run pathos extract                   # NER sui nuovi doc
+uv run pathos graph                     # aggiorna grafo + divergenza
 ```
 
 Dove "riprende da ultimo": USGS legge l'ultimo terremoto salvato, FIRMS l'ultima
@@ -153,7 +158,7 @@ pathosphere/
 │   ├── db/schema.py    DDL SQLite + sqlite-vec
 │   ├── cycle/          orchestratore ciclo notturno
 │   │   ├── ingest/         ingestori (GDELT, RSS, PortWatch, Comtrade, USGS, FIRMS ✅)
-│   └── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; extract ✅ NER+geo+Wikidata)
+│   └── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; extract ✅; graph ✅)
 ├── tests/              150 test, ~8s
 ├── docs/
 │   ├── wiki.md         documentazione completa
@@ -171,5 +176,6 @@ pathosphere/
 - [x] **Fase 2** — Embedding multilingual-e5-small + dedup semantica KNN
 - [x] **Fase 2** — Clustering articoli → eventi (union-find)
 - [x] **Fase 2** — NER, geocoding (Nominatim), Wikidata entity linking
+- [x] **Fase 2** — Grafo co-occorrenze (`entity_links`) + divergenza narrativa per blocco (`narrative_divergences`)
 - [ ] **Fase 3** — Brief, tesi, paper trading, calibrazione Tetlock
 - [ ] **Fase 4** — Dashboard Streamlit
