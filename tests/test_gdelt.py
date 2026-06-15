@@ -5,7 +5,7 @@ No real HTTP calls — all in-process or mocked.
 
 import io
 import zipfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -68,8 +68,8 @@ def test_generate_file_urls_minutes_slots():
 
 
 def test_generate_file_urls_day_is_yesterday():
-    """n_days=1 must generate URLs for yesterday, not today."""
-    yesterday = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
+    """n_days=1 must generate URLs for yesterday (UTC), not today."""
+    yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).strftime("%Y%m%d")
     urls = generate_file_urls(1)
     first_fname = urls[0][0]
     assert first_fname.startswith(yesterday)

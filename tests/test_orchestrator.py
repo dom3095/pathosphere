@@ -19,8 +19,8 @@ from pathosphere.cycle.orchestrator import (
 # Constants and structure
 # ─────────────────────────────────────────────────────────────
 
-def test_phase_order_has_five_phases():
-    assert len(PHASE_ORDER) == 5
+def test_phase_order_has_six_phases():
+    assert len(PHASE_ORDER) == 6
 
 
 def test_phase_order_sequence():
@@ -29,6 +29,7 @@ def test_phase_order_sequence():
         Phase.EMBED,
         Phase.EXTRACT,
         Phase.CLUSTER,
+        Phase.GRAPH,
         Phase.BRIEF,
     ]
 
