@@ -1,3 +1,15 @@
+# Sicurezza — secrets (REGOLA ASSOLUTA)
+
+**MAI leggere il contenuto di `.env` (o `.env.*`), in nessun caso.** Non aprirlo,
+non stamparlo (cat/head/grep/sed/awk/…), non mostrarlo, non trasmetterlo a
+nessuno — né all'utente né a terzi né nei log. Il codice li **usa** a runtime
+(pydantic-settings li carica da solo); l'agent non deve **mai vederne il valore**.
+Se serve sapere se una chiave è impostata, controllarne solo la **presenza**
+(es. `bool(settings.firms_map_key)`), mai il valore. Enforced anche via
+`permissions.deny` in `.claude/settings.json`.
+
+---
+
 # Stile comunicazione — SEMPRE ATTIVO
 
 Caveman mode **full** sempre attivo in questo progetto. Ogni risposta.

@@ -33,6 +33,7 @@ Sistema personale di intelligence OSINT. Paper trading virtuale come metrica di 
    - 6.1 [Embedding](#61-embedding)
    - 6.2 [Dedup semantica](#62-dedup-semantica)
    - 6.3 [Clustering → eventi](#63-clustering--eventi)
+   - 6.4 [NER + geocoding + Wikidata](#64-ner--geocoding--wikidata)
 7. [Ciclo notturno](#7-ciclo-notturno)
 8. [CLI Reference](#8-cli-reference)
 9. [Fonti dati](#9-fonti-dati)
@@ -82,6 +83,7 @@ MacBook Air M1, 8 GB RAM (~4-5 GB utilizzabili).
 curl -LsSf https://astral.sh/uv/install.sh | sh
 brew install ollama
 ollama pull qwen3:4b
+uv run python -m spacy download xx_ent_wiki_sm    # NER multilingua (~30 MB, una-tantum)
 ```
 
 ### 2.2 Installazione
@@ -90,7 +92,7 @@ ollama pull qwen3:4b
 uv sync                         # installa dipendenze (incl. sqlite-vec, httpx, feedparser, sentence-transformers)
 cp .env.example .env            # crea configurazione locale
 uv run pathos db init           # crea schema SQLite + tabella virtuale sqlite-vec
-uv run pathos sources seed      # inserisce 49 fonti (45 attive) predefinite (7 blocchi geopolitici)
+uv run pathos sources seed      # inserisce 52 fonti (48 attive) predefinite (7 blocchi geopolitici)
 ```
 
 Verifica:
@@ -98,7 +100,7 @@ Verifica:
 ```bash
 uv run pathos db info           # conta righe per tabella
 uv run pathos cycle --dry-run   # simula ciclo senza I/O
-uv run pytest                   # 81 test, ~0.8s
+uv run pytest                   # 150 test, ~8s
 ```
 
 ### 2.3 Variabili d'ambiente
@@ -172,12 +174,13 @@ pathosphere/
 │   └── orchestrator.py 5 fasi sequenziali riprendibili. EMBED+CLUSTER: ✅. EXTRACT+BRIEF: stub.
 ├── ingest/
 │   ├── gdelt.py        Downloader GDELT 2.0. Incrementale + bootstrap storico.
-│   ├── rss.py          Ingestor RSS multi-blocco. 49 fonti (45 attive), 7 blocchi geopolitici.
+│   ├── rss.py          Ingestor RSS multi-blocco. 52 fonti (48 attive), 7 blocchi geopolitici.
 │   └── sources_seed.py Catalogo fonti: lista completa + seed_sources(conn).
 ├── semantic/
 │   ├── embedder.py     Batch embedding multilingual-e5-small → vec_documents.
 │   ├── dedup.py        KNN dedup semantica via sqlite-vec (cosine ≥ 0.92).
-│   └── cluster.py      Union-find clustering → events + event_documents.
+│   ├── cluster.py      Union-find clustering → events + event_documents.
+│   └── extract.py      NER (spaCy xx_ent_wiki_sm) + geocoding Nominatim + Wikidata QID.
 └── agent/              (Fase 3) brief, tesi, paper trading — TODO
 ```
 
@@ -225,6 +228,8 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 | `event_documents` | N:M | Join eventi ↔ documenti |
 | `gdelt_events` | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions) |
 | `comtrade_flows` | 1/record | Valori numerici flussi commerciali (USD, kg) |
+| `chokepoint_metrics` | 1/(chokepoint, giorno) | Timeseries transiti PortWatch (anomalie z-score → `events`) |
+| `fire_metrics` | 1/(area, giorno) | Timeseries rilevazioni FIRMS (surge z-score → `events`) |
 | `narrative_divergences` | 100-5k | Divergenza narrativa per blocco geopolitico |
 | `entities` | 500-10k | Paesi, aziende, commodity, infrastrutture |
 | `entity_links` | 1k-50k | Grafo relazioni (depends_on, supplies, sanctions…) |
@@ -280,7 +285,7 @@ ORDER BY distance;
 ```
 
 Distanza L2 su vettori normalizzati ≈ distanza coseno: `L2 = sqrt(2*(1-cos_sim))`.  
-Soglie: dedup `cos≥0.92` → `L2<0.4` · cluster `cos≥0.75` → `L2<0.71`.
+Soglie: dedup `cos≥0.92` → `L2<0.4` · cluster `cos≥0.85` → `L2<0.55`.
 
 ### 4.4 Evoluzione pianificata
 
@@ -375,26 +380,27 @@ uv run pathos ingest rss --max-age-days 7        # ultimi 7 giorni
 uv run pathos ingest rss --source-ids 1,2,3      # solo queste sorgenti
 ```
 
-**45 fonti attive, 7 blocchi geopolitici** (aggiornato 2026-06-14):
+**48 fonti attive, 7 blocchi geopolitici** (aggiornato 2026-06-15):
 
 | Blocco | Fonti attive | Lingue |
 |---|---|---|
-| `western` | ANSA, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, DIGITIMES, HK Free Press, **The Diplomat**, **ChinaFile** | en/it |
-| `china` | Global Times (state), SCMP, **China Digital Times**, **TechNode** | en |
-| `russia` | TASS, RT (via Tor), **The Moscow Times**, **Russia in Global Affairs** | en |
+| `western` | ANSA, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, DIGITIMES, HK Free Press, The Diplomat, ChinaFile, **MERICS**, **Taiwan MOFA** | en/it |
+| `china` | Global Times (state, bassa freq), SCMP (All News), **SCMP China** (section), China Digital Times, TechNode | en |
+| `russia` | TASS, RT (via Tor), The Moscow Times, Russia in Global Affairs | en |
 | `arab` | Al Jazeera, Anadolu, Press TV, Arab News | en |
-| `india` | The Hindu, **NDTV**, **Scroll.in** | en |
+| `india` | The Hindu, NDTV, Scroll.in | en |
 | `latam` | Folha de S.Paulo | pt |
 | `africa` | AllAfrica, Daily Maverick, RFI Afrique, Jeune Afrique, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard | en/fr |
 | `other` | Dawn, Geo News (PK); EVN Report (AM); Trend, AzerNews (AZ) | en |
 
-In grassetto le fonti aggiunte il 2026-06-14 (pluralità di controllo statale per blocco).
+Aggiunte 2026-06-15: **MERICS** (DE, istituto europeo ricerca China, live); **Taiwan MOFA** (TW, segnali diplomatici cross-strait, live); **SCMP China** (sezione China Politics/Diplomacy, integra feed All News). SCMP aggiornato da `/5` (World) a `/91` (All News, volume ×4).
 
-**Principio:** divergenza narrativa tra blocchi = segnale analitico. Stessa notizia da Xinhua e The Moscow Times con frame opposti → `narrative_divergences.divergence_score` alto → input per tesi.
+**Principio:** divergenza narrativa tra blocchi = segnale analitico. Stessa notizia da TASS e The Moscow Times con frame opposti → `narrative_divergences.divergence_score` alto → input per tesi.
 
 **Fonti disabilitate** (`active=0`, conservate nel seed):
-- *Nessun RSS pubblico*: AP, AFP, DPA, APO Group.
-- *Feed morto/bloccato 2026-06-14* (commentate in `sources_seed.py`): Reuters (DNS), EFE (500), Kyodo (404), ANI (404), Focus Taiwan (404), The East African (403), Armenpress (403 Cloudflare), Xinhua (feed congelato al 2018 — voce statale cinese ora via Global Times).
+- *Nessun RSS pubblico*: AP, AFP, DPA, APO Group, China Daily (feed congelato al 2017-12-12).
+- *Feed morto/bloccato* (commentate in `sources_seed.py`): Reuters (DNS), EFE (500), Kyodo (404), ANI (404), Focus Taiwan (404), The East African (403), Armenpress (403 Cloudflare), Xinhua (congelato 2018), Sixth Tone (404), Caixin (403).
+- *Bassa frequenza ma live*: Global Times `outbrain.xml` (~1 art/mese, unico feed funzionante).
 
 **HTTP / anti-blocco:** httpx con header browser completi (UA + `Accept-Language` + `Sec-Fetch-*` + `Upgrade-Insecure-Requests`) — necessari oltre i bot-check stile Cloudflare (es. Arab News). Timeout 20s, follow_redirects. Parsing: feedparser 6.x. Errori per singola fonte non bloccanti.
 
@@ -404,15 +410,35 @@ In grassetto le fonti aggiunte il 2026-06-14 (pluralità di controllo statale pe
 
 **Stato: ✅ Implementati** — `ingest/portwatch.py`, `ingest/comtrade.py`, `ingest/physical.py`
 
-| Fonte | Dati | Tabelle | Note |
-|---|---|---|---|
-| IMF PortWatch | Transiti chokepoint | `chokepoint_metrics` + `events` (anomalie) | `--full` = backfill ~2019→oggi (paginato) |
-| UN Comtrade | Flussi commerciali HS 8541/8542/8486 | `raw_documents` (doc sintetico) + `comtrade_flows` (numerico) | `--start YYYYMM` backfill, backoff su 429 |
-| USGS | Terremoti significativi | `events` (`origin=usgs`, `event_type=hazard`) | `--min-magnitude` |
-| NASA FIRMS | Incendi attivi | `events` (`origin=firms`, `event_type=hazard`) | richiede `FIRMS_MAP_KEY` |
+| Fonte | Dati | Tabelle | Storico | Incrementale (da ultimo) |
+|---|---|---|---|---|
+| IMF PortWatch | Transiti chokepoint | `chokepoint_metrics` + `events` (anomalie z-score) | `--full` (~2019→oggi, paginato) | default `--days 90` (overlap + upsert idempotente) |
+| UN Comtrade | Flussi HS 8541/8542/8486 | `raw_documents` (doc sintetico) + `comtrade_flows` | `--start YYYYMM` (backoff su 429) | default 3 mesi recenti (~2 mesi lag) |
+| USGS | Terremoti significativi | `events` (`origin=usgs`, `hazard`) | `--start YYYY-MM-DD [--end]` | riprende da `max(first_seen)` USGS; fallback `--days` |
+| NASA FIRMS | Incendi attivi | `fire_metrics` + `events` (surge z-score) | `--start YYYY-MM-DD` (auto source `VIIRS_NOAA20_SP`, finestre ≤5gg) | riprende da `max(date)` per area; fallback `--days` |
 
-Tutti gli ingestor valorizzano `origin`. Comtrade salva i **valori numerici** dei
-flussi (USD, kg) in `comtrade_flows`, oltre al documento sintetico.
+Tutti gli ingestor valorizzano `origin`. **Pattern satellite numerico**: PortWatch
+e FIRMS tengono la timeseries giornaliera fuori dalla vista dell'LLM
+(`chokepoint_metrics` / `fire_metrics`) e promuovono a `events` solo le **anomalie
+z-score** vs baseline trailing (punto escluso → no lookahead). Detector condiviso
+in `ingest/anomaly.py`: nel ciclo incrementale valuta solo l'ultimo giorno; nel
+backfill (`portwatch --full`, `firms --start`) **scorre tutta la timeseries** e
+recupera anche le anomalie storiche nel mezzo del range (non solo l'ultima). Comtrade salva i
+valori numerici dei flussi (USD, kg) in `comtrade_flows`, oltre al doc sintetico.
+
+**Ogni fonte ha due modalità** — bootstrap storico (post-2018 dove la fonte lo
+consente) + incrementale "dall'ultimo rilevamento". Eccezione: **RSS** è solo
+incrementale (i feed espongono solo articoli recenti; nessuno storico possibile).
+
+**FIRMS — dettaglio sorgenti.** Default NRT: `VIIRS_NOAA20_NRT` (NOAA-20/JPSS-1,
+satellite operativo primario); archivio standard: `VIIRS_NOAA20_SP` (dal 2018+) e
+`MODIS_SP` (dal 2000). Con `--start` la CLI passa automaticamente a `VIIRS_NOAA20_SP`;
+se SP restituisce 400 (dati non ancora archiviati per date recenti) scatta il
+fallback NRT automatico. L'API area FIRMS limita ogni richiesta a ≤5 giorni → il
+backfill itera finestre da 5gg per area. Nota: Bering Strait e Kerch Strait (area
+prevalentemente acquatica/artica) possono risultare senza dati fire (0 rilevazioni =
+corretto). L'anomalia richiede ≥11 punti di baseline e un floor assoluto
+(`--min-detections`, default 50) per non scattare su baseline quasi vuote.
 
 **Ancora da agganciare:** IODA / Cloudflare Radar (blackout internet), yfinance
 (prezzi EOD per il paper trading).
@@ -486,18 +512,55 @@ Raggruppa articoli canonici (non-duplicati) che parlano dello stesso evento in r
 
 | Parametro | Default | Note |
 |---|---|---|
-| Soglia coseno | 0.75 | Più bassa del dedup — aggrega storie correlate |
+| Soglia coseno | 0.85 | Soglia alta — separa storie distinte (0.75 causava chain-collapse) |
+| Max cluster size | 30 | Tetto hard su union-find — previene chaining runaway |
 | Finestra temporale | 72h | Solo articoli recenti (COALESCE published_at, fetched_at) |
 | K nearest neighbours | 20 | Query KNN per candidato |
 
-Algoritmo union-find:
+Algoritmo union-find con size-cap:
 1. Candidati: `embedded=1, is_duplicate=0`, non già in `event_documents`, pubblicati nelle ultime 72h
-2. Per ogni candidato: KNN → union se `distance < soglia`
-3. Componenti connesse → un record `events` per componente
+2. Per ogni candidato: KNN → union se `distance < soglia` E cluster risultante `≤ max_cluster_size`
+3. Componenti connesse → un record `events` per componente (`origin` = blocco maggioritario)
 4. Titolo evento: primo documento (più vecchio) con titolo non-NULL
 5. `INSERT OR IGNORE INTO event_documents` per ogni doc nel cluster
 
-Output: tabella `events` popolata, `event_documents` collegata.
+Risultato campione (2026-06-15, 800 doc RSS 72h): 329 eventi, di cui 268 singleton + 10 cappati a 30 (storie più coperte). Cluster top con copertura multi-blocco: Taiwan/defense (4 blocchi), Iran drones (6 blocchi), Russia oil ban (4 blocchi).
+
+**Nota GDELT**: GDELT escluso dall'embedding (opzione a) — `UPDATE raw_documents SET embedded=1 WHERE origin='gdelt'` prima di `pathos embed`. Body vuoto → titolo sintetico non utile per clustering semantico. Se in futuro si arricchisce via GKG, resettare `embedded=0` sui doc GDELT e ri-eseguire.
+
+### 6.4 NER + geocoding + Wikidata
+
+**File:** `pathosphere/semantic/extract.py`  
+**Comando:** `uv run pathos extract`
+
+Tre step indipendenti e riprendibili:
+
+| Step | Funzione | Output tabelle |
+|---|---|---|
+| NER (spaCy `xx_ent_wiki_sm`) | `extract_entities` | `entities` + `document_entities` |
+| Geocoding (Nominatim) | `geocode_events` | `events.lat/lon` + `geocode_cache` |
+| Wikidata QID | `link_wikidata` | `entities.wikidata_qid` + `canonical_name` |
+
+**Parametri:**
+
+| Flag | Default | Note |
+|---|---|---|
+| `--limit` | nessuno | Max doc per NER (utile per test) |
+| `--max-lookups` | 50 | Budget lookup Nominatim + Wikidata per run |
+| `--skip-geocode` | off | Salta Nominatim (solo NER + Wikidata) |
+| `--skip-wikidata` | off | Salta Wikidata (solo NER + geocoding) |
+
+**NER:** modello `xx_ent_wiki_sm` (~30 MB), multilingua. Label map: `PER→person`, `ORG→company`, `LOC→location`, `MISC→other`. Ogni doc viene troncato a 2000 caratteri (title + body head). Flag `ner_done=1` segna i doc già processati → riprendibile.
+
+**Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup).
+
+**Wikidata:** `wbsearchentities` API per entità ordinate per `mentions DESC` (priorità alle più citate). Conflict on `UNIQUE(wikidata_qid)` gestito: marca `wikidata_checked=1` senza sovrascrivere (merge futura work).
+
+**Prerequisito una-tantum:**
+
+```bash
+uv run python -m spacy download xx_ent_wiki_sm
+```
 
 ---
 
@@ -509,14 +572,14 @@ Cinque fasi sequenziali, riprendibili da qualsiasi punto. Ogni fase è atomica: 
 
 ```
 INGEST → EMBED → EXTRACT → CLUSTER → BRIEF
-  ✅       ✅        ⬜         ✅        ⬜
+  ✅       ✅        ✅         ✅        ⬜
 ```
 
 | Fase | Funzione | Stato | Descrizione |
 |---|---|---|---|
-| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 49 fonti (45 attive) |
+| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 52 fonti (48 attive) |
 | `EMBED` | `_phase_embed` | ✅ | Embedding e5-small + dedup semantica KNN |
-| `EXTRACT` | `_phase_extract` | ⬜ stub | NER, geocoding, entity linking (Qwen3 4B) |
+| `EXTRACT` | `_phase_extract` | ✅ | NER (spaCy) + geocoding Nominatim + Wikidata QID |
 | `CLUSTER` | `_phase_cluster` | ✅ | Union-find clustering → eventi |
 | `BRIEF` | `_phase_brief` | ⬜ stub | Genera brief + tesi (Claude SDK) |
 
@@ -543,15 +606,48 @@ pathos
 │   └── info            Mostra conteggi per tabella
 ├── sources
 │   ├── list            Lista fonti configurate
-│   └── seed            Inserisce le 49 fonti (45 attive) predefinite (7 blocchi)
+│   └── seed            Inserisce le 52 fonti (48 attive) predefinite (7 blocchi)
 ├── ingest
 │   ├── gdelt           Ciclo incrementale GDELT (ultimi N giorni)
-│   ├── gdelt-history   Bootstrap storico GDELT (range date)
-│   └── rss             Fetch RSS da tutte le fonti attive
+│   │   ├── --days          Giorni back [default: 1]
+│   │   ├── --quad          conflict|all [default: conflict]
+│   │   ├── --min-mentions  Threshold NumMentions [default: 10]
+│   │   └── --countries     ISO-2 filtro paesi (es. CN,TW,US)
+│   ├── gdelt-history   Bootstrap storico GDELT (range date, resumable)
+│   │   ├── --start         YYYY-MM-DD (obbligatorio)
+│   │   ├── --end           YYYY-MM-DD [default: ieri]
+│   │   └── --sample-hours  1 file ogni N ore [default: 1]
+│   ├── rss             Fetch RSS da tutte le fonti attive
+│   │   ├── --max-age-days  Salta articoli più vecchi di N giorni [default: 2]
+│   │   └── --source-ids    Comma-separated IDs sorgente
+│   ├── portwatch       Transiti chokepoint IMF PortWatch → chokepoint_metrics + eventi anomalia
+│   │   ├── --days          Record per chokepoint [default: 90]
+│   │   ├── --full          Backfill completo ~2019→oggi (paginato)
+│   │   ├── --baseline-days Finestra baseline anomalia [default: 30]
+│   │   └── --z-threshold   Soglia z-score [default: 2.0]
+│   ├── comtrade        Flussi commerciali HS 8541/8542/8486 → comtrade_flows
+│   │   ├── --start         Backfill da YYYYMM
+│   │   ├── --end           Fine backfill YYYYMM
+│   │   └── --delay         Secondi tra chiamate [default: 6; alzare se 429]
+│   ├── usgs            Terremoti significativi USGS → events (hazard)
+│   │   ├── --start         Backfill da YYYY-MM-DD
+│   │   ├── --end           Fine backfill
+│   │   └── --min-magnitude [default: 5.0]
+│   └── firms           Rilevazioni fire NASA FIRMS → fire_metrics + eventi surge (richiede FIRMS_MAP_KEY)
+│       ├── --start         Backfill da YYYY-MM-DD (auto source VIIRS_NOAA20_SP)
+│       ├── --end           Fine backfill
+│       ├── --baseline-days Finestra baseline [default: 30]
+│       ├── --z-threshold   Soglia z-score [default: 2.0]
+│       └── --min-detections Floor rilevazioni per anomalia [default: 50]
 ├── embed               Embedding + dedup semantica + clustering → eventi
 │   ├── --batch-size    Doc per chiamata encode() [default: 32]
 │   ├── --skip-dedup    Solo embedding, no dedup
 │   └── --skip-cluster  Embedding + dedup, no clustering
+├── extract             NER + geocoding + Wikidata entity linking
+│   ├── --limit         Max doc su cui girare NER
+│   ├── --max-lookups   Budget lookup geocoding + Wikidata [default: 50]
+│   ├── --skip-geocode  Salta Nominatim
+│   └── --skip-wikidata Salta Wikidata
 ├── cycle               Esegui ciclo notturno (INGEST→EMBED→EXTRACT→CLUSTER→BRIEF)
 │   ├── --dry-run       Simula tutte le fasi senza I/O
 │   └── --from-phase    Riprendi da fase specifica (ingest|embed|extract|cluster|brief)
@@ -566,14 +662,14 @@ pathos
 
 | Blocco | Codice DB | Fonti attive |
 |---|---|---|
-| Occidentale | `western` | Reuters, ANSA, EFE, Kyodo, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, Focus Taiwan, DIGITIMES, HK Free Press, RFI Afrique |
-| Cina | `china` | Xinhua, Global Times, SCMP |
-| Russia | `russia` | TASS, RT |
-| Mondo arabo | `arab` | Al Jazeera, Anadolu, Press TV, Arab News |
-| India | `india` | ANI, The Hindu |
+| Occidentale | `western` | ANSA, BBC, France 24, DW, MarketWatch, FT, Nikkei Asia, Straits Times, Haaretz, OilPrice, Defense News, Taipei Times, DIGITIMES, HK Free Press, The Diplomat, ChinaFile, MERICS, Taiwan MOFA |
+| Cina | `china` | Global Times (bassa freq), SCMP (All News + China section), China Digital Times, TechNode |
+| Russia | `russia` | TASS, RT (via Tor), The Moscow Times, Russia in Global Affairs |
+| Mondo arabo | `arab` | Al Jazeera, Anadolu Agency, Press TV, Arab News |
+| India | `india` | The Hindu, NDTV, Scroll.in |
 | America Latina | `latam` | Folha de S.Paulo |
-| Africa | `africa` | AllAfrica, Daily Maverick, Jeune Afrique, The East African, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard |
-| Altro | `other` | Dawn, Geo News (PK); Armenpress, EVN Report (AM); Trend, AzerNews (AZ) |
+| Africa | `africa` | AllAfrica, Daily Maverick, RFI Afrique, Jeune Afrique, Premium Times, La Nation Djibouti, Somaliland Sun, Somaliland Standard |
+| Altro | `other` | Dawn, Geo News (PK); EVN Report (AM); Trend, AzerNews (AZ) |
 
 ### Segnali fisici
 
@@ -583,10 +679,10 @@ pathos
 | RSS multi-blocco | Notizie 7 blocchi geopolitici | Asincrono | ✅ |
 | ACLED, UCDP | Conflitti armati | Settimanale | ⬜ |
 | WHO DON, ProMED | Epidemie | Quotidiana | ⬜ |
-| IMF PortWatch | Traffico chokepoint marittimo | Quotidiana | ⬜ |
-| UN Comtrade | Flussi commerciali (HS code) | Mensile | ⬜ |
-| USGS | Terremoti | Realtime | ⬜ |
-| NASA FIRMS | Incendi | 3h | ⬜ |
+| IMF PortWatch | Traffico chokepoint marittimo | Quotidiana | ✅ |
+| UN Comtrade | Flussi commerciali (HS code) | Mensile | ✅ |
+| USGS | Terremoti | Realtime | ✅ |
+| NASA FIRMS | Incendi | 3h | ✅ |
 | IODA | Blackout internet | Realtime | ⬜ |
 | yfinance | Prezzi EOD | Giornaliero | ⬜ |
 | FRED | Macro (tassi, CPI…) | Varia | ⬜ |
@@ -644,13 +740,16 @@ tests/
 ├── test_db.py           Schema init, tabelle, sqlite-vec, integrità FK
 ├── test_gdelt.py        URL gen, parsing, filtraggio, storage, dedup
 ├── test_orchestrator.py dry_run, from_phase, gestione errori
-└── test_semantic.py     embed, dedup semantica, clustering (MockModel, no download)
+├── test_semantic.py     embed, dedup semantica, clustering (MockModel, no download)
+├── test_portwatch.py    PortWatch fetch, upsert, anomalie z-score
+├── test_physical.py     USGS quake parse/store; FIRMS window logic, metrics, anomalie
+└── test_anomaly.py      find_anomalies: surge/drop/both, whole_history, min_value (8 test)
 ```
 
 **Esecuzione:**
 
 ```bash
-uv run pytest            # 81 test, ~0.8s, zero chiamate HTTP/modello reali
+uv run pytest            # 150 test, ~8s, zero chiamate HTTP/modello reali
 uv run pytest -v         # output verboso
 uv run pytest tests/test_semantic.py   # solo pipeline semantica
 ```
@@ -681,14 +780,15 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **0** | SQLite schema + sqlite-vec | ✅ |
 | **0** | Ciclo orchestrator (struttura) | ✅ |
 | **1** | GDELT 2.0 ingestor (incrementale + bootstrap) | ✅ |
-| **1** | RSS multi-blocco (49 fonti (45 attive), 7 blocchi, 6 lingue) | ✅ |
-| **1** | PortWatch + Comtrade semiconduttori | ⬜ |
-| **1** | USGS + NASA FIRMS + IODA | ⬜ |
+| **1** | RSS multi-blocco (52 fonti (48 attive), 7 blocchi, 6 lingue) | ✅ |
+| **1** | PortWatch + Comtrade semiconduttori | ✅ |
+| **1** | USGS + NASA FIRMS | ✅ |
+| **1** | IODA / Cloudflare Radar (blackout internet) | ⬜ |
 | **1** | Storicizzazione Parquet | ⬜ |
 | **2** | Embedding e5-small + dedup semantica KNN | ✅ |
 | **2** | Clustering articoli → eventi | ✅ |
-| **2** | NER + geocoding (spaCy + Nominatim) | ⬜ |
-| **2** | Wikidata entity linking | ⬜ |
+| **2** | NER + geocoding (spaCy + Nominatim) | ✅ |
+| **2** | Wikidata entity linking | ✅ |
 | **2** | Grafo entità | ⬜ |
 | **3** | Brief mattutino (Claude SDK) | ⬜ |
 | **3** | Generatore tesi con catene causali | ⬜ |
