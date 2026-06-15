@@ -132,7 +132,7 @@ def sources_list() -> None:
 
 @sources.command("seed")
 def sources_seed() -> None:
-    """Populate the catalogue with the project's default sources (49 sources, 7 blocks)."""
+    """Populate the catalogue with the project's default sources (52 sources, 7 blocks)."""
     from pathosphere.db.schema import get_connection
     from pathosphere.ingest.sources_seed import seed_sources
     settings = get_settings()
@@ -474,6 +474,7 @@ def ingest_portwatch(
         days=FULL_HISTORY if full else days,
         baseline_days=baseline_days,
         z_threshold=z_threshold,
+        backfill_anomalies=full,
     )
     conn.close()
 
@@ -539,9 +540,16 @@ def ingest_comtrade(periods: str | None, start: str | None, end: str | None,
 @ingest.command("usgs")
 @click.option("--min-magnitude", default=5.0, show_default=True,
               help="Minimum earthquake magnitude to keep.")
-@click.option("--days", default=1, show_default=True, help="How many days back.")
-def ingest_usgs(min_magnitude: float, days: int) -> None:
-    """Fetch significant USGS earthquakes as hazard events."""
+@click.option("--days", default=1, show_default=True,
+              help="Days back when no prior quakes exist (incremental fallback).")
+@click.option("--start", default=None,
+              help="Historical backfill anchor (YYYY-MM-DD). Overrides --days. "
+                   "When omitted, resume from the last stored quake.")
+@click.option("--end", default=None,
+              help="Range end (YYYY-MM-DD) for --start backfill.")
+def ingest_usgs(min_magnitude: float, days: int, start: str | None,
+                end: str | None) -> None:
+    """Fetch significant USGS earthquakes as hazard events (historical + resume)."""
     from pathosphere.db.schema import get_connection
     from pathosphere.ingest.physical import ingest_usgs as _ingest_usgs
 
@@ -549,11 +557,13 @@ def ingest_usgs(min_magnitude: float, days: int) -> None:
     _require_db(settings)
 
     conn = get_connection(settings.db_path)
-    result = _ingest_usgs(conn, min_magnitude=min_magnitude, days=days)
+    result = _ingest_usgs(
+        conn, min_magnitude=min_magnitude, days=days, start=start, end=end
+    )
     conn.close()
 
     click.echo(
-        f"\nUSGS result:\n"
+        f"\nUSGS result (since {result.starttime}):\n"
         f"  Quakes: {result.quakes_fetched} fetched\n"
         f"  Events: +{result.events_created} | {len(result.errors)} errors"
     )
@@ -562,20 +572,45 @@ def ingest_usgs(min_magnitude: float, days: int) -> None:
 
 
 @ingest.command("firms")
-@click.option("--days", default=1, show_default=True, help="How many days back.")
-@click.option("--threshold", default=50, show_default=True,
-              help="Detections per area to warrant a hazard event.")
-def ingest_firms(days: int, threshold: int) -> None:
-    """Summarize NASA FIRMS active-fire detections per area (needs FIRMS_MAP_KEY)."""
+@click.option("--days", default=1, show_default=True,
+              help="Incremental window (days back) when an area has no history.")
+@click.option("--start", default=None,
+              help="Historical backfill anchor (YYYY-MM-DD). Overrides --days; "
+                   "auto-selects VIIRS_NOAA20_SP (falls back to NRT on 400). "
+                   "When omitted, each area resumes from its last stored date.")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD), default today.")
+@click.option("--source", default=None,
+              help="FIRMS sensor product (default VIIRS_NOAA20_NRT; "
+                   "auto VIIRS_NOAA20_SP when --start is given; "
+                   "SP falls back to NRT per-window on 400).")
+@click.option("--baseline-days", default=30, show_default=True,
+              help="Trailing window for the anomaly baseline.")
+@click.option("--z-threshold", default=2.0, show_default=True,
+              help="z-score above which a fire surge becomes an event.")
+@click.option("--min-detections", default=50, show_default=True,
+              help="Latest daily count must exceed this to surface an anomaly.")
+def ingest_firms(days: int, start: str | None, end: str | None,
+                 source: str | None, baseline_days: int, z_threshold: float,
+                 min_detections: int) -> None:
+    """Store daily NASA FIRMS detections per area; flag fire surges (needs FIRMS_MAP_KEY)."""
     from pathosphere.db.schema import get_connection
-    from pathosphere.ingest.physical import ingest_firms as _ingest_firms
+    from pathosphere.ingest.physical import (
+        ARCHIVE_FIRMS_SOURCE,
+        DEFAULT_FIRMS_SOURCE,
+        ingest_firms as _ingest_firms,
+    )
 
     settings = get_settings()
     _require_db(settings)
 
+    if source is None:
+        source = ARCHIVE_FIRMS_SOURCE if start else DEFAULT_FIRMS_SOURCE
+
     conn = get_connection(settings.db_path)
     result = _ingest_firms(
-        conn, map_key=settings.firms_map_key, days=days, threshold=threshold
+        conn, map_key=settings.firms_map_key, source=source, days=days,
+        start=start, end=end, baseline_days=baseline_days,
+        z_threshold=z_threshold, min_detections=min_detections,
     )
     conn.close()
 
@@ -583,10 +618,10 @@ def ingest_firms(days: int, threshold: int) -> None:
         click.echo("FIRMS skipped: set FIRMS_MAP_KEY in .env (free registration).")
         return
     click.echo(
-        f"\nFIRMS result:\n"
-        f"  Areas:      {result.areas_checked} checked\n"
-        f"  Detections: {result.detections_total}\n"
-        f"  Events:     +{result.events_created} | {len(result.errors)} errors"
+        f"\nFIRMS result (source={source}):\n"
+        f"  Areas:      {result.areas_checked} checked | {result.windows_fetched} windows\n"
+        f"  Detections: {result.detections_total} | {result.metrics_upserted} metrics upserted\n"
+        f"  Events:     +{result.events_created} anomalies | {len(result.errors)} errors"
     )
     if result.errors:
         click.echo(f"\nErrors: {result.errors[:5]}")
