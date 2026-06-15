@@ -19,8 +19,9 @@ from datetime import datetime, timedelta, timezone
 from loguru import logger
 
 DEFAULT_TIME_WINDOW_H = 72
-DEFAULT_SIMILARITY = 0.75
+DEFAULT_SIMILARITY = 0.85  # 0.75 caused full-chain collapse; 0.85 separates stories
 DEFAULT_KNN = 20
+DEFAULT_MAX_CLUSTER_SIZE = 30  # cap to prevent runaway single-linkage chaining
 
 
 @dataclass
@@ -40,10 +41,16 @@ def _find(parent: dict, x: int) -> int:
     return x
 
 
-def _union(parent: dict, x: int, y: int) -> None:
+def _union(parent: dict, size: dict, x: int, y: int, max_size: int) -> None:
     px, py = _find(parent, x), _find(parent, y)
-    if px != py:
-        parent[px] = py
+    if px == py:
+        return
+    if size[px] + size[py] > max_size:
+        return
+    if size[px] < size[py]:
+        px, py = py, px
+    parent[py] = px
+    size[px] += size[py]
 
 
 def cluster_documents(
@@ -52,6 +59,7 @@ def cluster_documents(
     time_window_hours: float = DEFAULT_TIME_WINDOW_H,
     similarity: float = DEFAULT_SIMILARITY,
     knn: int = DEFAULT_KNN,
+    max_cluster_size: int = DEFAULT_MAX_CLUSTER_SIZE,
 ) -> ClusterResult:
     """Group recent non-duplicate docs into event records."""
     result = ClusterResult()
@@ -62,7 +70,7 @@ def cluster_documents(
 
     candidates = conn.execute(
         """
-        SELECT r.id, r.title, COALESCE(r.published_at, r.fetched_at) AS pub_at
+        SELECT r.id, r.title, r.origin, COALESCE(r.published_at, r.fetched_at) AS pub_at
         FROM raw_documents r
         WHERE r.embedded = 1
           AND r.is_duplicate = 0
@@ -79,6 +87,7 @@ def cluster_documents(
     doc_ids = [r["id"] for r in candidates]
     id_set = set(doc_ids)
     parent = {d: d for d in doc_ids}
+    size = {d: 1 for d in doc_ids}
     id_to_row = {r["id"]: r for r in candidates}
 
     logger.info(f"Clustering {len(doc_ids)} candidate docs")
@@ -112,7 +121,7 @@ def cluster_documents(
             if nb["distance"] > l2_thresh:
                 break
             if nb_id in id_set:
-                _union(parent, doc_id, nb_id)
+                _union(parent, size, doc_id, nb_id, max_cluster_size)
 
     # Build components
     components: dict[int, list[int]] = {}
@@ -132,10 +141,14 @@ def cluster_documents(
             pub_times = [r["pub_at"] for r in cluster_rows if r["pub_at"]]
             first_seen = min(pub_times) if pub_times else cutoff
             last_seen = max(pub_times) if pub_times else cutoff
+            # Majority origin among cluster docs
+            origins = [r["origin"] for r in cluster_rows if r["origin"]]
+            from collections import Counter
+            origin = Counter(origins).most_common(1)[0][0] if origins else "rss"
 
             cur = conn.execute(
-                "INSERT INTO events (title, first_seen, last_seen) VALUES (?, ?, ?)",
-                (title, first_seen, last_seen),
+                "INSERT INTO events (title, first_seen, last_seen, origin) VALUES (?, ?, ?, ?)",
+                (title, first_seen, last_seen, origin),
             )
             event_id = cur.lastrowid
             conn.executemany(
