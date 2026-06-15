@@ -65,7 +65,7 @@ def db_info() -> None:
 @cli.command()
 @click.option(
     "--from-phase",
-    type=click.Choice(["ingest", "embed", "extract", "cluster", "brief"]),
+    type=click.Choice(["ingest", "embed", "extract", "cluster", "graph", "brief"]),
     default=None,
     help="Resume the cycle from this phase.",
 )
@@ -717,6 +717,43 @@ def extract(
         click.echo(
             f"Wikidata: {wd.qids_found} QIDs | {wd.entities_checked} checked | "
             f"{wd.conflicts} conflicts"
+        )
+
+    conn.close()
+
+
+# ─── graph ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--skip-links", is_flag=True, help="Skip entity co-occurrence graph.")
+@click.option("--skip-divergence", is_flag=True, help="Skip narrative divergence computation.")
+@click.option(
+    "--min-cooccurrences", default=1, show_default=True,
+    help="Min shared events for an entity pair to create a link.",
+)
+def graph(skip_links: bool, skip_divergence: bool, min_cooccurrences: int) -> None:
+    """Build entity co-occurrence graph and compute narrative divergences."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.graph import build_entity_links, compute_narrative_divergences
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    if not skip_links:
+        links = build_entity_links(conn, min_cooccurrences=min_cooccurrences)
+        click.echo(
+            f"\nGraph links: {links.links_written} written | "
+            f"{links.links_deleted} replaced | "
+            f"{links.pairs_evaluated} pairs evaluated"
+        )
+
+    if not skip_divergence:
+        divs = compute_narrative_divergences(conn)
+        click.echo(
+            f"Narrative divergence: {divs.pairs_written} pairs | "
+            f"{divs.events_processed} events processed | "
+            f"{divs.events_skipped} skipped"
         )
 
     conn.close()
