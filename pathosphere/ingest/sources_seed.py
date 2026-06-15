@@ -1,5 +1,5 @@
 """
-Default source catalogue — 49 sources across 7 geopolitical blocks.
+Default source catalogue — 52 sources across 7 geopolitical blocks.
 
 Each entry: (name, url, country, geopolitical_block, orientation, state_control, language, active, notes)
 
@@ -63,6 +63,15 @@ SOURCES: list[tuple] = [
     #     "http://www.xinhuanet.com/english/rss/worldrss.xml",
     #     "CN", "china", "state", 3, "en", 1,
     #     "HTTP only (no HTTPS on this domain)",
+    # ),
+    # DISABLED 2026-06-15: China Daily RSS feeds frozen at 2017 (same issue as
+    # Xinhua — feed exists but no new items). No other working state feed found
+    # (People's Daily English: 404; Sixth Tone: 404; Caixin: 403).
+    # (
+    #     "China Daily",
+    #     "http://www.chinadaily.com.cn/rss/china_rss.xml",
+    #     "CN", "china", "state", 3, "en", 0,
+    #     "RSS frozen at 2017-12-12; HTTP only",
     # ),
     (
         "TASS",
@@ -178,9 +187,15 @@ SOURCES: list[tuple] = [
     ),
     (
         "South China Morning Post",
-        "http://www.scmp.com/rss/5/feed/",
+        "http://www.scmp.com/rss/91/feed/",
         "HK", "china", "independent", 1, "en", 1,
-        "Alibaba-owned; more nuanced than mainland state media",
+        "Alibaba-owned; All News feed (was /5 World — higher volume). More nuanced than mainland state media",
+    ),
+    (
+        "South China Morning Post — China",
+        "http://www.scmp.com/rss/4/feed/",
+        "HK", "china", "independent", 1, "en", 1,
+        "SCMP China section (Policies & Politics, Diplomacy, Economy); targeted China coverage",
     ),
     # ── Russia ────────────────────────────────────────────────────────────────
     (
@@ -324,6 +339,18 @@ SOURCES: list[tuple] = [
         None,
     ),
     # ── Added 2026-06-14 (verified via rsscatalog.com): plurality per bloc ─────
+    (
+        "MERICS",
+        "https://merics.org/en/rss",
+        "DE", "western", "independent", 1, "en", 1,
+        "Mercator Institute for China Studies (Berlin); European China research; partly Bundesministerium-funded",
+    ),
+    (
+        "Taiwan MOFA",
+        "https://en.mofa.gov.tw/OpenData.aspx?SN=07564A7F01D47BAD",
+        "TW", "western", "state", 2, "en", 1,
+        "Taiwan Ministry of Foreign Affairs — News & Events; cross-strait diplomatic signals vs PRC narrative",
+    ),
     (
         "The Diplomat",
         "https://thediplomat.com/feed/",
