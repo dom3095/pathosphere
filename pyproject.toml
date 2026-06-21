@@ -16,6 +16,7 @@ dependencies = [
     "feedparser>=6.0",
     "sentence-transformers>=2.0",
     "numpy>=1.26",
+    "pyarrow>=14.0",
     "caveman>=1.0",
     "spacy>=3.7",
     "xx-ent-wiki-sm",
