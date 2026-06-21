@@ -627,6 +627,60 @@ def ingest_firms(days: int, start: str | None, end: str | None,
         click.echo(f"\nErrors: {result.errors[:5]}")
 
 
+@ingest.command("ioda")
+@click.option("--days", default=1, show_default=True,
+              help="Incremental window (days back) when a country has no history.")
+@click.option("--start", default=None,
+              help="Historical backfill anchor (YYYY-MM-DD). Overrides --days.")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD), default today.")
+@click.option("--countries", default=None,
+              help="Comma-separated ISO-2 codes (default: all monitored countries).")
+@click.option("--baseline-days", default=30, show_default=True,
+              help="Trailing window for the anomaly baseline.")
+@click.option("--z-threshold", default=2.5, show_default=True,
+              help="|z-score| below which a connectivity drop becomes an event.")
+@click.option("--datasource", default="bgp", show_default=True,
+              type=click.Choice(["bgp", "ping-slash24", "merit-nt"]),
+              help="IODA signal datasource.")
+def ingest_ioda(
+    days: int, start: str | None, end: str | None, countries: str | None,
+    baseline_days: int, z_threshold: float, datasource: str,
+) -> None:
+    """Fetch IODA internet-signal data; flag outages as infrastructure events."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.ioda import MONITORED_COUNTRIES, ingest_ioda as _ingest_ioda
+
+    settings = get_settings()
+    _require_db(settings)
+
+    country_map = MONITORED_COUNTRIES
+    if countries:
+        codes = [c.strip().upper() for c in countries.split(",")]
+        country_map = {c: MONITORED_COUNTRIES.get(c, c) for c in codes}
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_ioda(
+        conn,
+        countries=country_map,
+        days=days,
+        start=start,
+        end=end,
+        baseline_days=baseline_days,
+        z_threshold=z_threshold,
+        datasource=datasource,
+    )
+    conn.close()
+
+    click.echo(
+        f"\nIODA result:\n"
+        f"  Countries: {result.countries_checked} checked\n"
+        f"  Metrics:   {result.metrics_upserted} upserted\n"
+        f"  Events:    +{result.events_created} outages | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nFirst errors: {result.errors[:5]}")
+
+
 # ─── embed ────────────────────────────────────────────────────────────────────
 
 @cli.command()
@@ -757,3 +811,48 @@ def graph(skip_links: bool, skip_divergence: bool, min_cooccurrences: int) -> No
         )
 
     conn.close()
+
+
+# ─── export ───────────────────────────────────────────────────────────────────
+
+@cli.group()
+def export() -> None:
+    """Export data to external formats (Parquet, CSV)."""
+
+
+@export.command("parquet")
+@click.option("--tables", default=None,
+              help="Comma-separated table names (default: raw_documents,events,entities,entity_links).")
+@click.option("--out-dir", default=None,
+              help="Output directory (default: parquet_dir from config).")
+def export_parquet(tables: str | None, out_dir: str | None) -> None:
+    """Export SQLite tables to partitioned Parquet files (Snappy compressed).
+
+    Partitioned by year/month for dated tables (raw_documents, events).
+    Single file for undated tables (entities, entity_links).
+    Idempotent — safe to re-run; overwrites existing partitions.
+
+    Read back with DuckDB:
+      duckdb.sql("SELECT * FROM 'data/parquet/raw_documents/**/*.parquet'")
+    """
+    from pathosphere.db.schema import get_connection
+    from pathosphere.export.parquet import export_to_parquet
+
+    settings = get_settings()
+    _require_db(settings)
+
+    target_tables: list[str] | None = (
+        [t.strip() for t in tables.split(",")] if tables else None
+    )
+    parquet_dir = Path(out_dir) if out_dir else settings.parquet_dir
+    parquet_dir.mkdir(parents=True, exist_ok=True)
+
+    conn = get_connection(settings.db_path)
+    result = export_to_parquet(conn, parquet_dir, tables=target_tables)
+    conn.close()
+
+    click.echo(f"\nParquet export → {parquet_dir}")
+    for tbl in result.tables_written:
+        click.echo(f"  {tbl:<25} {result.rows_written[tbl]:>10,} rows")
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors}")
