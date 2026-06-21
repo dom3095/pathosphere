@@ -149,6 +149,15 @@ def _phase_ingest() -> None:
             f"+{firms.events_created} events"
         )
 
+    from pathosphere.ingest.ioda import ingest_ioda
+
+    ioda = ingest_ioda(conn)
+    logger.info(
+        f"INGEST/IODA: {ioda.countries_checked} countries | "
+        f"{ioda.metrics_upserted} metrics | +{ioda.events_created} events"
+        + (f" | {len(ioda.errors)} errors" if ioda.errors else "")
+    )
+
     conn.close()
 
 

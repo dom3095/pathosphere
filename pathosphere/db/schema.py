@@ -367,6 +367,16 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_raw_doc_ner ON raw_documents(ner_done)",
     "ALTER TABLE raw_documents ADD COLUMN origin TEXT",
     "ALTER TABLE events ADD COLUMN origin TEXT",
+    # IODA internet disruption metrics (daily signal per country)
+    """CREATE TABLE IF NOT EXISTS internet_metrics (
+        country_code  TEXT NOT NULL,
+        date          TEXT NOT NULL,
+        signal_bgp    REAL,
+        signal_active REAL,
+        fetched_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (country_code, date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_internet_metrics_date ON internet_metrics(country_code, date)",
 ]
 
 
