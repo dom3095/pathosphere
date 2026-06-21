@@ -6,7 +6,7 @@ Aggiornato 2026-06-16.
 
 - **Branch**: `feat/numeric-detail-tables-rss-tor`, commit pushati fino alla sessione precedente. Il lavoro di questa sessione (grafo + divergenza + doc) è **in locale non committato** — l'utente dice quando committare. `git status` per il diff.
 - **Test**: 160 verdi (`uv run pytest`, ~10s). Eseguirli dopo ogni modifica.
-- **DB attuale** `data/db/pathosphere.db` (campione fresco 2026-06-15): 6,967 doc (gdelt 5742, rss 1081, comtrade 144), 4,095 eventi, 2,520 chokepoint_metrics, 1,707 fire_metrics, 1,225 vec_documents. `entity_links` e `narrative_divergences` **vuote** — sono le prime due tabelle da popolare con `pathos graph` (lo lancia l'utente).
+- **DB attuale** `data/db/pathosphere.db` (campione): 6,967 doc (gdelt 5742, rss 1081, comtrade 144), 4,095 eventi. `entity_links`, `narrative_divergences`, `internet_metrics` vuote nel campione — richiedono `pathos graph` e `pathos ingest ioda` (li lancia l'utente).
 - **Drop+rebuild** eseguito 2026-06-15 — campione pulito disponibile.
 - **Sicurezza**: mai leggere `.env`/secrets (CLAUDE.md + deny in `.claude/settings.json`). Per FIRMS controllare solo `bool(settings.firms_map_key)`.
 - **Gli ingest li lancia l'utente** dal terminale (rete + chiavi), non l'agent.
@@ -21,6 +21,7 @@ uv run pathos ingest portwatch
 uv run pathos ingest comtrade --start 202401 --end 202403
 uv run pathos ingest usgs --start 2026-01-01
 uv run pathos ingest firms --start 2026-01-01
+uv run pathos ingest ioda --days 35
 
 sqlite3 data/db/pathosphere.db "UPDATE raw_documents SET embedded=1 WHERE origin='gdelt';"
 uv run pathos embed
@@ -30,7 +31,18 @@ uv run pathos graph
 
 ---
 
-## ✅ Fatto in questa sessione (2026-06-16)
+## ✅ Fatto in questa sessione (2026-06-21)
+
+- **`ingest/ioda.py`** — IODA blackout internet: fetch BGP per 24 paesi, upsert `internet_metrics`, anomalie `direction="drop"` → `events(event_type='infrastructure', origin='ioda')`. Bootstrap + incrementale.
+- **`export/parquet.py`** — export Parquet partizionato per data (`year=YYYY/month=MM`); undated → `undated/`; tabelle non-dated → flat file. Snappy, idempotente.
+- **CLI**: `pathos ingest ioda` (con `--days`, `--start`, `--end`, `--countries`, `--z-threshold`), `pathos export parquet` (con `--tables`, `--out-dir`)
+- **Orchestratore**: IODA integrato in `_phase_ingest()`
+- **Test**: `tests/test_ioda.py` (12 test) + `tests/test_parquet.py` (9 test) → 181 totali verdi
+- **Docs**: `docs/roadmap.md` creato; `wiki.md`, `README.md`, `next_steps.md` aggiornati — Fase 1 marcata completa
+
+---
+
+## ✅ Fatto in sessione precedente (2026-06-16)
 
 - **`semantic/graph.py`** — due funzioni nuove:
   - `build_entity_links(conn, min_cooccurrences=1)` → `entity_links` (co-occorrenze, `relation_type='co-occurs'`, strength 0-1); query SQL unica, idempotente
@@ -141,10 +153,8 @@ Tabella `predictions` già in schema:
 
 - **Push branch + PR** quando pronto
 - **Backup `data/db/pathosphere.db.bak-20260614`** (2.5G) = unica copia degli 8 anni GDELT. Tenere.
-- **yfinance**: non ancora agganciato — prerequisito per il paper trading
+- **yfinance**: non ancora agganciato — prerequisito per il paper trading (Fase 3e)
 - **`entity_links` e `narrative_divergences`** vuote nel campione — richiedono `pathos graph` (l'utente)
-- **IODA / Cloudflare Radar**: blackout internet — mai implementato, Fase 1 residuo
-- **Storicizzazione Parquet**: mai implementato, Fase 1 residuo
 - **GKG enrichment**: opzionale per abilitare ricerca semantica su GDELT
 - **`summary` in `narrative_divergences`**: NULL ora, riempire con LLM in Fase 3
 - **`relation_type` in `entity_links`**: solo `co-occurs` ora; tipi semantici (`sanctions`, `supplies`…) via LLM in Fase 3

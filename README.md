@@ -5,6 +5,7 @@ Sistema personale di intelligence OSINT su eventi critici globali — conflitti,
 **Mono-utente · Dati aperti · Budget quasi zero · Human-in-the-loop.**
 
 → **[Wiki completa](docs/wiki.md)** — architettura, ingestori, CLI reference, testing, roadmap.
+→ **[Roadmap](docs/roadmap.md)** — stato per fase, spec Fase 3, non-goals.
 → **[Semantica dei dati](docs/data-semantics.md)** — come leggere il DB senza fraintendere i campi (GDELT vs RSS vs Comtrade). **Leggere prima di interpretare i dati.**
 → **[Caveat embeddings](docs/embeddings-caveat.md)** — perché i vettori GDELT non rappresentano gli articoli. **Leggere prima di girare embed/clustering.**
 
@@ -68,8 +69,11 @@ uv run pathos cycle --dry-run
 uv run pathos cycle --from-phase embed
 uv run pathos cycle --from-phase graph              # riprendi da GRAPH
 
+# Export
+uv run pathos export parquet                       # backup Parquet partizionato → data/parquet/
+
 # Test
-uv run pytest                    # 160 test
+uv run pytest                    # 181 test
 ```
 
 ## Bootstrap storico vs aggiornamento incrementale
@@ -93,6 +97,7 @@ uv run pathos ingest portwatch
 uv run pathos ingest comtrade --start 202401 --end 202403
 uv run pathos ingest usgs --start 2026-01-01
 uv run pathos ingest firms --start 2026-01-01     # richiede FIRMS_MAP_KEY in .env
+uv run pathos ingest ioda --days 35               # blackout internet BGP (24 paesi + baseline)
 
 # 3. Pipeline semantica
 sqlite3 data/db/pathosphere.db "UPDATE raw_documents SET embedded=1 WHERE origin='gdelt';"
@@ -157,9 +162,10 @@ pathosphere/
 │   ├── config.py       settings da .env
 │   ├── db/schema.py    DDL SQLite + sqlite-vec
 │   ├── cycle/          orchestratore ciclo notturno
-│   │   ├── ingest/         ingestori (GDELT, RSS, PortWatch, Comtrade, USGS, FIRMS ✅)
+│   ├── ingest/         ingestori (GDELT, RSS, PortWatch, Comtrade, USGS, FIRMS, IODA ✅)
+│   ├── export/         export Parquet partizionato ✅
 │   └── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; extract ✅; graph ✅)
-├── tests/              150 test, ~8s
+├── tests/              181 test, ~10s
 ├── docs/
 │   ├── wiki.md         documentazione completa
 │   ├── architecture.md architettura dettagliata
@@ -173,6 +179,7 @@ pathosphere/
 - [x] **Fase 1** — GDELT 2.0 (incrementale + bootstrap storico)
 - [x] **Fase 1** — RSS multi-blocco (52 fonti (48 attive), 7 blocchi geopolitici, 6 lingue)
 - [x] **Fase 1** — PortWatch (anomalie chokepoint), Comtrade (semiconduttori), USGS, FIRMS
+- [x] **Fase 1** — IODA blackout internet (BGP, 24 paesi) + export Parquet partizionato
 - [x] **Fase 2** — Embedding multilingual-e5-small + dedup semantica KNN
 - [x] **Fase 2** — Clustering articoli → eventi (union-find)
 - [x] **Fase 2** — NER, geocoding (Nominatim), Wikidata entity linking

@@ -175,7 +175,14 @@ pathosphere/
 ├── ingest/
 │   ├── gdelt.py        Downloader GDELT 2.0. Incrementale + bootstrap storico.
 │   ├── rss.py          Ingestor RSS multi-blocco. 52 fonti (48 attive), 7 blocchi geopolitici.
+│   ├── portwatch.py    IMF PortWatch: transiti chokepoint → anomalie z-score.
+│   ├── comtrade.py     UN Comtrade: flussi HS 8541/8542/8486 → comtrade_flows.
+│   ├── physical.py     USGS terremoti + NASA FIRMS incendi → events.
+│   ├── ioda.py         IODA blackout internet (BGP, 24 paesi) → internet_metrics + events.
+│   ├── anomaly.py      Detector z-score condiviso (surge/drop/both, no lookahead).
 │   └── sources_seed.py Catalogo fonti: lista completa + seed_sources(conn).
+├── export/
+│   └── parquet.py      Export Parquet partizionato (dated/undated). Fonte di verità ricostruibile.
 ├── semantic/
 │   ├── embedder.py     Batch embedding multilingual-e5-small → vec_documents.
 │   ├── dedup.py        KNN dedup semantica via sqlite-vec (cosine ≥ 0.92).
@@ -239,6 +246,7 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 | `trades` | 50-2k | Paper trading (prezzo registrato alla DECISIONE) |
 | `portfolios` | 3 | agent · random · benchmark |
 | `predictions` | 20-500 | Anticipazioni non finanziarie (calibrazione Tetlock) |
+| `internet_metrics` | 1/(paese, giorno) | Segnale BGP/active giornaliero per 24 paesi (IODA; drop → `events`) |
 | `gdelt_file_log` | 1k-50k | Tracking file GDELT scaricati (dedup + ripresa) |
 | `vec_documents` | uguale a raw_documents | Tabella virtuale sqlite-vec (embedding 384d) |
 
@@ -411,6 +419,7 @@ Aggiunte 2026-06-15: **MERICS** (DE, istituto europeo ricerca China, live); **Ta
 
 **Stato: ✅ Implementati** — `ingest/portwatch.py`, `ingest/comtrade.py`, `ingest/physical.py`
 
+
 | Fonte | Dati | Tabelle | Storico | Incrementale (da ultimo) |
 |---|---|---|---|---|
 | IMF PortWatch | Transiti chokepoint | `chokepoint_metrics` + `events` (anomalie z-score) | `--full` (~2019→oggi, paginato) | default `--days 90` (overlap + upsert idempotente) |
@@ -441,8 +450,70 @@ prevalentemente acquatica/artica) possono risultare senza dati fire (0 rilevazio
 corretto). L'anomalia richiede ≥11 punti di baseline e un floor assoluto
 (`--min-detections`, default 50) per non scattare su baseline quasi vuote.
 
-**Ancora da agganciare:** IODA / Cloudflare Radar (blackout internet), yfinance
-(prezzi EOD per il paper trading).
+**Ancora da agganciare:** yfinance (prezzi EOD per il paper trading — Fase 3).
+
+### 5.4 IODA (blackout internet)
+
+**Stato: ✅ Implementato** — `ingest/ioda.py`
+
+IODA (Internet Outage Detection and Analysis, Georgia Tech) rileva blackout internet via segnale BGP (visibilità prefissi di routing) e probing attivo ICMP. Nessuna chiave API richiesta.
+
+**24 paesi monitorati:** Afghanistan, Azerbaijan, Bangladesh, Belarus, China, Cuba, Ethiopia, Iraq, Iran, Kazakhstan, Libya, Myanmar, Nigeria, Pakistan, Palestine, Russia, Sudan, Syria, Tajikistan, Ukraine, Uzbekistan, Venezuela, Vietnam, Yemen.
+
+**Flusso:**
+1. Fetch segnale BGP giornaliero per ogni paese (timeseries 5-min → media giornaliera)
+2. Upsert in `internet_metrics(country_code, date, signal_bgp)`
+3. Rileva drop anomali (`direction="drop"`) vs baseline 30 giorni — z-score ≥ 2.5
+4. Promuove anomalie a `events(event_type='infrastructure', origin='ioda')`
+
+**Parametri:**
+
+| Flag | Default | Note |
+|---|---|---|
+| `--days` | 1 | Giorni recenti (incrementale) |
+| `--start / --end` | — | Bootstrap storico (date fisse) |
+| `--countries` | tutti i 24 | Sottoinsieme ISO-2 (es. `CN,RU`) |
+| `--baseline-days` | 30 | Finestra baseline z-score |
+| `--z-threshold` | 2.5 | Più stretto di PortWatch/FIRMS (blackout rari) |
+| `--datasource` | `bgp` | `bgp` o `active` |
+
+**Esempi:**
+
+```bash
+uv run pathos ingest ioda                          # ieri, tutti i 24 paesi
+uv run pathos ingest ioda --days 7                 # ultima settimana
+uv run pathos ingest ioda --countries CN,RU,IR     # solo questi tre
+uv run pathos ingest ioda --start 2026-01-01       # bootstrap storico
+```
+
+**Incrementale:** per ogni paese riprende dall'ultima data in `internet_metrics`. Se nessun dato, recupera `days + baseline_days - 1` giorni per costruire subito una baseline significativa.
+
+**Rate limit:** 1 req/s (cortesia verso l'API pubblica). Errori per singolo paese non bloccanti → `IODAResult.errors`.
+
+### 5.5 Export Parquet
+
+**Stato: ✅ Implementato** — `export/parquet.py`
+
+Esporta le tabelle principali in formato Parquet partizionato per data. I raw in Parquet sono la **fonte di verità ricostruibile**: se il DB sparisce, si rigenera dai Parquet.
+
+**Tabelle esportate:**
+- **Dated** (`raw_documents`, `events`): partizionato `table/year=YYYY/month=MM/data.parquet`
+- **Undated** (righe con `published_at/first_seen = NULL`): `table/undated/data.parquet`
+- **Non-dated** (`entities`, `entity_links`): `table/data.parquet`
+
+**Compressione:** Snappy (default pyarrow). Idempotente: sovrascrive le partizioni esistenti.
+
+```bash
+uv run pathos export parquet                       # tutte le tabelle → data/parquet/
+uv run pathos export parquet --tables raw_documents,events
+uv run pathos export parquet --out-dir /mnt/backup/parquet
+```
+
+**DuckDB query diretta (senza SQLite):**
+```sql
+SELECT * FROM 'data/parquet/raw_documents/**/*.parquet'
+WHERE origin = 'gdelt' AND published_at > '2026-01-01';
+```
 
 ---
 
@@ -675,12 +746,23 @@ pathos
 │   │   ├── --start         Backfill da YYYY-MM-DD
 │   │   ├── --end           Fine backfill
 │   │   └── --min-magnitude [default: 5.0]
-│   └── firms           Rilevazioni fire NASA FIRMS → fire_metrics + eventi surge (richiede FIRMS_MAP_KEY)
-│       ├── --start         Backfill da YYYY-MM-DD (auto source VIIRS_NOAA20_SP)
-│       ├── --end           Fine backfill
+│   ├── firms           Rilevazioni fire NASA FIRMS → fire_metrics + eventi surge (richiede FIRMS_MAP_KEY)
+│   │   ├── --start         Backfill da YYYY-MM-DD (auto source VIIRS_NOAA20_SP)
+│   │   ├── --end           Fine backfill
+│   │   ├── --baseline-days Finestra baseline [default: 30]
+│   │   ├── --z-threshold   Soglia z-score [default: 2.0]
+│   │   └── --min-detections Floor rilevazioni per anomalia [default: 50]
+│   └── ioda            Blackout internet IODA (BGP, 24 paesi) → internet_metrics + eventi drop
+│       ├── --days          Giorni recenti [default: 1]
+│       ├── --start / --end Bootstrap storico (date fisse YYYY-MM-DD)
+│       ├── --countries     ISO-2 comma-separated [default: tutti 24]
 │       ├── --baseline-days Finestra baseline [default: 30]
-│       ├── --z-threshold   Soglia z-score [default: 2.0]
-│       └── --min-detections Floor rilevazioni per anomalia [default: 50]
+│       ├── --z-threshold   Soglia z-score [default: 2.5]
+│       └── --datasource    bgp | active [default: bgp]
+├── export
+│   └── parquet         Export tabelle principali → Parquet partizionato
+│       ├── --tables        Subset (es. raw_documents,events) [default: tutte]
+│       └── --out-dir       Directory output [default: data/parquet]
 ├── embed               Embedding + dedup semantica + clustering → eventi
 │   ├── --batch-size    Doc per chiamata encode() [default: 32]
 │   ├── --skip-dedup    Solo embedding, no dedup
@@ -729,7 +811,7 @@ pathos
 | UN Comtrade | Flussi commerciali (HS code) | Mensile | ✅ |
 | USGS | Terremoti | Realtime | ✅ |
 | NASA FIRMS | Incendi | 3h | ✅ |
-| IODA | Blackout internet | Realtime | ⬜ |
+| IODA | Blackout internet (BGP, 24 paesi) | Realtime | ✅ |
 | yfinance | Prezzi EOD | Giornaliero | ⬜ |
 | FRED | Macro (tassi, CPI…) | Varia | ⬜ |
 
@@ -791,13 +873,15 @@ tests/
 ├── test_graph.py        build_entity_links, compute_narrative_divergences (10 test)
 ├── test_portwatch.py    PortWatch fetch, upsert, anomalie z-score
 ├── test_physical.py     USGS quake parse/store; FIRMS window logic, metrics, anomalie
-└── test_anomaly.py      find_anomalies: surge/drop/both, whole_history, min_value (8 test)
+├── test_anomaly.py      find_anomalies: surge/drop/both, whole_history, min_value (8 test)
+├── test_ioda.py         _aggregate_daily, _fetch_signals, ingest_ioda: upsert, outage, dedup, errori (12 test)
+└── test_parquet.py      export_to_parquet: partizioni, roundtrip, undated, idempotenza (9 test)
 ```
 
 **Esecuzione:**
 
 ```bash
-uv run pytest            # 160 test, ~10s, zero chiamate HTTP/modello reali
+uv run pytest            # 181 test, ~10s, zero chiamate HTTP/modello reali
 uv run pytest -v         # output verboso
 uv run pytest tests/test_semantic.py   # solo pipeline semantica
 ```
@@ -831,8 +915,8 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **1** | RSS multi-blocco (52 fonti (48 attive), 7 blocchi, 6 lingue) | ✅ |
 | **1** | PortWatch + Comtrade semiconduttori | ✅ |
 | **1** | USGS + NASA FIRMS | ✅ |
-| **1** | IODA / Cloudflare Radar (blackout internet) | ⬜ |
-| **1** | Storicizzazione Parquet | ⬜ |
+| **1** | IODA blackout internet (BGP, 24 paesi) | ✅ |
+| **1** | Storicizzazione Parquet (export partizionato) | ✅ |
 | **2** | Embedding e5-small + dedup semantica KNN | ✅ |
 | **2** | Clustering articoli → eventi | ✅ |
 | **2** | NER + geocoding (spaCy + Nominatim) | ✅ |
@@ -847,6 +931,8 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 
 **MVP verticale:** filiera semiconduttori — TSMC/ASML/SMIC, chokepoint Taiwan Strait. Pochi attori, geopolitica intensa, segnali chiari.
 
+→ **[Roadmap dettagliata](roadmap.md)** — task per task, Fase 3 con spec, non-goals.
+
 ---
 
-*Documenti correlati: [architecture.md](architecture.md) · [schema.md](schema.md) · [decisions.md](decisions.md) · [../useful_queries.sql](../useful_queries.sql)*
+*Documenti correlati: [architecture.md](architecture.md) · [schema.md](schema.md) · [decisions.md](decisions.md) · [roadmap.md](roadmap.md) · [../useful_queries.sql](../useful_queries.sql)*

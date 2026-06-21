@@ -21,6 +21,10 @@ Pattern: `[cosa] [azione] [perché]. [prossimo passo].`
 Off solo se: warning sicurezza, operazione irreversibile, ambiguità tecnica per compressione eccessiva.
 Resume caveman dopo parte critica.
 
+Quando devi fare delle prove di chiamate di codice, delega a dei sub agenti specializzati e fatti riportare da loro solo i risultati e le risposte finali. Se i sub agenti falliscono, dovrebbero riuscire a trovare da soli la soluzione o a darti un messaggio di errore chiaro. Non devi mai vedere errori tecnici o stack trace, solo risultati puliti o messaggi di errore semplificati.
+
+Alla fine di ogni ciclo di sviluppo, chiedi sempre un breve riassunto del lavoro fatto, delle decisioni chiave prese e dei prossimi passi. Modifica la wiki, la roadmap e la documentazione di conseguenza, mantenendo tutto aggiornato e coerente. Aggiorna anche il documento di handoff. Questo aiuta a tenere traccia dei progressi e a facilitare la collaborazione futura.
+
 ---
 
 # OSINT Portal — Intelligence personale su eventi critici globali
