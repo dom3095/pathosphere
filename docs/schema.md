@@ -27,6 +27,7 @@ erDiagram
     raw_documents {
         INTEGER id PK
         INTEGER source_id FK
+        TEXT origin "ingestor: gdelt|rss|comtrade|portwatch|usgs|firms"
         TEXT url "UNIQUE"
         TEXT title
         TEXT body
@@ -38,6 +39,7 @@ erDiagram
         INTEGER is_duplicate "1=near-duplicate di altro doc"
         INTEGER duplicate_of FK "id del doc canonico"
         INTEGER dedup_checked "1=dedup già processato"
+        INTEGER ner_done "1=NER già eseguito su questo doc"
     }
 
     events {
@@ -47,6 +49,7 @@ erDiagram
         TEXT first_seen "ISO 8601"
         TEXT last_seen "ISO 8601"
         TEXT event_type "conflict|epidemic|trade|infrastructure|political|other"
+        TEXT origin "ingestor: gdelt|rss|comtrade|portwatch|usgs|firms"
         INTEGER severity "1-5"
         TEXT location_name "nome human-readable"
         REAL lat
@@ -58,6 +61,61 @@ erDiagram
     event_documents {
         INTEGER event_id FK
         INTEGER document_id FK
+    }
+
+    gdelt_events {
+        INTEGER global_event_id PK "GDELT GlobalEventID (1 riga GDELT)"
+        INTEGER event_id FK "cluster 5-tupla in events"
+        INTEGER document_id FK "URL fonte"
+        TEXT sqldate "grezzo, inaffidabile (audit)"
+        TEXT date_added "DATEADDED → ISO, data canonica"
+        TEXT event_code "CAMEO EventCode pieno"
+        TEXT event_root_code "CAMEO root → events.event_type"
+        INTEGER quad_class "1..4 coop/conflitto x verbale/materiale"
+        REAL goldstein "-10..+10 impatto teorico"
+        REAL avg_tone "tono medio articoli"
+        INTEGER num_mentions
+        INTEGER num_sources
+        INTEGER num_articles
+    }
+
+    comtrade_flows {
+        INTEGER id PK
+        INTEGER document_id FK "doc sintetico"
+        INTEGER reporter_code "ISO numerico reporter"
+        TEXT reporter_iso
+        INTEGER partner_code "0 = World"
+        TEXT cmd_code "HS 8541|8542|8486"
+        TEXT flow_code "M import | X export"
+        TEXT period "YYYYMM"
+        REAL primary_value "valore commerciale USD"
+        REAL net_weight "kg, se presente"
+    }
+
+    fire_metrics {
+        TEXT area PK "area allineata ai chokepoint"
+        TEXT date PK "ISO YYYY-MM-DD (acq_date)"
+        INTEGER n_detections "rilevazioni fuoco giorno"
+        REAL frp_sum "fire radiative power totale MW"
+        REAL frp_max "picco FRP singolo pixel MW"
+        REAL lat "centroide rilevazioni"
+        REAL lon
+        TEXT source "VIIRS_SNPP_NRT | VIIRS_SNPP_SP | ..."
+        TEXT fetched_at "ISO 8601"
+    }
+
+    document_entities {
+        INTEGER document_id FK "raw_documents.id"
+        INTEGER entity_id FK "entities.id"
+        INTEGER mentions "conteggio menzioni nel doc"
+    }
+
+    geocode_cache {
+        TEXT query PK "testo query Nominatim"
+        REAL lat
+        REAL lon
+        TEXT display_name
+        TEXT fetched_at "ISO 8601"
     }
 
     narrative_divergences {
@@ -76,6 +134,7 @@ erDiagram
         TEXT canonical_name "forma normalizzata"
         TEXT entity_type "country|company|commodity|infrastructure|person|other"
         TEXT wikidata_qid "es. Q540386 = TSMC"
+        INTEGER wikidata_checked "1=lookup Wikidata già tentato"
         TEXT aliases "JSON array nomi alternativi"
         TEXT created_at "ISO 8601"
     }
@@ -172,6 +231,11 @@ erDiagram
     sources          ||--o{  raw_documents        : "source_id"
     raw_documents    ||--o{  event_documents      : "document_id"
     events           ||--o{  event_documents      : "event_id"
+    events           ||--o{  gdelt_events         : "event_id"
+    raw_documents    ||--o{  gdelt_events         : "document_id"
+    raw_documents    ||--o{  comtrade_flows       : "document_id"
+    raw_documents    ||--o{  document_entities    : "document_id"
+    entities         ||--o{  document_entities    : "entity_id"
     events           ||--o{  narrative_divergences: "event_id"
     events           ||--o{  theses               : "trigger_event"
     events           ||--o{  entity_links         : "source_event"
@@ -203,11 +267,14 @@ graph TD
         EN[entities]
         EL[entity_links]
         ED[event_documents]
+        DE[document_entities]
         RD --> ED
         E --> ED
         E --> ND
         E --> EL
         EN --> EL
+        RD --> DE
+        EN --> DE
     end
 
     subgraph AGENT["Agent & Valutazione"]
@@ -233,12 +300,18 @@ graph TD
 | Tabella | Fase | Righe tipiche | Note |
 |---|---|---|---|
 | `sources` | 0 | ~20 | Seeded una volta, aggiornate raramente |
-| `raw_documents` | 1 | migliaia/giorno | `content_hash` previene duplicati esatti |
-| `events` | 2 | centinaia/giorno | Aggregano N documenti sullo stesso evento |
+| `raw_documents` | 1 | migliaia/giorno | `content_hash` previene duplicati esatti; `origin` = ingestor di provenienza |
+| `events` | 2 | centinaia/giorno | Aggregano N documenti sullo stesso evento; `origin` = ingestor |
 | `event_documents` | 2 | join N:M | |
+| `gdelt_events` | 1 | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions) → `events` |
+| `comtrade_flows` | 1 | 1/record commerciale | Valori numerici flussi (USD, kg) accanto al doc sintetico |
+| `chokepoint_metrics` | 1 | 1/(chokepoint, giorno) | Timeseries transiti PortWatch; anomalie z-score → `events`. PK `(portid, date)`, no FK |
+| `fire_metrics` | 1 | 1/(area, giorno) | Timeseries rilevazioni FIRMS; surge z-score → `events`. PK `(area, date)`, no FK |
+| `document_entities` | 2 | N:M | Menzioni per doc × entità (output NER) |
 | `narrative_divergences` | 2 | decine/giorno | Solo eventi con ≥2 blocchi coperti |
-| `entities` | 2 | crescita lenta | Deduplicate via `wikidata_qid` |
+| `entities` | 2 | crescita lenta | Deduplicate via `wikidata_qid`; `wikidata_checked=1` dopo lookup |
 | `entity_links` | 2 | crescita lenta | Grafo relazionale entità |
+| `geocode_cache` | 2 | crescita lenta | Cache query Nominatim (miss incluse con lat/lon NULL) |
 | `watchlist_items` | 3 | decine | Indicatori osservabili per scenario ACH |
 | `theses` | 3 | 2-3/giorno | Approvate manualmente |
 | `portfolios` | 3 | 3 fissi | agent, random, benchmark |

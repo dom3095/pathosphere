@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # NASA FIRMS (free MAP_KEY from https://firms.modaps.eosdis.nasa.gov/api/)
     firms_map_key: str | None = None
 
+    # Tor SOCKS proxy for geo-blocked feeds (e.g. RT, sanctioned in the EU).
+    # Tor Browser exposes 9150; a standalone tor daemon uses 9050.
+    tor_socks_proxy: str = "socks5://127.0.0.1:9150"
+
     @field_validator("log_level")
     @classmethod
     def log_level_upper(cls, v: str) -> str:

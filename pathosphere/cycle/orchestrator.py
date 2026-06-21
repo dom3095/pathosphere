@@ -22,6 +22,7 @@ class Phase(Enum):
     EMBED = auto()
     EXTRACT = auto()
     CLUSTER = auto()
+    GRAPH = auto()
     BRIEF = auto()
 
 
@@ -30,6 +31,7 @@ PHASE_ORDER = [
     Phase.EMBED,
     Phase.EXTRACT,
     Phase.CLUSTER,
+    Phase.GRAPH,
     Phase.BRIEF,
 ]
 
@@ -86,6 +88,8 @@ def _run_phase(phase: Phase) -> None:
             _phase_extract()
         case Phase.CLUSTER:
             _phase_cluster()
+        case Phase.GRAPH:
+            _phase_graph()
         case Phase.BRIEF:
             _phase_brief()
 
@@ -144,6 +148,15 @@ def _phase_ingest() -> None:
             f"INGEST/FIRMS: {firms.detections_total} detections, "
             f"+{firms.events_created} events"
         )
+
+    from pathosphere.ingest.ioda import ingest_ioda
+
+    ioda = ingest_ioda(conn)
+    logger.info(
+        f"INGEST/IODA: {ioda.countries_checked} countries | "
+        f"{ioda.metrics_upserted} metrics | +{ioda.events_created} events"
+        + (f" | {len(ioda.errors)} errors" if ioda.errors else "")
+    )
 
     conn.close()
 
@@ -215,6 +228,29 @@ def _phase_cluster() -> None:
     cluster = cluster_documents(conn)
     logger.info(
         f"CLUSTER: {cluster.events_created} events, {cluster.docs_assigned} docs assigned"
+    )
+
+    conn.close()
+
+
+def _phase_graph() -> None:
+    from pathosphere.config import get_settings
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.graph import build_entity_links, compute_narrative_divergences
+
+    settings = get_settings()
+    conn = get_connection(settings.db_path)
+
+    links = build_entity_links(conn)
+    logger.info(
+        f"GRAPH/LINKS: {links.links_written} links "
+        f"({links.links_deleted} replaced), {links.pairs_evaluated} pairs"
+    )
+
+    divs = compute_narrative_divergences(conn)
+    logger.info(
+        f"GRAPH/DIVERGENCE: {divs.pairs_written} pairs, "
+        f"{divs.events_processed} events processed, {divs.events_skipped} skipped"
     )
 
     conn.close()

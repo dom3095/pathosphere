@@ -1,47 +1,160 @@
 # Next steps
 
-## ✅ Fatto
+Aggiornato 2026-06-16.
 
-- `feature/rss_feed` merged in main (rebase), contenuto identico — branch eliminabile.
-- **1. Ottimizzazione GDELT** committata: `build_lookup_caches` elimina ~2 SELECT/riga.
-- **2. NER + geocoding + Wikidata** implementati in `semantic/extract.py`:
-  spaCy `xx_ent_wiki_sm` → `entities` + `document_entities`; Nominatim con
-  `geocode_cache` (1 req/s) → `events.lat/lon`; `wbsearchentities` → QID +
-  canonical_name. Wired in `_phase_extract` + comando `pathos extract`.
-  Nota: dopo pull eseguire `uv sync` e `pathos db init` (migrazioni additive).
-- **3. PortWatch** implementato in `ingest/portwatch.py`: ArcGIS FeatureServer
-  `Daily_Chokepoints_Data`, 7 chokepoint strategici → tabella `chokepoint_metrics`
-  (timeseries giornaliera). Anomaly detection z-score vs baseline trailing 30g
-  (latest escluso, no lookahead) → `events` `event_type=infrastructure` con
-  `location_name`=portname (geocode phase riempie lat/lon). Comando
-  `pathos ingest portwatch` + wired in `_phase_ingest`. 15 test.
-- **4. Comtrade** implementato in `ingest/comtrade.py`: API preview gratuita
-  (`public/v1/preview/C/M/HS`, no key, ≤500 rec/call). HS 8541/8542/8486,
-  9 reporter pilota vs World, import+export mensili. Filtri ai totali
-  (`motCode=0`, `customsCode=C00`, `partner2Code=0`) per evitare il troncamento
-  a 500 dovuto alla disaggregazione. Ogni record → `raw_document` sintetico
-  (source "UN Comtrade", url `comtrade://...` per dedup) così la pipeline
-  semantica tratta i flussi come documenti. Comando `pathos ingest comtrade`
-  + wired in `_phase_ingest`. 11 test.
-- **5. USGS + FIRMS** implementati in `ingest/physical.py`, `event_type=hazard`:
-  - USGS earthquakes (FDSNWS GeoJSON, no key): sismi significativi
-    (`min_magnitude` default 5.0) → un evento per sisma con lat/lon/depth,
-    dedup (title, first_seen), severity da magnitudo. `pathos ingest usgs`.
-  - NASA FIRMS (richiede `FIRMS_MAP_KEY` gratuito in .env): rilevazioni fuoco
-    attive per 4 aree strategiche, evento di sintesi solo se conteggio > soglia
-    (default 50) — non scarica i singoli pixel. Skip pulito senza key.
-    `pathos ingest firms`. config: `firms_map_key`.
-  - Entrambi wired in `_phase_ingest`. 12 test.
+## 🤝 Handoff — leggere per primo
 
-**→ Fase 1 COMPLETATA. Tutti gli ingestor pronti.** Prossimo: Fase 3 (agent).
+- **Branch**: `feat/numeric-detail-tables-rss-tor`, commit pushati fino alla sessione precedente. Il lavoro di questa sessione (grafo + divergenza + doc) è **in locale non committato** — l'utente dice quando committare. `git status` per il diff.
+- **Test**: 160 verdi (`uv run pytest`, ~10s). Eseguirli dopo ogni modifica.
+- **DB attuale** `data/db/pathosphere.db` (campione): 6,967 doc (gdelt 5742, rss 1081, comtrade 144), 4,095 eventi. `entity_links`, `narrative_divergences`, `internet_metrics` vuote nel campione — richiedono `pathos graph` e `pathos ingest ioda` (li lancia l'utente).
+- **Drop+rebuild** eseguito 2026-06-15 — campione pulito disponibile.
+- **Sicurezza**: mai leggere `.env`/secrets (CLAUDE.md + deny in `.claude/settings.json`). Per FIRMS controllare solo `bool(settings.firms_map_key)`.
+- **Gli ingest li lancia l'utente** dal terminale (rete + chiavi), non l'agent.
+
+### Comandi per ricostruire un campione (li lancia l'utente)
+
+```bash
+uv run pathos db init && uv run pathos sources seed
+uv run pathos ingest gdelt --days 2
+uv run pathos ingest rss --max-age-days 3
+uv run pathos ingest portwatch
+uv run pathos ingest comtrade --start 202401 --end 202403
+uv run pathos ingest usgs --start 2026-01-01
+uv run pathos ingest firms --start 2026-01-01
+uv run pathos ingest ioda --days 35
+
+sqlite3 data/db/pathosphere.db "UPDATE raw_documents SET embedded=1 WHERE origin='gdelt';"
+uv run pathos embed
+uv run pathos extract
+uv run pathos graph
+```
 
 ---
 
-## Fase 3 (dopo phase1-remaining)
+## ✅ Fatto in questa sessione (2026-06-21)
 
-- Brief mattutino con Qwen3 4B → `_phase_brief`
-- Generatore tesi con catene causali (Claude Agent SDK)
-- Paper trading EOD: `trades`, `portfolios`, aggiornamento prezzi via yfinance
-- Flusso approvazione CLI: proposta → approve/reject con motivazione loggata
-- Portafogli di controllo: agent vs random vs buy&hold indice
-- Predizioni non finanziarie con calibrazione Tetlock (`predictions`)
+- **`ingest/ioda.py`** — IODA blackout internet: fetch BGP per 24 paesi, upsert `internet_metrics`, anomalie `direction="drop"` → `events(event_type='infrastructure', origin='ioda')`. Bootstrap + incrementale.
+- **`export/parquet.py`** — export Parquet partizionato per data (`year=YYYY/month=MM`); undated → `undated/`; tabelle non-dated → flat file. Snappy, idempotente.
+- **CLI**: `pathos ingest ioda` (con `--days`, `--start`, `--end`, `--countries`, `--z-threshold`), `pathos export parquet` (con `--tables`, `--out-dir`)
+- **Orchestratore**: IODA integrato in `_phase_ingest()`
+- **Test**: `tests/test_ioda.py` (12 test) + `tests/test_parquet.py` (9 test) → 181 totali verdi
+- **Docs**: `docs/roadmap.md` creato; `wiki.md`, `README.md`, `next_steps.md` aggiornati — Fase 1 marcata completa
+
+---
+
+## ✅ Fatto in sessione precedente (2026-06-16)
+
+- **`semantic/graph.py`** — due funzioni nuove:
+  - `build_entity_links(conn, min_cooccurrences=1)` → `entity_links` (co-occorrenze, `relation_type='co-occurs'`, strength 0-1); query SQL unica, idempotente
+  - `compute_narrative_divergences(conn)` → `narrative_divergences` (score coseno per coppia blocco, `summary=NULL` per ora); loop per-evento, idempotente
+  - `deserialize(blob)` helper per leggere embedding da `vec_documents`
+- **CLI**: `pathos graph` (con `--skip-links`, `--skip-divergence`, `--min-cooccurrences`)
+- **Orchestratore**: 6° fase `GRAPH` tra CLUSTER e BRIEF; `pathos cycle --from-phase graph` funziona
+- **Test**: `tests/test_graph.py` — 10 test (5 links + 5 divergenza, tutti verdi); `tests/test_orchestrator.py` aggiornato (5→6 fasi)
+- **Docs**: `wiki.md`, `README.md`, `next_steps.md` aggiornati — Fase 2 marcata completa
+
+---
+
+## ✅ Sessione precedente (2026-06-15)
+
+- **Schema**: colonne `origin`, `gdelt_events`, `comtrade_flows`, `fire_metrics`, fix ordine migrazioni
+- **GDELT**, **Comtrade**, **PortWatch**, **FIRMS**, **USGS**: bootstrap + incrementale + anomalie
+- **RSS**: Tor per RT, header browser, 8 fonti nuove (SCMP All News, SCMP China, MERICS, Taiwan MOFA)
+- **Fase 2 — Pipeline semantica**: embedder, dedup, cluster (threshold 0.85, cap 30), NER+geocoding+Wikidata
+
+---
+
+## ✅ Fase 2 — COMPLETATA (2026-06-16)
+
+| Step | Modulo | Output tabelle |
+|---|---|---|
+| Embedding e5-small 384d | `semantic/embedder.py` | `vec_documents` |
+| Dedup semantica KNN ≥0.92 | `semantic/dedup.py` | `raw_documents.is_duplicate` |
+| Clustering → eventi RSS | `semantic/cluster.py` | `events`, `event_documents` |
+| NER + geocoding + Wikidata | `semantic/extract.py` | `entities`, `document_entities`, `geocode_cache`, `events.lat/lon` |
+| Grafo co-occorrenze | `semantic/graph.py` | `entity_links` |
+| Divergenza narrativa | `semantic/graph.py` | `narrative_divergences` |
+
+---
+
+## ▶ Fase 3 — Agent e valutazione
+
+Prossimo blocco di lavoro. Nessun codice ancora presente in `pathosphere/agent/`.
+
+### 3a. Astrazione LLM
+
+File da creare: `pathosphere/llm/client.py`
+
+```python
+# API OpenAI-compatible — cambiare backend = una riga di config
+# reasoning_model: "claude" | "qwen-local"
+async def complete(messages, model=None, json_mode=False) -> str: ...
+```
+
+- **Claude**: Claude Agent SDK (`claude -p`), non chiamate API dirette
+- **Qwen locale**: Ollama endpoint `http://localhost:11434/v1`, modello `qwen3:4b`
+- Config: `settings.reasoning_model` (già in config.py come placeholder?)
+
+### 3b. Brief mattutino
+
+File: `pathosphere/agent/brief.py`  
+Funzione: `generate_brief(conn, llm_client) → str`
+
+Input (già disponibili):
+- Cluster con divergenza alta (`narrative_divergences.divergence_score > 0.5`)
+- Entità più connesse nel grafo (`entity_links` per gradi)
+- Anomalie recenti (eventi `origin` in `portwatch`/`firms`/`usgs`)
+
+Output: testo strutturato → loggato + salvato (tabella `briefs`? o file?)
+
+### 3c. Generatore tesi
+
+File: `pathosphere/agent/thesis.py`  
+Funzione: `generate_thesis(conn, llm_client, event_ids) → Thesis`
+
+Ogni tesi registra (tabella `theses` già in schema):
+- `event_id` scatenante
+- `causal_chain` (JSON: A→B→C)
+- `instrument` (es. "TSM", "FXI", "UGA")
+- `horizon_days`
+- `invalidation_condition`
+- `confidence` 0-1
+- `approved_at` (NULL finché l'utente non approva)
+
+### 3d. Flusso approvazione CLI
+
+Comando: `pathos approve` o `pathos thesis list/approve/reject`
+
+```bash
+uv run pathos thesis list           # tesi in attesa di approvazione
+uv run pathos thesis approve <id>   # approva → logga prezzo apertura yfinance
+uv run pathos thesis reject <id> --reason "..."   # rifiuta con motivazione
+```
+
+### 3e. Paper trading EOD
+
+- `yfinance`: non ancora agganciato — prerequisito critico
+- Tabelle `trades`, `portfolios` già in schema
+- No-lookahead: `price_open` = prezzo al momento dell'APPROVAZIONE
+- Portfolio di controllo: agent / random (stesso numero trade, ticker casuali) / buy&hold SPY
+
+### 3f. Predizioni non finanziarie
+
+Tabella `predictions` già in schema:
+- `statement`: "Escalation in X entro 2 settimane"
+- `probability`: 0-1
+- `resolves_at`: data scadenza
+- `outcome`: NULL → True/False a scadenza
+- Metrica: Brier score per calibrazione Tetlock
+
+---
+
+## Housekeeping / pendenti
+
+- **Push branch + PR** quando pronto
+- **Backup `data/db/pathosphere.db.bak-20260614`** (2.5G) = unica copia degli 8 anni GDELT. Tenere.
+- **yfinance**: non ancora agganciato — prerequisito per il paper trading (Fase 3e)
+- **`entity_links` e `narrative_divergences`** vuote nel campione — richiedono `pathos graph` (l'utente)
+- **GKG enrichment**: opzionale per abilitare ricerca semantica su GDELT
+- **`summary` in `narrative_divergences`**: NULL ora, riempire con LLM in Fase 3
+- **`relation_type` in `entity_links`**: solo `co-occurs` ora; tipi semantici (`sanctions`, `supplies`…) via LLM in Fase 3

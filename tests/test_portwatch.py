@@ -13,6 +13,7 @@ import pytest
 
 from pathosphere.ingest.portwatch import (
     _detect_anomaly,
+    _emit_anomalies,
     _iso_date,
     ingest_portwatch,
 )
@@ -130,6 +131,24 @@ def test_anomaly_dedup_on_rerun(tmp_db):
     assert first == 1
     assert second == 0
     assert tmp_db.execute("SELECT COUNT(*) c FROM events").fetchone()["c"] == 1
+
+
+def test_emit_anomalies_whole_history_recovers_mid_spikes(tmp_db):
+    # two anomalies buried in history (surge then drop), quiet latest day:
+    # latest-only would miss both; whole_history sweep recovers them.
+    series = _BASELINE + [120] + _BASELINE + [5] + _BASELINE
+    _seed_metrics(tmp_db, "chokepoint1", series, end=date(2026, 6, 30))
+
+    latest = _emit_anomalies(tmp_db, "chokepoint1", baseline_days=30,
+                             z_threshold=2.0, whole_history=False)
+    assert latest == 0   # last point is quiet baseline
+
+    swept = _emit_anomalies(tmp_db, "chokepoint1", baseline_days=30,
+                            z_threshold=2.0, whole_history=True)
+    assert swept == 2
+    kinds = {r["summary"].split("— transit ")[1].rstrip(".")
+             for r in tmp_db.execute("SELECT summary FROM events").fetchall()}
+    assert kinds == {"surge", "drop"}
 
 
 def test_anomaly_severity_scales_with_z(tmp_db):
