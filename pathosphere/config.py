@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # Tor Browser exposes 9150; a standalone tor daemon uses 9050.
     tor_socks_proxy: str = "socks5://127.0.0.1:9150"
 
+    # LLM backend for reasoning tasks (agent/brief/thesis)
+    reasoning_model: str = "claude"  # "claude" | "qwen-local"
+
     @field_validator("log_level")
     @classmethod
     def log_level_upper(cls, v: str) -> str:
