@@ -813,6 +813,76 @@ def graph(skip_links: bool, skip_divergence: bool, min_cooccurrences: int) -> No
     conn.close()
 
 
+# ─── brief ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option(
+    "--date", "brief_date", default=None,
+    help="ISO date for the brief (default: today UTC, e.g. 2026-06-22).",
+)
+@click.option(
+    "--lookback-days", default=7, show_default=True,
+    help="Days back to scan for divergences and anomalies.",
+)
+@click.option(
+    "--model", default=None,
+    type=click.Choice(["claude", "qwen-local"]),
+    help="LLM backend override (default: from REASONING_MODEL in .env).",
+)
+@click.option("--dry-run", is_flag=True, help="Print context counts only; do not call LLM.")
+def brief(
+    brief_date: str | None,
+    lookback_days: int,
+    model: str | None,
+    dry_run: bool,
+) -> None:
+    """Generate the morning intelligence brief and save it to data/briefs/."""
+    import asyncio
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+    from pathosphere.agent.brief import generate_brief
+    from pathosphere.agent.brief import (
+        _query_divergences,
+        _query_hub_entities,
+        _query_recent_anomalies,
+    )
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    if dry_run:
+        from datetime import date as _date
+        target = brief_date or _date.today().isoformat()
+        divs = _query_divergences(conn, lookback_days)
+        hubs = _query_hub_entities(conn)
+        anoms = _query_recent_anomalies(conn, lookback_days)
+        conn.close()
+        click.echo(
+            f"\nBrief dry-run for {target} (lookback={lookback_days}d):\n"
+            f"  Divergences : {len(divs)}\n"
+            f"  Hub entities: {len(hubs)}\n"
+            f"  Anomalies   : {len(anoms)}\n"
+            "(no LLM call made)"
+        )
+        return
+
+    llm_client = LLMClient(backend=model)
+    result = asyncio.run(
+        generate_brief(conn, llm_client, brief_date=brief_date, lookback_days=lookback_days)
+    )
+    conn.close()
+
+    click.echo(
+        f"\nBrief generated:\n"
+        f"  Date    : {result.date}\n"
+        f"  File    : {result.file_path}\n"
+        f"  DB id   : {result.brief_id}\n"
+        f"  Signals : {result.event_count} events | {result.entity_count} entities"
+    )
+    click.echo(f"\n--- preview (first 500 chars) ---\n{result.content[:500]}")
+
+
 # ─── export ───────────────────────────────────────────────────────────────────
 
 @cli.group()

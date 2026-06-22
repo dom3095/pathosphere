@@ -257,4 +257,21 @@ def _phase_graph() -> None:
 
 
 def _phase_brief() -> None:
-    logger.info("BRIEF phase not yet implemented (Phase 3) — skipping")
+    import asyncio
+    from pathosphere.config import get_settings
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+    from pathosphere.agent.brief import generate_brief
+
+    settings = get_settings()
+    conn = get_connection(settings.db_path)
+    llm_client = LLMClient()
+
+    result = asyncio.run(generate_brief(conn, llm_client))
+    conn.close()
+
+    logger.info(
+        f"BRIEF: id={result.brief_id} | "
+        f"events={result.event_count} | entities={result.entity_count} | "
+        f"file={result.file_path}"
+    )

@@ -1,0 +1,306 @@
+"""
+Morning brief generator.
+
+Queries the DB for:
+  - High-divergence narrative clusters (divergence_score > 0.5)
+  - Hub entities (highest-degree nodes in entity_links)
+  - Recent physical / infrastructure anomaly events (portwatch, usgs, firms, ioda)
+
+Generates a structured Markdown brief via the LLM client and persists it to:
+  - data/briefs/YYYY-MM-DD.md  (filesystem)
+  - briefs table               (SQLite, upsert on date)
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+from loguru import logger
+
+from pathosphere.config import get_settings
+from pathosphere.llm.client import LLMClient
+
+# ── tuneable constants ─────────────────────────────────────────────────────────
+
+_DIVERGENCE_THRESHOLD = 0.5
+_MAX_DIVERGENCES = 8
+_MAX_HUB_ENTITIES = 10
+_MAX_ANOMALY_EVENTS = 12
+_ANOMALY_ORIGINS = ("portwatch", "usgs", "firms", "ioda")
+
+
+# ── result type ───────────────────────────────────────────────────────────────
+
+@dataclass
+class BriefResult:
+    date: str
+    content: str
+    file_path: Path
+    brief_id: int
+    event_count: int
+    entity_count: int
+
+
+# ── DB queries ────────────────────────────────────────────────────────────────
+
+def _query_divergences(conn: sqlite3.Connection, lookback_days: int) -> list[dict]:
+    """Return high-divergence narrative cluster rows from the last N days."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    rows = conn.execute(
+        """
+        SELECT
+            e.id            AS event_id,
+            e.title,
+            e.event_type,
+            e.location_name,
+            e.last_seen,
+            nd.block_a,
+            nd.block_b,
+            nd.divergence_score,
+            nd.summary      AS divergence_summary
+        FROM narrative_divergences nd
+        JOIN events e ON e.id = nd.event_id
+        WHERE nd.divergence_score > ?
+          AND e.last_seen >= ?
+        ORDER BY nd.divergence_score DESC, e.last_seen DESC
+        LIMIT ?
+        """,
+        (_DIVERGENCE_THRESHOLD, cutoff, _MAX_DIVERGENCES),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _query_hub_entities(conn: sqlite3.Connection) -> list[dict]:
+    """Return entities ordered by total co-occurrence link degree (both directions)."""
+    rows = conn.execute(
+        """
+        WITH entity_degree AS (
+            SELECT entity_a AS eid FROM entity_links
+            UNION ALL
+            SELECT entity_b AS eid FROM entity_links
+        )
+        SELECT
+            e.id,
+            e.name,
+            e.entity_type,
+            e.canonical_name,
+            COUNT(*) AS degree
+        FROM entity_degree ed
+        JOIN entities e ON e.id = ed.eid
+        GROUP BY e.id
+        ORDER BY degree DESC
+        LIMIT ?
+        """,
+        (_MAX_HUB_ENTITIES,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _query_recent_anomalies(
+    conn: sqlite3.Connection, lookback_days: int
+) -> list[dict]:
+    """Return recent physical / infrastructure events from sensor-based ingestors."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    placeholders = ",".join("?" * len(_ANOMALY_ORIGINS))
+    rows = conn.execute(
+        f"""
+        SELECT
+            id, title, event_type, origin, severity,
+            location_name, last_seen, summary
+        FROM events
+        WHERE origin IN ({placeholders})
+          AND last_seen >= ?
+        ORDER BY severity DESC, last_seen DESC
+        LIMIT ?
+        """,
+        (*_ANOMALY_ORIGINS, cutoff, _MAX_ANOMALY_EVENTS),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── prompt builder ────────────────────────────────────────────────────────────
+
+def _build_prompt(
+    divergences: list[dict],
+    hub_entities: list[dict],
+    anomalies: list[dict],
+    brief_date: str,
+) -> list[dict]:
+    """Construct the chat-message list to send to the LLM."""
+    system = (
+        "You are a geopolitical intelligence analyst producing a morning brief "
+        "for a single analyst. Be concise, analytical, and structured. "
+        "Focus on causal connections and second-order effects. "
+        "Output valid Markdown with clear section headers."
+    )
+
+    lines: list[str] = [
+        f"# Intelligence Brief — {brief_date}",
+        "",
+        "## TASK",
+        "Generate a structured morning intelligence brief from the signals below.",
+        "For each high-divergence event explain what the narrative gap implies.",
+        "For hub entities flag any strategic significance of their centrality.",
+        "For anomalies hypothesize the most likely cause and downstream impact.",
+        "End with a **SYNTHESIS** section: 2-3 key takeaways and watchlist updates.",
+        "",
+    ]
+
+    if divergences:
+        lines += ["## NARRATIVE DIVERGENCES (score > 0.5)", ""]
+        for d in divergences:
+            lines.append(
+                f"- **Event {d['event_id']}**: {d['title']} | "
+                f"score={d['divergence_score']:.2f} | "
+                f"{d['block_a']} vs {d['block_b']} | "
+                f"type={d['event_type'] or 'unknown'} | "
+                f"location={d['location_name'] or 'unknown'} | "
+                f"last_seen={d['last_seen']}"
+            )
+            if d.get("divergence_summary"):
+                lines.append(f"  _{d['divergence_summary']}_")
+        lines.append("")
+
+    if hub_entities:
+        lines += ["## HUB ENTITIES (by co-occurrence degree)", ""]
+        for e in hub_entities:
+            name = e.get("canonical_name") or e["name"]
+            lines.append(f"- {name} [{e['entity_type']}] — degree={e['degree']}")
+        lines.append("")
+
+    if anomalies:
+        lines += ["## PHYSICAL / INFRASTRUCTURE ANOMALIES", ""]
+        for a in anomalies:
+            lines.append(
+                f"- **{a['origin'].upper()}** | {a['title']} | "
+                f"severity={a['severity']} | "
+                f"location={a['location_name'] or 'unknown'} | "
+                f"last_seen={a['last_seen']}"
+            )
+            if a.get("summary"):
+                lines.append(f"  _{a['summary']}_")
+        lines.append("")
+
+    if not divergences and not hub_entities and not anomalies:
+        lines += [
+            "## NOTE",
+            "No significant signals found for this period.",
+            "The database may be empty or the lookback window too short.",
+            "Generate a brief acknowledging the absence of data and suggest",
+            "running the ingestion cycle to populate the database.",
+            "",
+        ]
+
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+
+# ── persistence ───────────────────────────────────────────────────────────────
+
+def _save_brief_file(content: str, brief_date: str, briefs_dir: Path) -> Path:
+    """Write the brief Markdown to <briefs_dir>/YYYY-MM-DD.md."""
+    briefs_dir.mkdir(parents=True, exist_ok=True)
+    path = briefs_dir / f"{brief_date}.md"
+    path.write_text(content, encoding="utf-8")
+    logger.info(f"BRIEF: file saved → {path}")
+    return path
+
+
+def _save_brief_db(
+    conn: sqlite3.Connection,
+    brief_date: str,
+    content: str,
+    event_count: int,
+    entity_count: int,
+) -> int:
+    """Upsert the brief into the briefs table; return the row id."""
+    conn.execute(
+        """
+        INSERT INTO briefs (date, content, event_count, entity_count)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET
+            content      = excluded.content,
+            event_count  = excluded.event_count,
+            entity_count = excluded.entity_count,
+            generated_at = datetime('now')
+        """,
+        (brief_date, content, event_count, entity_count),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT id FROM briefs WHERE date = ?", (brief_date,)
+    ).fetchone()
+    return row[0]
+
+
+# ── public API ────────────────────────────────────────────────────────────────
+
+async def generate_brief(
+    conn: sqlite3.Connection,
+    llm_client: LLMClient,
+    *,
+    brief_date: str | None = None,
+    lookback_days: int = 7,
+    briefs_dir: Path | None = None,
+) -> BriefResult:
+    """Generate and persist a structured morning intelligence brief.
+
+    Args:
+        conn:         Open SQLite connection (briefs table must exist).
+        llm_client:   Configured LLMClient instance.
+        brief_date:   ISO date for this brief (default: today UTC).
+        lookback_days: How far back to search for relevant events.
+        briefs_dir:   Directory for .md files (default: data/briefs/).
+
+    Returns:
+        BriefResult with content, saved file path, DB id, and signal counts.
+    """
+    if brief_date is None:
+        brief_date = date.today().isoformat()
+
+    if briefs_dir is None:
+        settings = get_settings()
+        briefs_dir = settings.db_path.parent.parent / "briefs"
+
+    logger.info(f"BRIEF: generating for {brief_date} (lookback={lookback_days}d)")
+
+    divergences = _query_divergences(conn, lookback_days)
+    hub_entities = _query_hub_entities(conn)
+    anomalies = _query_recent_anomalies(conn, lookback_days)
+
+    logger.info(
+        f"BRIEF: {len(divergences)} divergences | "
+        f"{len(hub_entities)} hub entities | "
+        f"{len(anomalies)} anomalies"
+    )
+
+    messages = _build_prompt(divergences, hub_entities, anomalies, brief_date)
+    content = await llm_client.complete(messages)
+
+    file_path = _save_brief_file(content, brief_date, briefs_dir)
+    brief_id = _save_brief_db(
+        conn,
+        brief_date=brief_date,
+        content=content,
+        event_count=len(divergences) + len(anomalies),
+        entity_count=len(hub_entities),
+    )
+
+    logger.success(
+        f"BRIEF: id={brief_id} | events={len(divergences) + len(anomalies)} | "
+        f"entities={len(hub_entities)} | file={file_path}"
+    )
+
+    return BriefResult(
+        date=brief_date,
+        content=content,
+        file_path=file_path,
+        brief_id=brief_id,
+        event_count=len(divergences) + len(anomalies),
+        entity_count=len(hub_entities),
+    )

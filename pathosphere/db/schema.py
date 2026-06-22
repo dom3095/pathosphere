@@ -377,6 +377,16 @@ _MIGRATIONS = [
         PRIMARY KEY (country_code, date)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_internet_metrics_date ON internet_metrics(country_code, date)",
+    # 3b: morning brief storage (added in Fase 3 session 3b)
+    """CREATE TABLE IF NOT EXISTS briefs (
+        id           INTEGER PRIMARY KEY,
+        date         TEXT    NOT NULL UNIQUE,
+        content      TEXT    NOT NULL,
+        event_count  INTEGER NOT NULL DEFAULT 0,
+        entity_count INTEGER NOT NULL DEFAULT 0,
+        generated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_briefs_date ON briefs(date)",
 ]
 
 
