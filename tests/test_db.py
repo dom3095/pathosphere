@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "trades",
     "predictions",
     "gdelt_file_log",
+    "briefs",
 }
 
 
