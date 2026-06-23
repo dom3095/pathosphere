@@ -387,6 +387,30 @@ _MIGRATIONS = [
         generated_at TEXT    NOT NULL DEFAULT (datetime('now'))
     )""",
     "CREATE INDEX IF NOT EXISTS idx_briefs_date ON briefs(date)",
+    # 3c: price snapshot at thesis generation time (no-lookahead anchor)
+    "ALTER TABLE theses ADD COLUMN price_snapshot REAL",
+    # 3c: link watchlist items back to the thesis that generated them
+    "ALTER TABLE watchlist_items ADD COLUMN thesis_id INTEGER REFERENCES theses(id)",
+    # 3c: debate tables for multi-persona pipeline
+    """CREATE TABLE IF NOT EXISTS debates (
+        id          INTEGER PRIMARY KEY,
+        date        TEXT    NOT NULL,
+        brief_id    INTEGER REFERENCES briefs(id),
+        status      TEXT    NOT NULL DEFAULT 'in_progress',
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_debates_date ON debates(date)",
+    """CREATE TABLE IF NOT EXISTS persona_analyses (
+        id          INTEGER PRIMARY KEY,
+        debate_id   INTEGER NOT NULL REFERENCES debates(id),
+        persona     TEXT    NOT NULL,
+        step        TEXT    NOT NULL,
+        content     TEXT    NOT NULL,
+        created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_persona_analyses_debate ON persona_analyses(debate_id, step)",
+    # 3c: link theses to the debate that generated them
+    "ALTER TABLE theses ADD COLUMN debate_id INTEGER REFERENCES debates(id)",
 ]
 
 

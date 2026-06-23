@@ -20,6 +20,7 @@ dependencies = [
     "caveman>=1.0",
     "spacy>=3.7",
     "xx-ent-wiki-sm",
+    "yfinance>=1.4.1",
 ]
 
 [project.scripts]
