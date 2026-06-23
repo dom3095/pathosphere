@@ -883,6 +883,95 @@ def brief(
     click.echo(f"\n--- preview (first 500 chars) ---\n{result.content[:500]}")
 
 
+# ─── thesis ───────────────────────────────────────────────────────────────────
+
+@cli.group()
+def thesis() -> None:
+    """Thesis generation (direct or via multi-persona debate)."""
+
+
+@thesis.command("generate")
+@click.option("--date", "brief_date", default=None,
+              help="ISO date of the brief to use (default: today UTC).")
+@click.option("--n", default=3, show_default=True,
+              help="Number of primary theses to generate.")
+@click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
+              help="LLM backend override (default: from REASONING_MODEL in .env).")
+def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
+    """Generate theses from today's brief (fast, single LLM call)."""
+    import asyncio
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+    from pathosphere.agent.thesis import generate_theses
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    llm_client = LLMClient(backend=model)
+
+    result = asyncio.run(generate_theses(conn, llm_client, brief_date=brief_date, n=n))
+    conn.close()
+
+    click.echo(
+        f"\nTheses generated:\n"
+        f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
+        f"  Watchlist: +{result.watchlist_created} items\n"
+        f"  IDs      : {result.thesis_ids}"
+    )
+
+
+@thesis.command("debate")
+@click.option("--date", "brief_date", default=None,
+              help="ISO date of the brief to use (default: today UTC).")
+@click.option("--n", default=3, show_default=True,
+              help="Number of primary theses to generate.")
+def thesis_debate(brief_date: str | None, n: int) -> None:
+    """Generate theses via multi-persona debate (Qwen x13 + Claude x1).
+
+    Pipeline:
+      1. Research   — 6 personas independently analyse the brief (Qwen, parallel)
+      2. Divergence — detect 2-3 key disagreement points (Qwen)
+      3. Critique   — each persona responds to divergences (Qwen, parallel)
+      4. Synthesis  — Claude generates theses informed by the debate (Claude)
+    """
+    import asyncio
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+    from pathosphere.agent.debate import PERSONAS, run_debate
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    qwen_client = LLMClient(backend="qwen-local")
+    claude_client = LLMClient(backend="claude")
+
+    click.echo(
+        f"\nStarting debate for {brief_date or 'today'} | "
+        f"personas: {', '.join(PERSONAS)} | n={n}"
+    )
+    click.echo("Step 1/4 — Research (6 personas, parallel)...")
+
+    result = asyncio.run(
+        run_debate(conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n)
+    )
+    conn.close()
+
+    click.echo(
+        f"\nDebate complete:\n"
+        f"  Debate id  : {result.debate_id}\n"
+        f"  Divergences: {len(result.divergence_points)}"
+    )
+    for dp in result.divergence_points:
+        click.echo(f"    [{dp.get('id')}] {dp.get('title')}")
+    click.echo(
+        f"  Theses     : {result.thesis_result.theses_created} "
+        f"({n} primary + {result.thesis_result.theses_created - n} alternatives)\n"
+        f"  Watchlist  : +{result.thesis_result.watchlist_created} items\n"
+        f"  IDs        : {result.thesis_result.thesis_ids}"
+    )
+
+
 # ─── export ───────────────────────────────────────────────────────────────────
 
 @cli.group()
