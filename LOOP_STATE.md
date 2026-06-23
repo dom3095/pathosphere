@@ -1,61 +1,35 @@
-# Pathosphere — Loop State
+# Loop State — Pathosphere Autonomous Dev
 
-## Current subtask
-**3c** — `pathosphere/agent/thesis.py` (thesis generator)
+## Fase corrente: 3 — Agent e valutazione
 
-## Completed subtasks
-- [x] **3a** — `pathosphere/llm/client.py` + `pathosphere/llm/__init__.py`
-- [x] **3b** — `pathosphere/agent/brief.py` (morning brief generator)
+| Subtask | Descrizione | Stato |
+|---|---|---|
+| 3a | LLM client (`pathosphere/llm/client.py`) | ✅ DONE |
+| 3b | Brief mattutino (`pathosphere/agent/brief.py`) | ✅ DONE |
+| 3c | Generatore tesi + debate pipeline | ✅ DONE |
+| 3d | Flusso approvazione CLI | ⬜ TODO |
+| 3e | Paper trading EOD + yfinance | ⬜ TODO |
+| 3f | Predizioni non finanziarie | ⬜ TODO |
 
-## Pending subtasks
-- [ ] 3c — `pathosphere/agent/thesis.py`
-- [ ] 3d — Approval flow CLI
-- [ ] 3e — `pathosphere/trading/portfolio.py`
-- [ ] 3f — `pathosphere/trading/predictions.py`
+## Subtask corrente: 3d
 
-## Session notes (3b)
+## Ultima azione completata
+3c completo: prices.py (yfinance, no-lookahead), thesis.py (1 Claude call),
+debate.py (6 personas: Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris —
+research → divergence detection → critique → synthesis Claude).
+Schema: debates, persona_analyses, price_snapshot + debate_id su theses.
+261 test verdi. 2 commit su feat/fase-3-agent.
 
-### What was done
-- Added `briefs` table via `_MIGRATIONS` in `schema.py` (resolves CP-002)
-- Created `pathosphere/agent/__init__.py` exporting `generate_brief`, `BriefResult`
-- Created `pathosphere/agent/brief.py` with:
-  - `_query_divergences()` — events with `divergence_score > 0.5` within lookback window
-  - `_query_hub_entities()` — entities by total co-occurrence degree (CTE UNION ALL approach)
-  - `_query_recent_anomalies()` — recent portwatch/usgs/firms/ioda events
-  - `_build_prompt()` — constructs chat-message list for LLM
-  - `_save_brief_file()` — writes `data/briefs/YYYY-MM-DD.md`
-  - `_save_brief_db()` — upserts into `briefs` table on `date` conflict
-  - `generate_brief()` — async orchestrator returning `BriefResult`
-- Added `pathos brief` CLI command (options: `--date`, `--lookback-days`, `--model`, `--dry-run`)
-- Wired `_phase_brief()` in `pathosphere/cycle/orchestrator.py` (replaced stub)
-- Created `tests/test_brief.py` (33 tests)
-- Updated `tests/test_db.py` to include `briefs` in EXPECTED_TABLES
-- Full suite: 230/230 passing
+## Prossima azione: 3d — flusso approvazione tesi
+- `pathos thesis list` — mostra tesi pending con dettaglio leggibile
+- `pathos thesis approve <id>` — approva, status → 'approved'
+- `pathos thesis reject <id> --reason "..."` — rifiuta con motivazione loggata
+- Aggiungere validazione ticker (yfinance.Ticker.info) al momento dell'approvazione
 
-### Architectural decisions
-- `briefs` table added via `_MIGRATIONS` (not main DDL) so existing DBs are upgraded automatically
-- `generate_brief` accepts `briefs_dir: Path | None` for testability without touching settings
-- Hub-entity query uses `UNION ALL` CTE to count both directions of `entity_links` efficiently
-- `datetime.now(timezone.utc)` used throughout (replaces deprecated `utcnow()`)
-- `pathos brief --dry-run` prints signal counts without making any LLM call (useful for debugging)
-
-## Session notes (3a)
-
-### What was done
-- Added `reasoning_model: str = "claude"` field to `pathosphere/config.py`
-- Created `pathosphere/llm/__init__.py` exporting `LLMClient`
-- Created `pathosphere/llm/client.py` with:
-  - `LLMClient(backend="claude"|"qwen-local")` class
-  - `async def complete(messages, *, model=None, json_mode=False) -> str`
-  - Claude backend: calls `claude -p "PROMPT"` via `subprocess.run` in thread pool
-  - Qwen-local backend: async HTTP POST to `http://localhost:11434/v1/chat/completions`
-  - `json_mode=True` injects a JSON-enforcement system message
-  - `_messages_to_text()` flattens multi-turn chat for the Claude CLI
-- Created `tests/test_llm_client.py` (16 tests, all passing)
-- Full suite: 197/197 passing
-
-### Architectural decisions
-- Claude SDK called via subprocess (`claude -p`) as specified — avoids API costs, uses subscription credit
-- `asyncio.to_thread` wraps the blocking subprocess call so the async interface is uniform
-- Qwen backend uses `httpx.AsyncClient` for native async; raises descriptive `RuntimeError` on `ConnectError`
-- `json_mode` merges JSON-enforcement into existing system message rather than adding a duplicate role
+## Note tecniche
+- Test suite: `uv run pytest tests/ -x -q`
+- Linting: `uv run ruff check pathosphere/`
+- `pathos thesis generate` = fast path (1 Claude call)
+- `pathos thesis debate` = pipeline completa (13 Qwen + 1 Claude)
+- Ticker validation: da fare in 3d, non in generazione
+- `theses.causal_chain` è JSON: {"steps": [...], "trigger_summary": "...", "persona_notes": {}, "debate_context": {...}}
