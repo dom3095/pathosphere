@@ -88,8 +88,16 @@ uv run pathos trade open <thesis_id>        # apre agent + random trade (price_o
 uv run pathos trade close <trade_id>        # chiude trade, calcola P&L
 uv run pathos trade list                    # trade aperti
 
+# Predizioni non finanziarie (Fase 3f)
+uv run pathos predict add "Escalation in Taiwan entro 2 settimane" --probability 0.65 --horizon 2026-07-10
+uv run pathos predict list                  # tutte le predizioni
+uv run pathos predict list --open           # solo aperte
+uv run pathos predict list --resolved       # solo risolte
+uv run pathos predict resolve <id> --outcome true|false  # risolve e calcola Brier score
+uv run pathos predict calibration           # Brier score medio + breakdown per bucket
+
 # Test
-uv run pytest                    # 336 test
+uv run pytest                    # 375 test
 ```
 
 ## Bootstrap storico vs aggiornamento incrementale
@@ -207,5 +215,5 @@ pathosphere/
 - [x] **Fase 3** — Generatore tesi (fast path + multi-persona debate pipeline)
 - [x] **Fase 3** — Flusso approvazione CLI (list/show/approve/reject, ticker validation)
 - [x] **Fase 3** — Paper trading EOD (portfolio init/status, trade open/close/list, benchmark SPY)
-- [ ] **Fase 3** — Predizioni non finanziarie, calibrazione Tetlock
+- [x] **Fase 3** — Predizioni non finanziarie, calibrazione Tetlock (predict add/list/resolve/calibration)
 - [ ] **Fase 4** — Dashboard Streamlit

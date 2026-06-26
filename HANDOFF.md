@@ -1,98 +1,99 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-06-26, fine sessione 3d+3e*
+*Aggiornato: 2026-06-26, fine sessione 3f*
 
 ## Stato al momento del handoff
 
 **Branch:** `feat/fase-3d-approval` — pronto per PR su main  
-**Test:** 336 verdi  
-**Subtask completati questa sessione:** 3d (flusso approvazione tesi) + 3e (paper trading EOD)
+**Test:** 375 verdi  
+**Fase 3:** COMPLETA (3a/3b/3c/3d/3e/3f ✅)
 
 ---
 
 ## Cosa è stato fatto in questa sessione
 
-### 3d — Flusso approvazione tesi
+### 3f — Predizioni non finanziarie (calibrazione Tetlock)
 
-**`pathosphere/agent/approval.py`** — modulo nuovo
-- `list_theses(conn, status)` — tesi filtrate per status, ordinate per id DESC
-- `get_thesis(conn, id)` — singola tesi o None
-- `get_watchlist_items(conn, thesis_id)` — watchlist collegata
-- `validate_ticker(ticker)` — `yfinance.Ticker.fast_info.last_price`; warn, non blocca; never raises
-- `approve_thesis(conn, id)` — status → `approved`, `approved_at = now UTC`; ValueError se non pending
-- `reject_thesis(conn, id, reason)` — status → `rejected`, `rejected_at`, `rejection_reason`; ValueError se reason vuoto o non pending
-- `format_causal_chain(raw)` — parse JSON o fallback `{"raw": ...}`
+**`pathosphere/agent/predictions.py`** — modulo nuovo
+- `add_prediction(conn, description, probability, horizon_date, thesis_id=None)` — valida 0≤p≤1, data ISO YYYY-MM-DD; ValueError con messaggio chiaro se fuori range
+- `list_predictions(conn, only_open, only_resolved)` — ordinate per horizon_date ASC, id ASC
+- `get_prediction(conn, prediction_id)` — riga singola o None
+- `resolve_prediction(conn, prediction_id, outcome: bool)` — `brier_score = (probability - outcome)²`; ValueError se non trovata o già risolta
+- `get_calibration(conn)` — Brier medio + 5 bucket (0-20%, 20-40%, 40-60%, 60-80%, 80-100%) con count / mean_brier / accuracy
 
-**`pathosphere/cli.py`** — 4 comandi aggiunti al gruppo `thesis`:
-- `pathos thesis list [--status pending|approved|rejected|closed|all]`
-- `pathos thesis show <id>` — dettaglio completo: trigger, causal chain, invalidation, persona notes, debate context, watchlist
-- `pathos thesis approve <id>` — validation ticker + approvazione
-- `pathos thesis reject <id> --reason "..."` — rifiuto con motivazione loggata
+**`pathosphere/cli.py`** — gruppo `predict` aggiunto:
+- `pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10 [--thesis-id <id>]`
+- `pathos predict list [--open] [--resolved]`
+- `pathos predict resolve <id> --outcome true|false`
+- `pathos predict calibration`
 
-**`tests/test_thesis_approval.py`** — 34 test:
-- list/filter/ordering, FK fixtures per `debate_id`
-- validate_ticker: valid, unknown, zero price, exception, empty
-- approve: status, persist, not-found, already-approved, rejected-raises
-- reject: status, persist, not-found, empty/whitespace reason, already-approved
-- format_causal_chain: valid JSON, invalid JSON, empty, None
-- integration: full approval/rejection flow, cannot approve after reject, list includes fast+debate
+**`tests/test_predictions.py`** — 39 test:
+- add_prediction: valid, probability_too_low/too_high, probability_zero/one (edge), invalid_date, empty/whitespace description, with/without thesis_id, persist
+- get_prediction: found, not_found
+- list_predictions: empty, all, only_open, only_resolved, order_by_horizon, no_flags
+- resolve_prediction: true/false, brier_perfect_true/false, worst_case, persisted, not_found, already_resolved
+- calibration: empty, total_resolved, mean_brier, bucket_labels, bucket_counts, accuracy, prob_1_in_last_bucket, open_excluded, five_buckets_always
+- integration: full_lifecycle (add → list open → resolve → list resolved → calibration)
 
 ---
 
 ## Stato esatto al cut-off
 
-**Subtask corrente:** 3e  
-**Branch attivo:** `feat/fase-3d-approval`  
-**Test:** 295/295  
+**Fase 3:** COMPLETA  
+**Branch:** `feat/fase-3d-approval` (tutto il lavoro 3d→3f è su questo branch)  
+**Test:** 375/375 verdi
 
 ---
 
-## Cosa è stato fatto (3e)
+## Riepilogo completo Fase 3
+
+### 3a — LLM client
+`pathosphere/llm/client.py` — Claude SDK + Qwen-local, stessa API OpenAI-compatible
+
+### 3b — Brief mattutino
+`pathosphere/agent/brief.py` — divergenze, hub entities, anomalie → Claude → testo strutturato + salvataggio `briefs`
+
+### 3c — Generatore tesi + debate pipeline
+`pathosphere/agent/thesis.py` — fast path 1 Claude call  
+`pathosphere/agent/debate.py` — 6 personas × 3 step Qwen + 1 Claude synthesis  
+`price_snapshot` no-lookahead, `watchlist_items` auto-popolati
+
+### 3d — Flusso approvazione CLI
+`pathosphere/agent/approval.py` — list/get/validate_ticker/approve/reject  
+CLI: `pathos thesis list/show/approve/reject`
 
 ### 3e — Paper trading EOD
+`pathosphere/market/trading.py` — portfolios (agent/random/benchmark), open_trade, open_agent_trade, close_trade, get_portfolio_status  
+CLI: `pathos portfolio init/status`, `pathos trade open/close/list`
 
-**`pathosphere/market/trading.py`** — modulo nuovo
-- `init_portfolios(conn)` — crea agent/random/benchmark ($100k); benchmark apre trade SPY al prezzo corrente. Idempotente.
-- `open_trade(conn, portfolio_id, ticker, direction, qty, price_open, ...)` — inserisce trade, calcola costi
-- `open_agent_trade(conn, thesis_id)` — apre trade agent + random (stesso qty/direzione, ticker casuale riproducibile). `price_open = yfinance fetch live` (no-lookahead). ValueError se non approvata o prezzo non disponibile.
-- `close_trade(conn, trade_id)` — fetch prezzo corrente, calcola pnl (gross - costi entrambi i lati), persiste
-- `get_portfolio_status(conn)` — calcola P&L realizzato + non realizzato (fetch prezzi live), return %
-- `list_open_trades(conn, portfolio_name=None)` — lista trade aperti, opzionale filtro per portfolio
-
-Costanti: `INITIAL_CASH=100k`, `ALLOCATION_PCT=10%`, `TRANSACTION_COST_PCT=0.1%`, `SLIPPAGE_PCT=0.05%`, `RANDOM_TICKER_POOL=[SPY, QQQ, GLD, USO, TLT, EEM, IWM, XLE, XLF, DIA]`
-
-**CLI:**
-- `pathos portfolio init` — crea portfolios + benchmark SPY trade
-- `pathos portfolio status` — tabella P&L per portfolio (prezzi live)
-- `pathos trade open <thesis_id>` — apre agent + random trade
-- `pathos trade close <trade_id>` — chiude trade con P&L
-- `pathos trade list [--portfolio agent|random|benchmark] [--closed]`
-
-**`tests/test_trading.py`** — 41 test: pure helpers, init (idempotent, SPY unavailable), open_trade, open_agent_trade (full flow, short→sell, tutti gli errori), close_trade (long/short profit/loss, persist, already closed), get_portfolio_status (empty, open/closed, return_pct, isolation), list_open_trades, integration lifecycle
+### 3f — Predizioni non finanziarie
+`pathosphere/agent/predictions.py` — add/list/resolve/calibration  
+CLI: `pathos predict add/list/resolve/calibration`
 
 ---
 
-## Prossima azione: PR per 3d+3e poi iniziare 3f
+## Prossima azione: PR + Fase 4
 
-**PR:**
+**PR suggerito:**
 ```bash
-gh pr create --title "feat(3d+3e): thesis approval flow + paper trading engine" --body "..."
+gh pr create \
+  --title "feat(3d–3f): approval flow + paper trading + Tetlock predictions" \
+  --body "..."
 ```
 
-**3f — Predizioni non finanziarie** (nuovo branch dopo merge):
-
-1. `pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10` — inserisce in `predictions`
-2. `pathos predict list [--open|--resolved]` — lista predizioni con scadenza e probabilità
-3. `pathos predict resolve <id> --outcome true|false` — risolve, calcola `brier_score`
-4. `pathos predict calibration` — Brier score aggregato per bucket (calibrazione Tetlock)
-
-Schema già presente: `predictions(thesis_id, description, probability, horizon_date, resolved, outcome, brier_score)`
+**Fase 4 — Dashboard Streamlit:**
+- Mappa eventi (folium)
+- Confronto narrazioni per blocco
+- Portafogli: curva equity, P&L per trade
+- Tesi aperte + status approvazione
+- Storico brief
+- Calibrazione Tetlock (grafico bucket vs accuracy)
 
 ---
 
 ## Punti critici aperti
 
-- **Ticker validation:** LLM produce ticker US-centrici e a volte inesistenti. Validazione fatta in `approve` (warn, non blocca). Il ticker si può correggere manualmente nel DB prima di aprire il trade.
+- **Ticker validation:** LLM produce ticker US-centrici e a volte inesistenti. Validazione fatta in `approve` (warn, non blocca). Correggere manualmente nel DB prima di `trade open`.
 - **Qwen locale:** debate pipeline richiede Ollama attivo (`ollama serve`). ConnectError con messaggio chiaro se non disponibile.
 - **`causal_chain` JSON schema:** `{"steps": [...], "trigger_summary": "...", "persona_notes": {}, "debate_context": {...}}` — non rompere la struttura.
 - **`theses` con `debate_id=NULL`:** generate via fast path. `list` mostra entrambe le tipologie.
@@ -102,15 +103,19 @@ Schema già presente: `predictions(thesis_id, description, probability, horizon_
 ## Comandi utili
 
 ```bash
-uv run pytest                              # 336 test
+uv run pytest                              # 375 test
 uv run pathos thesis list                  # tesi pending
 uv run pathos thesis show <id>             # dettaglio tesi
 uv run pathos thesis approve <id>          # approva
-uv run pathos thesis reject <id> --reason "..." # rifiuta
+uv run pathos thesis reject <id> --reason "..."
 uv run pathos portfolio init               # crea portfolios + benchmark SPY
 uv run pathos portfolio status             # P&L per portfolio (live prices)
 uv run pathos trade open <thesis_id>       # apre agent + random trade
 uv run pathos trade close <trade_id>       # chiude trade
 uv run pathos trade list                   # trade aperti
+uv run pathos predict add "Desc" --probability 0.65 --horizon 2026-07-10
+uv run pathos predict list                 # tutte
+uv run pathos predict resolve <id> --outcome true
+uv run pathos predict calibration          # Brier score aggregato
 git log --oneline origin/main..HEAD        # commit sul branch
 ```

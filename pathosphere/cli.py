@@ -1396,3 +1396,147 @@ def trade_list(portfolio_name: str | None, closed: bool) -> None:
             f"{r['direction']:<5}  {r['quantity']:>10.4f}  "
             f"{r['price_open']:>8.2f}  {close_str:>8}  {pnl_str:>9}"
         )
+
+
+# ─── predict ──────────────────────────────────────────────────────────────────
+
+@cli.group()
+def predict() -> None:
+    """Non-financial predictions with Tetlock calibration."""
+
+
+@predict.command("add")
+@click.argument("description")
+@click.option("--probability", required=True, type=float,
+              help="Subjective probability 0.0–1.0 (e.g. 0.65).")
+@click.option("--horizon", "horizon_date", required=True,
+              help="Deadline ISO YYYY-MM-DD (e.g. 2026-07-10).")
+@click.option("--thesis-id", default=None, type=int,
+              help="Optional linked thesis id.")
+def predict_add(description: str, probability: float, horizon_date: str,
+                thesis_id: int | None) -> None:
+    """Add a non-financial prediction for later resolution."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.predictions import add_prediction
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    try:
+        row = add_prediction(conn, description, probability, horizon_date, thesis_id=thesis_id)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nPrediction #{row['id']} added.\n"
+        f"  Description: {row['description']}\n"
+        f"  Probability: {row['probability']:.0%}\n"
+        f"  Horizon    : {row['horizon_date']}\n"
+        f"  Thesis id  : {row['thesis_id'] or 'N/A'}"
+    )
+
+
+@predict.command("list")
+@click.option("--open", "only_open", is_flag=True, default=False,
+              help="Show only open (unresolved) predictions.")
+@click.option("--resolved", "only_resolved", is_flag=True, default=False,
+              help="Show only resolved predictions.")
+def predict_list(only_open: bool, only_resolved: bool) -> None:
+    """List predictions (default: all)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.predictions import list_predictions
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    rows = list_predictions(conn, only_open=only_open, only_resolved=only_resolved)
+    conn.close()
+
+    if not rows:
+        click.echo("No predictions found.")
+        return
+
+    click.echo(
+        f"\n{'ID':>4}  {'Prob':>5}  {'Horizon':<12}  {'St':<4}  "
+        f"{'Out':<5}  {'Brier':>6}  Description"
+    )
+    click.echo("─" * 90)
+    for r in rows:
+        status = "open" if not r["resolved"] else "done"
+        out_str = "true" if r["outcome"] == 1 else ("false" if r["outcome"] == 0 else "—")
+        brier_str = f"{r['brier_score']:.3f}" if r["brier_score"] is not None else "—"
+        desc = (r["description"] or "")[:55]
+        click.echo(
+            f"{r['id']:>4}  {r['probability']:>4.0%}  {r['horizon_date']:<12}  "
+            f"{status:<4}  {out_str:<5}  {brier_str:>6}  {desc}"
+        )
+
+
+@predict.command("resolve")
+@click.argument("prediction_id", type=int)
+@click.option("--outcome", required=True, type=click.Choice(["true", "false"]),
+              help="Whether the prediction came true.")
+def predict_resolve(prediction_id: int, outcome: str) -> None:
+    """Resolve a prediction: record outcome and compute Brier score."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.predictions import resolve_prediction
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    try:
+        row = resolve_prediction(conn, prediction_id, outcome == "true")
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nPrediction #{prediction_id} resolved.\n"
+        f"  Description: {row['description']}\n"
+        f"  Probability: {row['probability']:.0%}\n"
+        f"  Outcome    : {'true' if row['outcome'] == 1 else 'false'}\n"
+        f"  Brier score: {row['brier_score']:.4f}\n"
+        f"  Resolved at: {row['resolved_at']}"
+    )
+
+
+@predict.command("calibration")
+def predict_calibration() -> None:
+    """Show Brier score + per-bucket calibration breakdown (Tetlock-style)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.predictions import get_calibration
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    cal = get_calibration(conn)
+    conn.close()
+
+    total = cal["total_resolved"]
+    if total == 0:
+        click.echo("No resolved predictions yet.")
+        return
+
+    mean_bs = cal["mean_brier_score"]
+    click.echo(
+        f"\nCalibration summary ({total} resolved predictions):\n"
+        f"  Mean Brier score: {mean_bs:.4f}  "
+        f"(0=perfect, 0.25=random, 1=worst)\n"
+    )
+    click.echo(
+        f"  {'Bucket':<10}  {'Count':>5}  {'Mean Brier':>10}  {'Accuracy':>9}"
+    )
+    click.echo("  " + "─" * 40)
+    for b in cal["buckets"]:
+        brier_str = f"{b['mean_brier']:.4f}" if b["mean_brier"] is not None else "—"
+        acc_str = f"{b['accuracy']:.0%}" if b["accuracy"] is not None else "—"
+        click.echo(
+            f"  {b['label']:<10}  {b['count']:>5}  {brier_str:>10}  {acc_str:>9}"
+        )
