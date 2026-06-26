@@ -1,12 +1,12 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-06-26, fine sessione 3d*
+*Aggiornato: 2026-06-26, fine sessione 3d+3e*
 
 ## Stato al momento del handoff
 
 **Branch:** `feat/fase-3d-approval` — pronto per PR su main  
-**Test:** 295 verdi  
-**Subtask completati questa sessione:** 3d (flusso approvazione tesi)
+**Test:** 336 verdi  
+**Subtask completati questa sessione:** 3d (flusso approvazione tesi) + 3e (paper trading EOD)
 
 ---
 
@@ -47,28 +47,46 @@
 
 ---
 
-## Prossima azione: PR per 3d poi iniziare 3e
+## Cosa è stato fatto (3e)
 
-**PR 3d:**
+### 3e — Paper trading EOD
+
+**`pathosphere/market/trading.py`** — modulo nuovo
+- `init_portfolios(conn)` — crea agent/random/benchmark ($100k); benchmark apre trade SPY al prezzo corrente. Idempotente.
+- `open_trade(conn, portfolio_id, ticker, direction, qty, price_open, ...)` — inserisce trade, calcola costi
+- `open_agent_trade(conn, thesis_id)` — apre trade agent + random (stesso qty/direzione, ticker casuale riproducibile). `price_open = yfinance fetch live` (no-lookahead). ValueError se non approvata o prezzo non disponibile.
+- `close_trade(conn, trade_id)` — fetch prezzo corrente, calcola pnl (gross - costi entrambi i lati), persiste
+- `get_portfolio_status(conn)` — calcola P&L realizzato + non realizzato (fetch prezzi live), return %
+- `list_open_trades(conn, portfolio_name=None)` — lista trade aperti, opzionale filtro per portfolio
+
+Costanti: `INITIAL_CASH=100k`, `ALLOCATION_PCT=10%`, `TRANSACTION_COST_PCT=0.1%`, `SLIPPAGE_PCT=0.05%`, `RANDOM_TICKER_POOL=[SPY, QQQ, GLD, USO, TLT, EEM, IWM, XLE, XLF, DIA]`
+
+**CLI:**
+- `pathos portfolio init` — crea portfolios + benchmark SPY trade
+- `pathos portfolio status` — tabella P&L per portfolio (prezzi live)
+- `pathos trade open <thesis_id>` — apre agent + random trade
+- `pathos trade close <trade_id>` — chiude trade con P&L
+- `pathos trade list [--portfolio agent|random|benchmark] [--closed]`
+
+**`tests/test_trading.py`** — 41 test: pure helpers, init (idempotent, SPY unavailable), open_trade, open_agent_trade (full flow, short→sell, tutti gli errori), close_trade (long/short profit/loss, persist, already closed), get_portfolio_status (empty, open/closed, return_pct, isolation), list_open_trades, integration lifecycle
+
+---
+
+## Prossima azione: PR per 3d+3e poi iniziare 3f
+
+**PR:**
 ```bash
-gh pr create --title "feat(3d): thesis approval flow — list/show/approve/reject" --body "..."
+gh pr create --title "feat(3d+3e): thesis approval flow + paper trading engine" --body "..."
 ```
 
-**3e — Paper trading EOD** (nuovo branch dopo merge):
+**3f — Predizioni non finanziarie** (nuovo branch dopo merge):
 
-1. `pathos portfolio status` — mostra i 3 portafogli (agent/random/benchmark) con P&L
-2. `pathos portfolio init` — crea i 3 portafogli se non esistono ($100k virtuale ciascuno)
-3. `pathos trade open <thesis_id>` — apre trade da tesi approvata: `price_open = yfinance EOD`
-4. `pathos trade close <trade_id>` — chiude trade: `price_close = yfinance EOD`, calcola `pnl`
-5. EOD update notturno: `pathos portfolio update` — aggiorna i prezzi correnti di tutti i trade aperti
-6. Trade random: stessa dimensione/direzione, ticker casuale da un pool predefinito (SPY, QQQ, GLD, USO, TLT...)
-7. Benchmark: buy & hold SPY, aggiornato a ogni EOD
+1. `pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10` — inserisce in `predictions`
+2. `pathos predict list [--open|--resolved]` — lista predizioni con scadenza e probabilità
+3. `pathos predict resolve <id> --outcome true|false` — risolve, calcola `brier_score`
+4. `pathos predict calibration` — Brier score aggregato per bucket (calibrazione Tetlock)
 
-Vincoli:
-- `price_open` = prezzo al momento dell'approvazione (già in `theses.price_snapshot`) o fetch live a `trade open`
-- Costi transazione simulati: 0.1% del valore (config)
-- Slippage simulato: 0.05% (config)
-- Tabelle già in schema: `trades`, `portfolios`
+Schema già presente: `predictions(thesis_id, description, probability, horizon_date, resolved, outcome, brier_score)`
 
 ---
 
@@ -84,10 +102,15 @@ Vincoli:
 ## Comandi utili
 
 ```bash
-uv run pytest                              # 295 test
+uv run pytest                              # 336 test
 uv run pathos thesis list                  # tesi pending
 uv run pathos thesis show <id>             # dettaglio tesi
 uv run pathos thesis approve <id>          # approva
 uv run pathos thesis reject <id> --reason "..." # rifiuta
+uv run pathos portfolio init               # crea portfolios + benchmark SPY
+uv run pathos portfolio status             # P&L per portfolio (live prices)
+uv run pathos trade open <thesis_id>       # apre agent + random trade
+uv run pathos trade close <trade_id>       # chiude trade
+uv run pathos trade list                   # trade aperti
 git log --oneline origin/main..HEAD        # commit sul branch
 ```

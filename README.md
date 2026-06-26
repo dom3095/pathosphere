@@ -81,8 +81,15 @@ uv run pathos thesis show <id>              # dettaglio completo
 uv run pathos thesis approve <id>           # approva (valida ticker yfinance)
 uv run pathos thesis reject <id> --reason "..." # rifiuta con motivazione
 
+# Paper trading (Fase 3)
+uv run pathos portfolio init                # crea agent/random/benchmark ($100k virtuale)
+uv run pathos portfolio status              # P&L per portfolio (prezzi live)
+uv run pathos trade open <thesis_id>        # apre agent + random trade (price_open live)
+uv run pathos trade close <trade_id>        # chiude trade, calcola P&L
+uv run pathos trade list                    # trade aperti
+
 # Test
-uv run pytest                    # 295 test
+uv run pytest                    # 336 test
 ```
 
 ## Bootstrap storico vs aggiornamento incrementale
@@ -199,5 +206,6 @@ pathosphere/
 - [x] **Fase 3** — LLM client (Claude SDK + Qwen-local), brief mattutino
 - [x] **Fase 3** — Generatore tesi (fast path + multi-persona debate pipeline)
 - [x] **Fase 3** — Flusso approvazione CLI (list/show/approve/reject, ticker validation)
-- [ ] **Fase 3** — Paper trading EOD, portafogli di controllo, calibrazione Tetlock
+- [x] **Fase 3** — Paper trading EOD (portfolio init/status, trade open/close/list, benchmark SPY)
+- [ ] **Fase 3** — Predizioni non finanziarie, calibrazione Tetlock
 - [ ] **Fase 4** — Dashboard Streamlit

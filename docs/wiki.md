@@ -774,15 +774,24 @@ uv run pathos thesis reject <id> --reason "Invalidation condition met"
 - Ticker validation: `yfinance.fast_info.last_price` — se assente: warning stampato, approvazione procede
 - `list --status all` mostra tutte le tesi indipendentemente dallo status
 
-### 8.5 Paper trading EOD — `pathosphere/market/` ⬜ (3e — TODO)
+### 8.5 Paper trading EOD — `pathosphere/market/trading.py` ✅
 
-- `pathos portfolio init` — crea agent/random/benchmark ($100k virtuale ciascuno)
-- `pathos portfolio status` — P&L per portafoglio
-- `pathos trade open <thesis_id>` — `price_open = yfinance EOD` al momento decisione
-- `pathos trade close <trade_id>` — `price_close = yfinance EOD`, calcola `pnl`
-- Portafoglio random: stessa dimensione trade, ticker casuali da pool (SPY/QQQ/GLD/USO/TLT)
-- Benchmark: buy & hold SPY
-- Costi transazione + slippage simulati (config)
+```bash
+uv run pathos portfolio init               # crea agent/random/benchmark + benchmark SPY trade
+uv run pathos portfolio status             # P&L realizzato + non realizzato (live prices)
+uv run pathos trade open <thesis_id>       # agent + random trade (price_open = live yfinance)
+uv run pathos trade close <trade_id>       # chiude, calcola pnl
+uv run pathos trade list [--portfolio agent|random|benchmark] [--closed]
+```
+
+**Tre portafogli:**
+- `agent` — trade da tesi approvate
+- `random` — trade di controllo: stesso qty/dir/timing, ticker casuale da pool `[SPY, QQQ, GLD, USO, TLT, EEM, IWM, XLE, XLF, DIA]`
+- `benchmark` — buy-and-hold SPY, aperto a `portfolio init`
+
+**Costi simulati:** `transaction_cost = 0.1% per lato`, `slippage = 0.05% per lato`. Entrambi i lati detratti al close nel calcolo del pnl.
+
+**No-lookahead:** `price_open = yfinance fetch al momento di `trade open`` (non il price_snapshot salvato alla generazione della tesi).
 
 ### 8.6 Predizioni non finanziarie — (3f — TODO)
 
@@ -880,6 +889,15 @@ pathos
 │   ├── approve <id>    Approva tesi pending (valida ticker yfinance, warn non blocca)
 │   └── reject <id>     Rifiuta tesi pending con motivazione
 │       └── --reason    Motivazione (obbligatoria, loggata in theses.rejection_reason)
+├── portfolio           Gestione portafogli virtuali (paper trading)
+│   ├── init            Crea agent/random/benchmark ($100k); benchmark apre SPY trade
+│   └── status          P&L realizzato + non realizzato per portfolio (fetch prezzi live)
+├── trade               Gestione paper trade
+│   ├── open <thesis_id>  Apre agent + random trade da tesi approvata (price_open = live)
+│   ├── close <trade_id>  Chiude trade: fetch prezzo, calcola pnl, persiste
+│   └── list              Lista trade aperti (default) o chiusi (--closed)
+│       ├── --portfolio   Filtra per portfolio (agent|random|benchmark)
+│       └── --closed      Mostra trade chiusi invece di aperti
 └── config              Mostra configurazione attiva (.env + defaults)
 ```
 
@@ -980,16 +998,19 @@ tests/
 ├── test_prices.py       fetch_price: EOD, ticker vuoto, history empty, exception (5 test)
 ├── test_brief.py        generate_brief, _query_*, dry-run (mock LLM)
 ├── test_thesis.py       generate_theses, _save_thesis, _save_watchlist_items (10 test)
-└── test_thesis_approval.py  list_theses, approve/reject, validate_ticker, format_causal_chain (34 test)
+├── test_thesis_approval.py  list_theses, approve/reject, validate_ticker, format_causal_chain (34 test)
+└── test_trading.py      init_portfolios, open_trade, open_agent_trade, close_trade,
+                         get_portfolio_status, list_open_trades, integration lifecycle (41 test)
 ```
 
 **Esecuzione:**
 
 ```bash
-uv run pytest            # 295 test, ~25s, zero chiamate HTTP/modello reali
+uv run pytest            # 336 test, ~25s, zero chiamate HTTP/modello reali
 uv run pytest -v         # output verboso
-uv run pytest tests/test_semantic.py   # solo pipeline semantica
+uv run pytest tests/test_semantic.py      # solo pipeline semantica
 uv run pytest tests/test_thesis_approval.py  # solo flusso approvazione
+uv run pytest tests/test_trading.py       # solo paper trading
 ```
 
 **Filosofia:** nessuna chiamata HTTP reale, nessun download di modello nei test. `MockModel` restituisce vettori unitari deterministici (seed da hash del testo). `tmp_db` fixture crea un DB SQLite temporaneo per ogni test.
@@ -1033,7 +1054,7 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **3** | Brief mattutino (Claude SDK) | ✅ |
 | **3** | Generatore tesi (fast path + multi-persona debate) | ✅ |
 | **3** | Flusso approvazione CLI (list/show/approve/reject) | ✅ |
-| **3** | Paper trading EOD + portafogli di controllo | ⬜ |
+| **3** | Paper trading EOD + portafogli di controllo | ✅ |
 | **3** | Calibrazione Tetlock (predizioni non finanziarie) | ⬜ |
 | **4** | Dashboard Streamlit minimale | ⬜ |
 
