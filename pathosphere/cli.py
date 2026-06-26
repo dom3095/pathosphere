@@ -1,5 +1,7 @@
 """Pathosphere main CLI — entry point: `pathos`."""
 
+from pathlib import Path
+
 import click
 from loguru import logger
 
@@ -917,6 +919,205 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
         f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
         f"  Watchlist: +{result.watchlist_created} items\n"
         f"  IDs      : {result.thesis_ids}"
+    )
+
+
+@thesis.command("list")
+@click.option(
+    "--status",
+    default="pending",
+    type=click.Choice(["pending", "approved", "rejected", "closed", "all"]),
+    show_default=True,
+    help="Filter by thesis status.",
+)
+def thesis_list(status: str) -> None:
+    """List theses (default: pending)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.approval import list_theses
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    if status == "all":
+        rows = conn.execute(
+            """
+            SELECT id, title, instrument, direction, price_snapshot,
+                   horizon_days, confidence, status, debate_id, created_at
+            FROM theses ORDER BY id DESC
+            """
+        ).fetchall()
+    else:
+        rows = list_theses(conn, status=status)
+    conn.close()
+
+    if not rows:
+        click.echo(f"No {status} theses.")
+        return
+
+    click.echo(
+        f"\n{'ID':>4}  {'Title':<40}  {'Inst':<6}  {'Dir':<7}  "
+        f"{'Price':>8}  {'Hor':>4}  {'Conf':>5}  {'Src':>5}  {'Status'}"
+    )
+    click.echo("─" * 100)
+    for r in rows:
+        src = "debate" if r["debate_id"] else "fast"
+        price = f"{r['price_snapshot']:.2f}" if r["price_snapshot"] else "N/A"
+        conf = f"{r['confidence']:.0%}" if r["confidence"] else "N/A"
+        title = (r["title"] or "")[:40]
+        click.echo(
+            f"{r['id']:>4}  {title:<40}  {(r['instrument'] or ''):<6}  "
+            f"{(r['direction'] or ''):<7}  {price:>8}  {(r['horizon_days'] or 0):>4}  "
+            f"{conf:>5}  {src:>5}  {r['status']}"
+        )
+
+
+@thesis.command("show")
+@click.argument("thesis_id", type=int)
+def thesis_show(thesis_id: int) -> None:
+    """Show full detail for a thesis (causal chain, debate context, watchlist)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.approval import format_causal_chain, get_thesis, get_watchlist_items
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    thesis = get_thesis(conn, thesis_id)
+    if thesis is None:
+        conn.close()
+        click.echo(f"Thesis {thesis_id} not found.")
+        raise SystemExit(1)
+
+    watchlist = get_watchlist_items(conn, thesis_id)
+    conn.close()
+
+    chain = format_causal_chain(thesis["causal_chain"])
+
+    click.echo(f"\n{'═' * 70}")
+    click.echo(f"THESIS #{thesis_id}  [{thesis['status'].upper()}]")
+    click.echo(f"{'═' * 70}")
+    click.echo(f"Title       : {thesis['title']}")
+    click.echo(f"Instrument  : {thesis['instrument'] or 'N/A'}  ({thesis['direction'] or 'N/A'})")
+    click.echo(f"Price snap  : {thesis['price_snapshot']:.2f}" if thesis["price_snapshot"] else "Price snap  : N/A")
+    click.echo(f"Horizon     : {thesis['horizon_days']}d" if thesis["horizon_days"] else "Horizon     : N/A")
+    click.echo(f"Confidence  : {thesis['confidence']:.0%}" if thesis["confidence"] else "Confidence  : N/A")
+    click.echo(f"Debate id   : {thesis['debate_id'] or 'N/A (fast path)'}")
+    click.echo(f"Created     : {thesis['created_at']}")
+    if thesis["approved_at"]:
+        click.echo(f"Approved    : {thesis['approved_at']}")
+    if thesis["rejected_at"]:
+        click.echo(f"Rejected    : {thesis['rejected_at']}")
+    if thesis["rejection_reason"]:
+        click.echo(f"Rej. reason : {thesis['rejection_reason']}")
+
+    click.echo(f"\n── Trigger ──────────────────────────────────────────────")
+    click.echo(chain.get("trigger_summary") or "(none)")
+
+    click.echo(f"\n── Causal chain ─────────────────────────────────────────")
+    for i, step in enumerate(chain.get("steps", []), 1):
+        click.echo(f"  {i}. {step}")
+
+    click.echo(f"\n── Invalidation ─────────────────────────────────────────")
+    click.echo(thesis["invalidation"] or "(none)")
+
+    persona_notes = chain.get("persona_notes") or {}
+    if persona_notes:
+        click.echo(f"\n── Persona notes ────────────────────────────────────────")
+        for persona, note in persona_notes.items():
+            click.echo(f"  [{persona}] {note}")
+
+    debate_ctx = chain.get("debate_context") or {}
+    if debate_ctx:
+        click.echo(f"\n── Debate context ───────────────────────────────────────")
+        supporters = debate_ctx.get("supporters", [])
+        opponents = debate_ctx.get("opponents", [])
+        if supporters:
+            click.echo(f"  Supporters: {', '.join(supporters)}")
+        if opponents:
+            click.echo(f"  Opponents : {', '.join(opponents)}")
+        summary = debate_ctx.get("summary")
+        if summary:
+            click.echo(f"  Summary   : {summary}")
+
+    if watchlist:
+        click.echo(f"\n── Watchlist items ({len(watchlist)}) ──────────────────────────────")
+        for w in watchlist:
+            click.echo(f"  [{w['status']}] {w['label']}")
+            if w["indicator_query"]:
+                click.echo(f"           query: {w['indicator_query']}")
+
+    click.echo(f"{'═' * 70}\n")
+
+
+@thesis.command("approve")
+@click.argument("thesis_id", type=int)
+def thesis_approve(thesis_id: int) -> None:
+    """Approve a pending thesis (status → approved). Validates ticker via yfinance."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.approval import approve_thesis, get_thesis, validate_ticker
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    # Pre-fetch thesis to run ticker validation before mutating
+    thesis = get_thesis(conn, thesis_id)
+    if thesis is None:
+        conn.close()
+        click.echo(f"Thesis {thesis_id} not found.")
+        raise SystemExit(1)
+
+    ticker = thesis["instrument"]
+    if ticker:
+        click.echo(f"Validating ticker {ticker}...", nl=False)
+        ok = validate_ticker(ticker)
+        if ok:
+            click.echo(" OK")
+        else:
+            click.echo(f" WARNING: {ticker} not found on yfinance. Check the ticker before trading.")
+
+    try:
+        updated = approve_thesis(conn, thesis_id)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nThesis {thesis_id} approved.\n"
+        f"  Title    : {updated['title']}\n"
+        f"  Ticker   : {updated['instrument']} {updated['direction']}\n"
+        f"  Approved : {updated['approved_at']}"
+    )
+
+
+@thesis.command("reject")
+@click.argument("thesis_id", type=int)
+@click.option("--reason", required=True, help="Rejection reason (logged for calibration).")
+def thesis_reject(thesis_id: int, reason: str) -> None:
+    """Reject a pending thesis with a reason (status → rejected)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.approval import reject_thesis
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    try:
+        updated = reject_thesis(conn, thesis_id, reason)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nThesis {thesis_id} rejected.\n"
+        f"  Title   : {updated['title']}\n"
+        f"  Reason  : {updated['rejection_reason']}\n"
+        f"  Logged  : {updated['rejected_at']}"
     )
 
 
