@@ -8,30 +8,27 @@
 | 3b | Brief mattutino (`pathosphere/agent/brief.py`) | ✅ DONE |
 | 3c | Generatore tesi + debate pipeline | ✅ DONE |
 | 3d | Flusso approvazione CLI | ✅ DONE |
-| 3e | Paper trading EOD + yfinance | ⬜ TODO |
+| 3e | Paper trading EOD + yfinance | ✅ DONE |
 | 3f | Predizioni non finanziarie | ⬜ TODO |
 
-## Subtask corrente: 3e
+## Subtask corrente: 3f
 
 ## Ultima azione completata
-3d completo: approval.py (list_theses, get_thesis, get_watchlist_items,
-validate_ticker, approve_thesis, reject_thesis, format_causal_chain).
-CLI: `pathos thesis list/show/approve/reject`.
-34 test nuovi. 295 test verdi totali. Commit su feat/fase-3d-approval.
+3e completo: trading.py (init_portfolios, open_trade, open_agent_trade,
+close_trade, get_portfolio_status, list_open_trades).
+CLI: `pathos portfolio init/status`, `pathos trade open/close/list`.
+41 test nuovi. 336 test verdi totali. Commit su feat/fase-3d-approval.
 
-## Prossima azione: 3e — paper trading EOD
-- `pathos portfolio init` — crea agent/random/benchmark ($100k virtuale)
-- `pathos portfolio status` — P&L per portafoglio
-- `pathos trade open <thesis_id>` — apre trade da tesi approvata (price_open = yfinance EOD)
-- `pathos trade close <trade_id>` — chiude trade, calcola pnl
-- `pathos portfolio update` — EOD update prezzi trade aperti
-- Portafoglio random: stesso N trade, ticker casuali da pool (SPY/QQQ/GLD/USO/TLT)
-- Benchmark: buy & hold SPY
+## Prossima azione: 3f — predizioni non finanziarie (calibrazione Tetlock)
+- `pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10`
+- `pathos predict list [--open|--resolved]`
+- `pathos predict resolve <id> --outcome true|false` — brier_score = (p - outcome)²
+- `pathos predict calibration` — Brier score aggregato per bucket
+- Schema già presente: `predictions(thesis_id, description, probability, horizon_date, resolved, outcome, brier_score)`
 
 ## Note tecniche
 - Test suite: `uv run pytest tests/ -x -q`
 - Linting: `uv run ruff check pathosphere/`
-- Tabelle già in schema: `trades`, `portfolios`
-- `price_open` da `theses.price_snapshot` (già fetch al momento generazione) o live fetch
-- Costi transazione: 0.1% valore (config); slippage: 0.05% (config)
+- Tabelle già in schema: `trades`, `portfolios`, `predictions`
+- trading.py: INITIAL_CASH=100k, ALLOCATION_PCT=10%, tc=0.1%, slippage=0.05%
 - causal_chain JSON: {"steps": [...], "trigger_summary": "...", "persona_notes": {}, "debate_context": {...}}

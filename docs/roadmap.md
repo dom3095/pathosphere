@@ -98,14 +98,18 @@ pathos thesis reject <id> --reason "..."  # status → rejected, rejection_reaso
 - `rejection_reason` persistito → dataset per capire pattern di rifiuto
 - Ticker validation: `yfinance.fast_info.last_price` — warn se assente, non blocca mai
 
-### 3e. Paper trading EOD
+### 3e. Paper trading EOD ✅
 
-- **yfinance**: non ancora agganciato — prerequisito critico per questo step
-- `price_open` = prezzo al momento dell'APPROVAZIONE (no-lookahead)
-- Costi di transazione + slippage simulati
-- Tabelle `trades`, `portfolios` già in schema
-- Tre portafogli: agent / random (stesso N trade, ticker casuali) / buy&hold SPY
-- CLI: `pathos portfolio status`, `pathos trade close <id>`
+**`pathosphere/market/trading.py`**
+
+- `init_portfolios(conn)` — crea agent / random / benchmark ($100k); benchmark apre trade SPY. Idempotente.
+- `open_agent_trade(conn, thesis_id)` — apre agent + random (stesso qty/dir, ticker casuale riproducibile). `price_open = yfinance live` (no-lookahead).
+- `close_trade(conn, trade_id)` — pnl = gross − costi entrambi i lati
+- `get_portfolio_status(conn)` — P&L realizzato + non realizzato (fetch prezzi live), return %
+- Costanti: `INITIAL_CASH=100k`, `ALLOCATION_PCT=10%`, `TC=0.1%`, `SLIPPAGE=0.05%`
+- Pool random: `[SPY, QQQ, GLD, USO, TLT, EEM, IWM, XLE, XLF, DIA]`
+
+CLI: `pathos portfolio init/status` · `pathos trade open/close/list [--closed]`
 
 ### 3f. Predizioni non finanziarie
 

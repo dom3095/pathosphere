@@ -1216,3 +1216,183 @@ def export_parquet(tables: str | None, out_dir: str | None) -> None:
         click.echo(f"  {tbl:<25} {result.rows_written[tbl]:>10,} rows")
     if result.errors:
         click.echo(f"\nErrors: {result.errors}")
+
+
+# ─── portfolio ────────────────────────────────────────────────────────────────
+
+@cli.group()
+def portfolio() -> None:
+    """Virtual portfolio management (paper trading)."""
+
+
+@portfolio.command("init")
+def portfolio_init() -> None:
+    """Create agent / random / benchmark portfolios ($100k each).
+
+    Benchmark opens a buy-and-hold SPY trade immediately.
+    Safe to re-run: idempotent.
+    """
+    from pathosphere.db.schema import get_connection
+    from pathosphere.market.trading import init_portfolios
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    result = init_portfolios(conn)
+    conn.close()
+
+    if result.portfolios_created:
+        click.echo(f"Created  : {', '.join(result.portfolios_created)}")
+    if result.portfolios_existing:
+        click.echo(f"Existing : {', '.join(result.portfolios_existing)}")
+    if result.benchmark_price:
+        click.echo(f"Benchmark: SPY opened @ {result.benchmark_price:.2f}")
+    elif not result.portfolios_existing or "benchmark" not in result.portfolios_existing:
+        click.echo("Benchmark: SPY price unavailable — trade not opened (retry later)")
+
+
+@portfolio.command("status")
+def portfolio_status() -> None:
+    """Show realized + unrealized P&L for all portfolios (fetches live prices)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.market.trading import INITIAL_CASH, get_portfolio_status
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    statuses = get_portfolio_status(conn)
+    conn.close()
+
+    if not statuses:
+        click.echo("No portfolios found. Run: pathos portfolio init")
+        return
+
+    click.echo(f"\n{'Portfolio':<12} {'Type':<10} {'Realized':>10} {'Unreal.':>10} {'Total P&L':>10} {'Return':>8} {'Open':>5} {'Closed':>6}")
+    click.echo("─" * 75)
+    for s in statuses:
+        click.echo(
+            f"{s.name:<12} {s.portfolio_type:<10} "
+            f"{s.realized_pnl:>+10.2f} {s.unrealized_pnl:>+10.2f} "
+            f"{s.total_pnl:>+10.2f} {s.return_pct:>+7.2f}% "
+            f"{s.open_trades:>5} {s.closed_trades:>6}"
+        )
+
+    click.echo(f"\nBase capital: ${INITIAL_CASH:,.0f} per portfolio")
+
+
+# ─── trade ────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def trade() -> None:
+    """Paper trade management."""
+
+
+@trade.command("open")
+@click.argument("thesis_id", type=int)
+def trade_open(thesis_id: int) -> None:
+    """Open an agent trade + random control trade from an approved thesis.
+
+    price_open = yfinance fetch at decision time (no-lookahead bias).
+    Also opens a matching random trade (same qty/direction, random ticker).
+    """
+    from pathosphere.db.schema import get_connection
+    from pathosphere.market.trading import open_agent_trade
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    try:
+        result = open_agent_trade(conn, thesis_id)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nTrade opened:\n"
+        f"  Agent  #{result.agent_trade_id:>4}  {result.ticker:<6}  {result.direction}  "
+        f"qty={result.quantity:.4f}  @ {result.price_open:.2f}\n"
+        f"  Random #{result.random_trade_id:>4}  {result.random_ticker:<6}  {result.direction}  "
+        f"(control, same thesis_id={thesis_id})"
+    )
+
+
+@trade.command("close")
+@click.argument("trade_id", type=int)
+def trade_close(trade_id: int) -> None:
+    """Close a trade: fetch current price, compute P&L, persist."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.market.trading import close_trade
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    try:
+        result = close_trade(conn, trade_id)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nTrade #{trade_id} closed:\n"
+        f"  Ticker    : {result.ticker}  ({result.direction})\n"
+        f"  Price open: {result.price_open:.2f}\n"
+        f"  Price close: {result.price_close:.2f}\n"
+        f"  Quantity  : {result.quantity:.4f}\n"
+        f"  P&L       : {result.pnl:+.2f}"
+    )
+
+
+@trade.command("list")
+@click.option("--portfolio", "portfolio_name", default=None,
+              type=click.Choice(["agent", "random", "benchmark"]),
+              help="Filter by portfolio [default: all].")
+@click.option("--closed", is_flag=True, default=False,
+              help="Show closed trades instead of open ones.")
+def trade_list(portfolio_name: str | None, closed: bool) -> None:
+    """List open (or closed) trades."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.market.trading import list_open_trades
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    if closed:
+        query = """
+            SELECT t.*, p.name AS portfolio_name
+            FROM trades t JOIN portfolios p ON t.portfolio_id = p.id
+            WHERE t.closed_at IS NOT NULL
+        """
+        params: tuple = ()
+        if portfolio_name:
+            query += " AND p.name = ?"
+            params = (portfolio_name,)
+        query += " ORDER BY t.closed_at DESC"
+        rows = conn.execute(query, params).fetchall()
+    else:
+        rows = list_open_trades(conn, portfolio_name=portfolio_name)
+    conn.close()
+
+    if not rows:
+        state = "closed" if closed else "open"
+        click.echo(f"No {state} trades{' in ' + portfolio_name if portfolio_name else ''}.")
+        return
+
+    state_label = "closed" if closed else "open"
+    click.echo(f"\n{'ID':>4}  {'Port':<10}  {'Ticker':<7}  {'Dir':<5}  {'Qty':>10}  {'Open':>8}  {'Close':>8}  {'P&L':>9}")
+    click.echo("─" * 80)
+    for r in rows:
+        close_str = f"{r['price_close']:.2f}" if r["price_close"] else "—"
+        pnl_str = f"{r['pnl']:+.2f}" if r["pnl"] is not None else "—"
+        click.echo(
+            f"{r['id']:>4}  {r['portfolio_name']:<10}  {r['ticker']:<7}  "
+            f"{r['direction']:<5}  {r['quantity']:>10.4f}  "
+            f"{r['price_open']:>8.2f}  {close_str:>8}  {pnl_str:>9}"
+        )
