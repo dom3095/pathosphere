@@ -719,7 +719,7 @@ uv run pathos cycle --from-phase brief      # solo brief mattutino
 
 ## 8. Agent e valutazione (Fase 3)
 
-**Stato: 🔄 In corso — 3a/3b/3c/3d ✅ | 3e/3f ⬜**
+**Stato: ✅ Completa — 3a/3b/3c/3d/3e/3f ✅**
 
 ### 8.1 LLM client — `pathosphere/llm/client.py` ✅
 
@@ -793,9 +793,23 @@ uv run pathos trade list [--portfolio agent|random|benchmark] [--closed]
 
 **No-lookahead:** `price_open = yfinance fetch al momento di `trade open`` (non il price_snapshot salvato alla generazione della tesi).
 
-### 8.6 Predizioni non finanziarie — (3f — TODO)
+### 8.6 Predizioni non finanziarie — `pathosphere/agent/predictions.py` ✅
 
-Calibrazione Tetlock: `predictions` con `probability`, `horizon_date`, `outcome`, `brier_score`.
+**Calibrazione Tetlock** su `predictions(description, probability, horizon_date, outcome, brier_score)`.
+
+- `add_prediction(conn, description, probability, horizon_date, thesis_id=None)` — valida 0≤p≤1 + data ISO
+- `resolve_prediction(conn, id, outcome: bool)` — `brier_score = (p − outcome)²`; 0 = perfetto, 1 = peggio
+- `get_calibration(conn)` — Brier medio + 5 bucket di probabilità (0-20%…80-100%) con count / mean_brier / accuracy
+
+CLI:
+```
+pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10
+pathos predict list [--open | --resolved]
+pathos predict resolve <id> --outcome true|false
+pathos predict calibration
+```
+
+Brier score: 0 = perfetto, 0.25 = random (p=0.5 su evento binario), 1 = peggio possibile.
 
 ---
 
@@ -898,6 +912,17 @@ pathos
 │   └── list              Lista trade aperti (default) o chiusi (--closed)
 │       ├── --portfolio   Filtra per portfolio (agent|random|benchmark)
 │       └── --closed      Mostra trade chiusi invece di aperti
+├── predict             Predizioni non finanziarie (calibrazione Tetlock)
+│   ├── add "Desc"        Inserisce predizione (probabilità + orizzonte)
+│   │   ├── --probability Probabilità soggettiva 0.0–1.0 (obbligatoria)
+│   │   ├── --horizon     Scadenza ISO YYYY-MM-DD (obbligatoria)
+│   │   └── --thesis-id   Tesi associata (opzionale)
+│   ├── list              Lista predizioni (default: tutte)
+│   │   ├── --open        Solo aperte (non risolte)
+│   │   └── --resolved    Solo risolte
+│   ├── resolve <id>      Risolve predizione e calcola Brier score
+│   │   └── --outcome     true|false (obbligatorio)
+│   └── calibration       Brier score medio + breakdown per bucket probabilità
 └── config              Mostra configurazione attiva (.env + defaults)
 ```
 
@@ -1055,7 +1080,7 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **3** | Generatore tesi (fast path + multi-persona debate) | ✅ |
 | **3** | Flusso approvazione CLI (list/show/approve/reject) | ✅ |
 | **3** | Paper trading EOD + portafogli di controllo | ✅ |
-| **3** | Calibrazione Tetlock (predizioni non finanziarie) | ⬜ |
+| **3** | Calibrazione Tetlock (predizioni non finanziarie) | ✅ |
 | **4** | Dashboard Streamlit minimale | ⬜ |
 
 **MVP verticale:** filiera semiconduttori — TSMC/ASML/SMIC, chokepoint Taiwan Strait. Pochi attori, geopolitica intensa, segnali chiari.

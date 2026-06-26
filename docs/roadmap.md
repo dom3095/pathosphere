@@ -11,7 +11,7 @@ Stato aggiornato: 2026-06-26.
 | **0** | Fondamenta | ✅ Completa |
 | **1** | Ingestione | ✅ Completa |
 | **2** | Semantica | ✅ Completa |
-| **3** | Agent e valutazione | 🔄 In corso (3d/6 ✅) |
+| **3** | Agent e valutazione | ✅ Completa (3a–3f) |
 | **4** | Interfaccia | ⬜ Futuro |
 
 ---
@@ -60,7 +60,7 @@ Stato aggiornato: 2026-06-26.
 
 ---
 
-## Fase 3 — Agent e valutazione 🔄
+## Fase 3 — Agent e valutazione ✅
 
 ### 3a. Astrazione LLM `pathosphere/llm/client.py` ✅
 
@@ -111,12 +111,24 @@ pathos thesis reject <id> --reason "..."  # status → rejected, rejection_reaso
 
 CLI: `pathos portfolio init/status` · `pathos trade open/close/list [--closed]`
 
-### 3f. Predizioni non finanziarie
+### 3f. Predizioni non finanziarie ✅
 
-- Tabella `predictions` già in schema
-- Workflow: `pathos predict add "Escalation in X entro 2 settimane" --probability 0.6 --horizon 2026-07-05`
-- Risoluzione: `pathos predict resolve <id> --outcome true|false`
-- Metrica: Brier score per calibrazione Tetlock
+**`pathosphere/agent/predictions.py`**
+
+- `add_prediction(conn, description, probability, horizon_date, thesis_id=None)` — valida probability 0–1 + data ISO
+- `list_predictions(conn, only_open, only_resolved)` — ordinate per horizon_date ASC
+- `resolve_prediction(conn, id, outcome: bool)` — `brier_score = (probability - outcome)²`
+- `get_calibration(conn)` — Brier score medio + 5 bucket (0-20%, 20-40%, 40-60%, 60-80%, 80-100%) con count/mean_brier/accuracy
+
+CLI:
+```
+pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10 [--thesis-id <id>]
+pathos predict list [--open] [--resolved]
+pathos predict resolve <id> --outcome true|false
+pathos predict calibration
+```
+
+- 39 test in `tests/test_predictions.py`
 
 ---
 
