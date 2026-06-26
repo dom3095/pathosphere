@@ -35,11 +35,12 @@ Sistema personale di intelligence OSINT. Paper trading virtuale come metrica di 
    - 6.3 [Clustering → eventi](#63-clustering--eventi)
    - 6.4 [NER + geocoding + Wikidata](#64-ner--geocoding--wikidata)
 7. [Ciclo notturno](#7-ciclo-notturno)
-8. [CLI Reference](#8-cli-reference)
-9. [Fonti dati](#9-fonti-dati)
-10. [Valutazione del modello](#10-valutazione-del-modello)
-11. [Testing](#11-testing)
-12. [Roadmap](#12-roadmap)
+8. [Agent e valutazione (Fase 3)](#8-agent-e-valutazione-fase-3)
+9. [CLI Reference](#9-cli-reference)
+10. [Fonti dati](#10-fonti-dati)
+11. [Valutazione del modello](#11-valutazione-del-modello)
+12. [Testing](#12-testing)
+13. [Roadmap](#13-roadmap)
 
 ---
 
@@ -189,7 +190,15 @@ pathosphere/
 │   ├── cluster.py      Union-find clustering → events + event_documents.
 │   ├── extract.py      NER (spaCy xx_ent_wiki_sm) + geocoding Nominatim + Wikidata QID.
 │   └── graph.py        Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences.
-└── agent/              (Fase 3) brief, tesi, paper trading — TODO
+├── llm/
+│   └── client.py       LLMClient: Claude SDK + Qwen-local (Ollama). OpenAI-compatible. ✅
+├── agent/
+│   ├── brief.py        Brief mattutino: divergenze + anomalie → Claude → briefs. ✅
+│   ├── thesis.py       Generatore tesi fast path (1 Claude call). ✅
+│   ├── debate.py       Pipeline debate 4-step (Qwen×13 + Claude×1). ✅
+│   └── approval.py     Approvazione/rifiuto tesi: list, show, approve, reject. ✅
+└── market/
+    └── prices.py       fetch_price(ticker) via yfinance EOD. ✅
 ```
 
 ### 3.3 Flusso dati
@@ -450,7 +459,7 @@ prevalentemente acquatica/artica) possono risultare senza dati fire (0 rilevazio
 corretto). L'anomalia richiede ≥11 punti di baseline e un floor assoluto
 (`--min-detections`, default 50) per non scattare su baseline quasi vuote.
 
-**Ancora da agganciare:** yfinance (prezzi EOD per il paper trading — Fase 3).
+**yfinance** (prezzi EOD): agganciato in Fase 3 — `market/prices.py` + paper trading EOD (3e).
 
 ### 5.4 IODA (blackout internet)
 
@@ -708,7 +717,80 @@ uv run pathos cycle --from-phase brief      # solo brief mattutino
 
 ---
 
-## 8. CLI Reference
+## 8. Agent e valutazione (Fase 3)
+
+**Stato: 🔄 In corso — 3a/3b/3c/3d ✅ | 3e/3f ⬜**
+
+### 8.1 LLM client — `pathosphere/llm/client.py` ✅
+
+Astrazione OpenAI-compatible. Un backend, due implementazioni:
+
+| Backend | Config | Uso |
+|---|---|---|
+| `claude` | `REASONING_MODEL=claude` (default) | Brief mattutino, sintesi debate, tesi finali |
+| `qwen-local` | `REASONING_MODEL=qwen-local` | Ricerca e critica personas (lavoro di massa) |
+
+```python
+client = LLMClient(backend="claude")
+result = await client.complete(messages, json_mode=True)
+```
+
+Cambiare backend = una riga di config. A/B testing: stesso giorno, tesi da Qwen3 4B vs Claude, il paper trading misura la differenza.
+
+### 8.2 Brief mattutino — `pathosphere/agent/brief.py` ✅
+
+Legge dal DB: divergenze narrative (`divergence_score > 0.5`), entità hub (`entity_links`), anomalie recenti (portwatch/firms/usgs/ioda). 1 chiamata Claude → brief strutturato salvato in `briefs` + file `data/briefs/YYYY-MM-DD.md`.
+
+```bash
+uv run pathos brief                        # oggi, tutti i segnali
+uv run pathos brief --lookback-days 3      # finestra più stretta
+uv run pathos brief --dry-run              # solo conteggi, no LLM
+```
+
+### 8.3 Generatore tesi — `pathosphere/agent/thesis.py` + `debate.py` ✅
+
+**Fast path** (`pathos thesis generate`): 1 Claude call → N tesi primarie + alternative. Ogni tesi: `title`, `causal_chain` (JSON), `instrument`, `direction`, `horizon_days`, `confidence`, `invalidation`, `watchlist_items`.
+
+**Debate pipeline** (`pathos thesis debate`): 4 step sequenziali:
+1. Research — 6 personas × Qwen (Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris)
+2. Divergence detection — Qwen identifica 2-3 disaccordi strutturali
+3. Critique — ogni persona risponde ai punti di divergenza (Qwen)
+4. Synthesis — Claude genera tesi con `debate_context` (supporters/opponents)
+
+`price_snapshot` = prezzo EOD yfinance al momento della generazione (no-lookahead bias).
+
+### 8.4 Flusso approvazione — `pathosphere/agent/approval.py` ✅
+
+Human-in-the-loop: l'agent propone, l'utente decide.
+
+```bash
+uv run pathos thesis list                  # tesi pending (tabella: id/title/inst/dir/price/horizon/conf)
+uv run pathos thesis show <id>             # dettaglio: trigger, causal chain, invalidation, debate context
+uv run pathos thesis approve <id>          # status → approved | valida ticker yfinance (warn, non blocca)
+uv run pathos thesis reject <id> --reason "Invalidation condition met"
+```
+
+- `rejection_reason` loggato in `theses` → dataset per analizzare pattern di rifiuto
+- Ticker validation: `yfinance.fast_info.last_price` — se assente: warning stampato, approvazione procede
+- `list --status all` mostra tutte le tesi indipendentemente dallo status
+
+### 8.5 Paper trading EOD — `pathosphere/market/` ⬜ (3e — TODO)
+
+- `pathos portfolio init` — crea agent/random/benchmark ($100k virtuale ciascuno)
+- `pathos portfolio status` — P&L per portafoglio
+- `pathos trade open <thesis_id>` — `price_open = yfinance EOD` al momento decisione
+- `pathos trade close <trade_id>` — `price_close = yfinance EOD`, calcola `pnl`
+- Portafoglio random: stessa dimensione trade, ticker casuali da pool (SPY/QQQ/GLD/USO/TLT)
+- Benchmark: buy & hold SPY
+- Costi transazione + slippage simulati (config)
+
+### 8.6 Predizioni non finanziarie — (3f — TODO)
+
+Calibrazione Tetlock: `predictions` con `probability`, `horizon_date`, `outcome`, `brier_score`.
+
+---
+
+## 9. CLI Reference
 
 Entry point: `uv run pathos`
 
@@ -779,12 +861,31 @@ pathos
 ├── cycle               Esegui ciclo notturno (INGEST→EMBED→EXTRACT→CLUSTER→GRAPH→BRIEF)
 │   ├── --dry-run       Simula tutte le fasi senza I/O
 │   └── --from-phase    Riprendi da fase specifica (ingest|embed|extract|cluster|graph|brief)
+├── brief               Genera brief mattutino intelligenza (Claude SDK)
+│   ├── --date          Data ISO brief [default: oggi UTC]
+│   ├── --lookback-days Giorni back per divergenze e anomalie [default: 7]
+│   ├── --model         claude|qwen-local [default: da .env]
+│   └── --dry-run       Mostra solo conteggi segnali, no LLM
+├── thesis              Generazione e approvazione tesi
+│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call)
+│   │   ├── --date      Data brief [default: oggi UTC]
+│   │   ├── --n         Numero tesi primarie [default: 3]
+│   │   └── --model     claude|qwen-local
+│   ├── debate          Genera tesi via debate pipeline (Qwen×13 + Claude×1)
+│   │   ├── --date      Data brief
+│   │   └── --n         Numero tesi primarie [default: 3]
+│   ├── list            Lista tesi filtrate per status
+│   │   └── --status    pending|approved|rejected|closed|all [default: pending]
+│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist
+│   ├── approve <id>    Approva tesi pending (valida ticker yfinance, warn non blocca)
+│   └── reject <id>     Rifiuta tesi pending con motivazione
+│       └── --reason    Motivazione (obbligatoria, loggata in theses.rejection_reason)
 └── config              Mostra configurazione attiva (.env + defaults)
 ```
 
 ---
 
-## 9. Fonti dati
+## 10. Fonti dati
 
 ### Blocchi geopolitici
 
@@ -821,7 +922,7 @@ Ogni `raw_document` porta il `source_id` → `geopolitical_block`. Quando CNN e 
 
 ---
 
-## 10. Valutazione del modello
+## 11. Valutazione del modello
 
 ### Portafogli di controllo
 
@@ -860,7 +961,7 @@ Tabella `predictions` per anticipazioni non finanziarie:
 
 ---
 
-## 11. Testing
+## 12. Testing
 
 ```
 tests/
@@ -875,15 +976,20 @@ tests/
 ├── test_physical.py     USGS quake parse/store; FIRMS window logic, metrics, anomalie
 ├── test_anomaly.py      find_anomalies: surge/drop/both, whole_history, min_value (8 test)
 ├── test_ioda.py         _aggregate_daily, _fetch_signals, ingest_ioda: upsert, outage, dedup, errori (12 test)
-└── test_parquet.py      export_to_parquet: partizioni, roundtrip, undated, idempotenza (9 test)
+├── test_parquet.py      export_to_parquet: partizioni, roundtrip, undated, idempotenza (9 test)
+├── test_prices.py       fetch_price: EOD, ticker vuoto, history empty, exception (5 test)
+├── test_brief.py        generate_brief, _query_*, dry-run (mock LLM)
+├── test_thesis.py       generate_theses, _save_thesis, _save_watchlist_items (10 test)
+└── test_thesis_approval.py  list_theses, approve/reject, validate_ticker, format_causal_chain (34 test)
 ```
 
 **Esecuzione:**
 
 ```bash
-uv run pytest            # 181 test, ~10s, zero chiamate HTTP/modello reali
+uv run pytest            # 295 test, ~25s, zero chiamate HTTP/modello reali
 uv run pytest -v         # output verboso
 uv run pytest tests/test_semantic.py   # solo pipeline semantica
+uv run pytest tests/test_thesis_approval.py  # solo flusso approvazione
 ```
 
 **Filosofia:** nessuna chiamata HTTP reale, nessun download di modello nei test. `MockModel` restituisce vettori unitari deterministici (seed da hash del testo). `tmp_db` fixture crea un DB SQLite temporaneo per ogni test.
@@ -904,7 +1010,7 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 
 ---
 
-## 12. Roadmap
+## 13. Roadmap
 
 | Fase | Componente | Stato |
 |---|---|---|
@@ -923,10 +1029,12 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **2** | Wikidata entity linking | ✅ |
 | **2** | Grafo entità (co-occorrenze → `entity_links`) | ✅ |
 | **2** | Divergenza narrativa per blocco (→ `narrative_divergences`) | ✅ |
-| **3** | Brief mattutino (Claude SDK) | ⬜ |
-| **3** | Generatore tesi con catene causali | ⬜ |
-| **3** | Paper trading engine + approvazione CLI | ⬜ |
-| **3** | Portafogli di controllo + calibrazione Tetlock | ⬜ |
+| **3** | LLM client (Claude SDK + Qwen-local) | ✅ |
+| **3** | Brief mattutino (Claude SDK) | ✅ |
+| **3** | Generatore tesi (fast path + multi-persona debate) | ✅ |
+| **3** | Flusso approvazione CLI (list/show/approve/reject) | ✅ |
+| **3** | Paper trading EOD + portafogli di controllo | ⬜ |
+| **3** | Calibrazione Tetlock (predizioni non finanziarie) | ⬜ |
 | **4** | Dashboard Streamlit minimale | ⬜ |
 
 **MVP verticale:** filiera semiconduttori — TSMC/ASML/SMIC, chokepoint Taiwan Strait. Pochi attori, geopolitica intensa, segnali chiari.

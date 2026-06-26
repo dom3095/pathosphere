@@ -72,8 +72,17 @@ uv run pathos cycle --from-phase graph              # riprendi da GRAPH
 # Export
 uv run pathos export parquet                       # backup Parquet partizionato → data/parquet/
 
+# Agent (Fase 3)
+uv run pathos brief                         # genera brief mattutino
+uv run pathos thesis generate               # tesi fast path (1 Claude call)
+uv run pathos thesis debate                 # tesi via debate pipeline (Qwen×13 + Claude×1)
+uv run pathos thesis list                   # tesi pending
+uv run pathos thesis show <id>              # dettaglio completo
+uv run pathos thesis approve <id>           # approva (valida ticker yfinance)
+uv run pathos thesis reject <id> --reason "..." # rifiuta con motivazione
+
 # Test
-uv run pytest                    # 181 test
+uv run pytest                    # 295 test
 ```
 
 ## Bootstrap storico vs aggiornamento incrementale
@@ -164,8 +173,11 @@ pathosphere/
 │   ├── cycle/          orchestratore ciclo notturno
 │   ├── ingest/         ingestori (GDELT, RSS, PortWatch, Comtrade, USGS, FIRMS, IODA ✅)
 │   ├── export/         export Parquet partizionato ✅
-│   └── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; extract ✅; graph ✅)
-├── tests/              181 test, ~10s
+│   ├── semantic/       pipeline semantica (embed ✅; dedup ✅; cluster ✅; extract ✅; graph ✅)
+│   ├── llm/            LLM client (Claude SDK + Qwen-local via Ollama) ✅
+│   ├── agent/          brief ✅ | thesis ✅ | debate ✅ | approval ✅
+│   └── market/         prices (yfinance EOD) ✅
+├── tests/              295 test, ~25s
 ├── docs/
 │   ├── wiki.md         documentazione completa
 │   ├── architecture.md architettura dettagliata
@@ -184,5 +196,8 @@ pathosphere/
 - [x] **Fase 2** — Clustering articoli → eventi (union-find)
 - [x] **Fase 2** — NER, geocoding (Nominatim), Wikidata entity linking
 - [x] **Fase 2** — Grafo co-occorrenze (`entity_links`) + divergenza narrativa per blocco (`narrative_divergences`)
-- [ ] **Fase 3** — Brief, tesi, paper trading, calibrazione Tetlock
+- [x] **Fase 3** — LLM client (Claude SDK + Qwen-local), brief mattutino
+- [x] **Fase 3** — Generatore tesi (fast path + multi-persona debate pipeline)
+- [x] **Fase 3** — Flusso approvazione CLI (list/show/approve/reject, ticker validation)
+- [ ] **Fase 3** — Paper trading EOD, portafogli di controllo, calibrazione Tetlock
 - [ ] **Fase 4** — Dashboard Streamlit

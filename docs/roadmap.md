@@ -1,6 +1,6 @@
 # Pathosphere — Roadmap
 
-Stato aggiornato: 2026-06-21.
+Stato aggiornato: 2026-06-26.
 
 ---
 
@@ -11,7 +11,7 @@ Stato aggiornato: 2026-06-21.
 | **0** | Fondamenta | ✅ Completa |
 | **1** | Ingestione | ✅ Completa |
 | **2** | Semantica | ✅ Completa |
-| **3** | Agent e valutazione | ⬜ Prossimo blocco |
+| **3** | Agent e valutazione | 🔄 In corso (3d/6 ✅) |
 | **4** | Interfaccia | ⬜ Futuro |
 
 ---
@@ -60,11 +60,9 @@ Stato aggiornato: 2026-06-21.
 
 ---
 
-## Fase 3 — Agent e valutazione ⬜
+## Fase 3 — Agent e valutazione 🔄
 
-Nessun codice ancora presente in `pathosphere/llm/` o `pathosphere/agent/`.
-
-### 3a. Astrazione LLM `pathosphere/llm/client.py`
+### 3a. Astrazione LLM `pathosphere/llm/client.py` ✅
 
 - API OpenAI-compatible — cambiare backend = una riga di config
 - **Claude**: Claude Agent SDK (`claude -p`), non API dirette (credito abbonamento)
@@ -72,31 +70,33 @@ Nessun codice ancora presente in `pathosphere/llm/` o `pathosphere/agent/`.
 - Signature: `async def complete(messages, *, model=None, json_mode=False) -> str`
 - Config: `settings.reasoning_model = "claude" | "qwen-local"`
 
-Prerequisito di tutti gli altri step Fase 3.
+### 3b. Brief mattutino `pathosphere/agent/brief.py` ✅
 
-### 3b. Brief mattutino `pathosphere/agent/brief.py`
+- Input: divergenze narrative (`divergence_score > 0.5`), entità hub, anomalie recenti (portwatch/firms/usgs/ioda)
+- Output: testo strutturato (eventi + divergenze + impatti ipotizzati)
+- CLI: `pathos brief [--date] [--lookback-days] [--model] [--dry-run]`
+- Salvataggio: `data/briefs/YYYY-MM-DD.md` + tabella `briefs`
 
-- Input: cluster con `divergence_score > 0.5`, entità con grado alto in `entity_links`, anomalie recenti da portwatch/firms/usgs/ioda
-- Output: testo strutturato (evento + divergenza + impatto ipotizzato)
-- CLI: `pathos brief` o parte del `pathos cycle` (fase BRIEF già stub)
-- Salvataggio: file giornaliero `data/briefs/YYYY-MM-DD.md` o tabella `briefs`
+### 3c. Generatore tesi `pathosphere/agent/thesis.py` + debate pipeline ✅
 
-### 3c. Generatore tesi `pathosphere/agent/thesis.py`
+- **Fast path** (`pathos thesis generate`): 1 Claude call → N tesi primarie + 1-2 alternative ciascuna
+- **Debate pipeline** (`pathos thesis debate`): 6 personas × 3 step Qwen (research → divergence → critique) + 1 Claude synthesis
+- `causal_chain` JSON: `{"steps": [...], "trigger_summary": "...", "persona_notes": {}, "debate_context": {...}}`
+- `price_snapshot` al momento della generazione (no-lookahead)
+- `watchlist_items` auto-popolati per ogni tesi
 
-- Funzione: `generate_thesis(conn, llm_client, event_ids) -> list[Thesis]`
-- Ogni tesi (tabella `theses` già in schema): `trigger_event`, `causal_chain` (JSON A→B→C), `instrument`, `direction`, `horizon_days`, `invalidation`, `confidence`
-- Strutturati output JSON → validati con pydantic prima di `INSERT`
-
-### 3d. Flusso approvazione CLI
+### 3d. Flusso approvazione CLI ✅
 
 ```
-pathos thesis list                        # tesi pending
-pathos thesis approve <id>                # approva → logga price_open da yfinance
-pathos thesis reject <id> --reason "..."  # rifiuta con motivazione (loggata)
+pathos thesis list [--status pending|approved|rejected|closed|all]
+pathos thesis show <id>              # trigger, causal chain, invalidation, persona notes, debate context, watchlist
+pathos thesis approve <id>           # status → approved, valida ticker yfinance (warn, non blocca)
+pathos thesis reject <id> --reason "..."  # status → rejected, rejection_reason loggato
 ```
 
-- `approved_at` e `rejected_at` aggiornati in `theses`
+- `approved_at` / `rejected_at` in `theses`
 - `rejection_reason` persistito → dataset per capire pattern di rifiuto
+- Ticker validation: `yfinance.fast_info.last_price` — warn se assente, non blocca mai
 
 ### 3e. Paper trading EOD
 
