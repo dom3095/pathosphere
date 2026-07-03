@@ -1,10 +1,17 @@
 """Pathosphere main CLI — entry point: `pathos`."""
 
+import sqlite3
 from pathlib import Path
 
 import click
 from loguru import logger
 
+from pathosphere.agent.predictions import (
+    VALID_DOMAINS,
+    VALID_MACRO_AREAS,
+    VALID_PREDICTION_TYPES,
+    VALID_SCOPES,
+)
 from pathosphere.config import get_settings
 from pathosphere.logging_setup import setup_logging
 
@@ -1077,12 +1084,26 @@ def thesis_approve(thesis_id: int) -> None:
         else:
             click.echo(f" WARNING: {ticker} not found on yfinance. Check the ticker before trading.")
 
+    from pathosphere.agent.predictions import create_thesis_prediction
+
     try:
         updated = approve_thesis(conn, thesis_id)
     except ValueError as exc:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
+
+    # v2: every approved thesis gets an auto economic prediction so the
+    # geopolitical→thesis→trade→economic chain is measurable end to end.
+    # Approval is already committed: a prediction failure must not mask it.
+    pred_line = ""
+    try:
+        pred = create_thesis_prediction(conn, updated)
+        pred_line = (f"\n  Economic prediction #{pred['id']} auto-created "
+                     f"(p={pred['probability']:.0%}, horizon {pred['horizon_date']})")
+    except (ValueError, sqlite3.Error) as exc:
+        pred_line = (f"\n  WARNING: thesis approved but economic prediction "
+                     f"NOT created: {exc}")
     conn.close()
 
     click.echo(
@@ -1090,6 +1111,7 @@ def thesis_approve(thesis_id: int) -> None:
         f"  Title    : {updated['title']}\n"
         f"  Ticker   : {updated['instrument']} {updated['direction']}\n"
         f"  Approved : {updated['approved_at']}"
+        + pred_line
     )
 
 
@@ -1309,6 +1331,11 @@ def trade_open(thesis_id: int) -> None:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
+
+    # v2: link the thesis's auto economic prediction to the opened agent trade
+    from pathosphere.agent.predictions import link_thesis_prediction_to_trade
+
+    linked = link_thesis_prediction_to_trade(conn, thesis_id, result.agent_trade_id)
     conn.close()
 
     click.echo(
@@ -1317,6 +1344,7 @@ def trade_open(thesis_id: int) -> None:
         f"qty={result.quantity:.4f}  @ {result.price_open:.2f}\n"
         f"  Random #{result.random_trade_id:>4}  {result.random_ticker:<6}  {result.direction}  "
         f"(control, same thesis_id={thesis_id})"
+        + (f"\n  Economic prediction linked to trade #{result.agent_trade_id}" if linked else "")
     )
 
 
@@ -1407,36 +1435,105 @@ def predict() -> None:
 
 @predict.command("add")
 @click.argument("description")
+@click.option("--macro-area", required=True, type=click.Choice(VALID_MACRO_AREAS),
+              help="Track: world (geopolitical/political/social) or economic.")
+@click.option("--prediction-type", required=True,
+              type=click.Choice(VALID_PREDICTION_TYPES),
+              help="Granularity; must be coherent with --macro-area.")
 @click.option("--probability", required=True, type=float,
               help="Subjective probability 0.0–1.0 (e.g. 0.65).")
 @click.option("--horizon", "horizon_date", required=True,
               help="Deadline ISO YYYY-MM-DD (e.g. 2026-07-10).")
+@click.option("--domain", "domains", multiple=True, required=True,
+              type=click.Choice(VALID_DOMAINS),
+              help="Domain from taxonomy (repeatable, at least one).")
+@click.option("--primary-domain", default=None, type=click.Choice(VALID_DOMAINS),
+              help="Primary domain [default: first --domain].")
+@click.option("--origin-scope", default=None, type=click.Choice(VALID_SCOPES),
+              help="Scope of the origin (required for world).")
+@click.option("--impact-scope", default=None, type=click.Choice(VALID_SCOPES),
+              help="Scope of the impact (required for world).")
 @click.option("--thesis-id", default=None, type=int,
-              help="Optional linked thesis id.")
-def predict_add(description: str, probability: float, horizon_date: str,
-                thesis_id: int | None) -> None:
-    """Add a non-financial prediction for later resolution."""
+              help="Linked thesis id (required for economic).")
+@click.option("--trade-id", default=None, type=int,
+              help="Linked trade id (economic only).")
+def predict_add(description: str, macro_area: str, prediction_type: str,
+                probability: float, horizon_date: str, domains: tuple[str, ...],
+                primary_domain: str | None, origin_scope: str | None,
+                impact_scope: str | None, thesis_id: int | None,
+                trade_id: int | None) -> None:
+    """Add a prediction (world or economic track) for later resolution."""
     from pathosphere.db.schema import get_connection
-    from pathosphere.agent.predictions import add_prediction
+    from pathosphere.agent.predictions import add_prediction, get_prediction_domains
 
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
 
     try:
-        row = add_prediction(conn, description, probability, horizon_date, thesis_id=thesis_id)
+        row = add_prediction(
+            conn, description, probability, horizon_date,
+            macro_area=macro_area, prediction_type=prediction_type,
+            domains=list(domains), primary_domain=primary_domain,
+            origin_scope=origin_scope, impact_scope=impact_scope,
+            thesis_id=thesis_id, trade_id=trade_id,
+        )
+    except sqlite3.IntegrityError as exc:
+        conn.close()
+        click.echo(f"Error: invalid --thesis-id or --trade-id reference ({exc})")
+        raise SystemExit(1)
     except ValueError as exc:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
+    dom_rows = get_prediction_domains(conn, row["id"])
     conn.close()
 
+    dom_str = ", ".join(
+        f"{d['domain']}{'*' if d['is_primary'] else ''}" for d in dom_rows
+    )
     click.echo(
         f"\nPrediction #{row['id']} added.\n"
         f"  Description: {row['description']}\n"
+        f"  Track/type : {row['macro_area']} / {row['prediction_type']}\n"
         f"  Probability: {row['probability']:.0%}\n"
-        f"  Horizon    : {row['horizon_date']}\n"
+        f"  Horizon    : {row['horizon_date']} ({row['time_horizon_class']})\n"
+        f"  Domains    : {dom_str}\n"
+        f"  Scope      : {row['origin_scope'] or '—'} → {row['impact_scope'] or '—'}\n"
         f"  Thesis id  : {row['thesis_id'] or 'N/A'}"
+    )
+
+
+@predict.command("revise")
+@click.argument("prediction_id", type=int)
+@click.option("--probability", required=True, type=float,
+              help="New probability 0.0–1.0.")
+@click.option("--rationale", default=None,
+              help="Reason for the revision (logged).")
+def predict_revise(prediction_id: int, probability: float,
+                   rationale: str | None) -> None:
+    """Revise probability of an open prediction (revision history logged)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.agent.predictions import revise_prediction, get_prediction_revisions
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    try:
+        row = revise_prediction(conn, prediction_id, probability, rationale)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    n_revisions = len(get_prediction_revisions(conn, prediction_id))
+    conn.close()
+
+    click.echo(
+        f"\nPrediction #{prediction_id} revised.\n"
+        f"  Description: {row['description']}\n"
+        f"  Probability: {row['probability']:.0%}\n"
+        f"  Revisions  : {n_revisions}"
     )
 
 
@@ -1445,7 +1542,15 @@ def predict_add(description: str, probability: float, horizon_date: str,
               help="Show only open (unresolved) predictions.")
 @click.option("--resolved", "only_resolved", is_flag=True, default=False,
               help="Show only resolved predictions.")
-def predict_list(only_open: bool, only_resolved: bool) -> None:
+@click.option("--macro-area", default=None, type=click.Choice(VALID_MACRO_AREAS),
+              help="Filter by track.")
+@click.option("--prediction-type", default=None,
+              type=click.Choice(VALID_PREDICTION_TYPES),
+              help="Filter by type.")
+@click.option("--domain", default=None, type=click.Choice(VALID_DOMAINS),
+              help="Filter by domain (taxonomy value).")
+def predict_list(only_open: bool, only_resolved: bool, macro_area: str | None,
+                 prediction_type: str | None, domain: str | None) -> None:
     """List predictions (default: all)."""
     from pathosphere.db.schema import get_connection
     from pathosphere.agent.predictions import list_predictions
@@ -1453,7 +1558,10 @@ def predict_list(only_open: bool, only_resolved: bool) -> None:
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
-    rows = list_predictions(conn, only_open=only_open, only_resolved=only_resolved)
+    rows = list_predictions(
+        conn, only_open=only_open, only_resolved=only_resolved,
+        macro_area=macro_area, prediction_type=prediction_type, domain=domain,
+    )
     conn.close()
 
     if not rows:
@@ -1461,27 +1569,34 @@ def predict_list(only_open: bool, only_resolved: bool) -> None:
         return
 
     click.echo(
-        f"\n{'ID':>4}  {'Prob':>5}  {'Horizon':<12}  {'St':<4}  "
-        f"{'Out':<5}  {'Brier':>6}  Description"
+        f"\n{'ID':>4}  {'Area':<8}  {'Type':<12}  {'Prob':>5}  {'Horizon':<12}  "
+        f"{'St':<4}  {'Out':<5}  {'TAS':>6}  Description"
     )
-    click.echo("─" * 90)
+    click.echo("─" * 110)
     for r in rows:
         status = "open" if not r["resolved"] else "done"
-        out_str = "true" if r["outcome"] == 1 else ("false" if r["outcome"] == 0 else "—")
-        brier_str = f"{r['brier_score']:.3f}" if r["brier_score"] is not None else "—"
-        desc = (r["description"] or "")[:55]
+        # pre-v2 rows only have legacy `outcome`
+        out = r["outcome_eventual"] if r["outcome_eventual"] is not None else r["outcome"]
+        out_str = "true" if out == 1 else ("false" if out == 0 else "—")
+        tas_str = (f"{r['time_adjusted_score']:.3f}"
+                   if r["time_adjusted_score"] is not None else "—")
+        desc = (r["description"] or "")[:45]
         click.echo(
-            f"{r['id']:>4}  {r['probability']:>4.0%}  {r['horizon_date']:<12}  "
-            f"{status:<4}  {out_str:<5}  {brier_str:>6}  {desc}"
+            f"{r['id']:>4}  {r['macro_area']:<8}  {r['prediction_type']:<12}  "
+            f"{r['probability']:>4.0%}  {r['horizon_date']:<12}  "
+            f"{status:<4}  {out_str:<5}  {tas_str:>6}  {desc}"
         )
 
 
 @predict.command("resolve")
 @click.argument("prediction_id", type=int)
-@click.option("--outcome", required=True, type=click.Choice(["true", "false"]),
-              help="Whether the prediction came true.")
-def predict_resolve(prediction_id: int, outcome: str) -> None:
-    """Resolve a prediction: record outcome and compute Brier score."""
+@click.option("--outcome-eventual", required=True, type=click.Choice(["true", "false"]),
+              help="Did the event ever happen (timing-independent).")
+@click.option("--resolved-date", required=True,
+              help="Actual event date, or evaluation date if it never happened (YYYY-MM-DD).")
+def predict_resolve(prediction_id: int, outcome_eventual: str,
+                    resolved_date: str) -> None:
+    """Resolve a prediction: timing-aware score + Brier."""
     from pathosphere.db.schema import get_connection
     from pathosphere.agent.predictions import resolve_prediction
 
@@ -1490,20 +1605,25 @@ def predict_resolve(prediction_id: int, outcome: str) -> None:
     conn = get_connection(settings.db_path)
 
     try:
-        row = resolve_prediction(conn, prediction_id, outcome == "true")
+        row = resolve_prediction(
+            conn, prediction_id, outcome_eventual == "true", resolved_date
+        )
     except ValueError as exc:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
     conn.close()
 
+    on_time_str = "true" if row["outcome_on_time"] == 1 else "false"
     click.echo(
         f"\nPrediction #{prediction_id} resolved.\n"
-        f"  Description: {row['description']}\n"
-        f"  Probability: {row['probability']:.0%}\n"
-        f"  Outcome    : {'true' if row['outcome'] == 1 else 'false'}\n"
-        f"  Brier score: {row['brier_score']:.4f}\n"
-        f"  Resolved at: {row['resolved_at']}"
+        f"  Description  : {row['description']}\n"
+        f"  Probability  : {row['probability']:.0%}\n"
+        f"  Eventual     : {'true' if row['outcome_eventual'] == 1 else 'false'}\n"
+        f"  On time      : {on_time_str}  (horizon {row['horizon_date']}, actual {row['resolved_date']})\n"
+        f"  Brier score  : {row['brier_score']:.4f}\n"
+        f"  Time-adj sc. : {row['time_adjusted_score']:.4f}\n"
+        f"  Resolved at  : {row['resolved_at']}"
     )
 
 
@@ -1525,9 +1645,12 @@ def predict_calibration() -> None:
         return
 
     mean_bs = cal["mean_brier_score"]
+    mean_tas = cal["mean_time_adjusted_score"]
+    tas_str = f"{mean_tas:.4f}" if mean_tas is not None else "— (no v2 rows)"
     click.echo(
         f"\nCalibration summary ({total} resolved predictions):\n"
-        f"  Mean Brier score: {mean_bs:.4f}  "
+        f"  Mean time-adjusted score: {tas_str}  (1=perfect, 0=worst — primary)\n"
+        f"  Mean Brier score        : {mean_bs:.4f}  "
         f"(0=perfect, 0.25=random, 1=worst)\n"
     )
     click.echo(
@@ -1540,3 +1663,18 @@ def predict_calibration() -> None:
         click.echo(
             f"  {b['label']:<10}  {b['count']:>5}  {brier_str:>10}  {acc_str:>9}"
         )
+
+    for section, key in (("By macro area", "by_macro_area"),
+                         ("By prediction type", "by_prediction_type")):
+        groups = cal[key]
+        if not groups:
+            continue
+        click.echo(f"\n  {section}:")
+        click.echo(f"  {'Group':<14}  {'Count':>5}  {'Time-adj':>9}  {'Brier':>7}")
+        click.echo("  " + "─" * 42)
+        for name, agg in groups.items():
+            g_tas = (f"{agg['mean_time_adjusted_score']:.4f}"
+                     if agg["mean_time_adjusted_score"] is not None else "—")
+            g_brier = (f"{agg['mean_brier_score']:.4f}"
+                       if agg["mean_brier_score"] is not None else "—")
+            click.echo(f"  {name:<14}  {agg['count']:>5}  {g_tas:>9}  {g_brier:>7}")

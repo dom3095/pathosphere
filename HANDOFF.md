@@ -1,121 +1,101 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-06-26, fine sessione 3f*
+*Aggiornato: 2026-07-03, sessione implementazione Predictions v2*
 
 ## Stato al momento del handoff
 
-**Branch:** `feat/fase-3d-approval` — pronto per PR su main  
-**Test:** 375 verdi  
-**Fase 3:** COMPLETA (3a/3b/3c/3d/3e/3f ✅)
+**Branch:** `feat/predictions-v2` — implementazione completa, review fatta, fix applicati
+**Test:** 416 verdi (80 in test_predictions.py)
+**Manca:** completamento docs (agent in corso) → commit → push → PR
 
 ---
 
 ## Cosa è stato fatto in questa sessione
 
-### 3f — Predizioni non finanziarie (calibrazione Tetlock)
+### Predictions v2 — implementazione completa
 
-**`pathosphere/agent/predictions.py`** — modulo nuovo
-- `add_prediction(conn, description, probability, horizon_date, thesis_id=None)` — valida 0≤p≤1, data ISO YYYY-MM-DD; ValueError con messaggio chiaro se fuori range
-- `list_predictions(conn, only_open, only_resolved)` — ordinate per horizon_date ASC, id ASC
-- `get_prediction(conn, prediction_id)` — riga singola o None
-- `resolve_prediction(conn, prediction_id, outcome: bool)` — `brier_score = (probability - outcome)²`; ValueError se non trovata o già risolta
-- `get_calibration(conn)` — Brier medio + 5 bucket (0-20%, 20-40%, 40-60%, 60-80%, 80-100%) con count / mean_brier / accuracy
+**Schema** (`pathosphere/db/schema.py`, migration idempotenti in `_MIGRATIONS`):
+- 10 colonne nuove su `predictions`: `macro_area` (NOT NULL DEFAULT 'world'), `prediction_type` (NOT NULL DEFAULT 'geopolitical'), `outcome_eventual`, `outcome_on_time`, `resolved_date`, `time_adjusted_score`, `origin_scope`, `impact_scope`, `time_horizon_class`, `trade_id`
+- Backfill legacy: `outcome_on_time = outcome` E `outcome_eventual = outcome` (guardie IS NULL, idempotenti)
+- Tabelle nuove: `prediction_domains(prediction_id, domain, is_primary)`, `prediction_revisions(id, prediction_id, probability, rationale, revised_at)`
+- `theses.prediction_id` FK opzionale (catena predizione world → tesi)
 
-**`pathosphere/cli.py`** — gruppo `predict` aggiunto:
-- `pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10 [--thesis-id <id>]`
-- `pathos predict list [--open] [--resolved]`
-- `pathos predict resolve <id> --outcome true|false`
-- `pathos predict calibration`
+**Config:** `timing_penalty_alpha: float = 0.001`
 
-**`tests/test_predictions.py`** — 39 test:
-- add_prediction: valid, probability_too_low/too_high, probability_zero/one (edge), invalid_date, empty/whitespace description, with/without thesis_id, persist
-- get_prediction: found, not_found
-- list_predictions: empty, all, only_open, only_resolved, order_by_horizon, no_flags
-- resolve_prediction: true/false, brier_perfect_true/false, worst_case, persisted, not_found, already_resolved
-- calibration: empty, total_resolved, mean_brier, bucket_labels, bucket_counts, accuracy, prob_1_in_last_bucket, open_excluded, five_buckets_always
-- integration: full_lifecycle (add → list open → resolve → list resolved → calibration)
+**`pathosphere/agent/predictions.py`** (riscritto):
+- Costanti esportate: `VALID_MACRO_AREAS`, `VALID_PREDICTION_TYPES`, `TYPES_BY_MACRO_AREA`, `VALID_DOMAINS` (10), `VALID_SCOPES` (5)
+- `add_prediction(...)` — valida coerenza macro_area/type, world richiede scope+domini, economic richiede thesis_id; inserisce prediction_domains; time_horizon_class derivato (breve ≤30gg, medio ≤180gg, lungo; UTC)
+- `revise_prediction(id, probability, rationale)` — logga in prediction_revisions
+- `resolve_prediction(id, outcome_eventual, resolved_date, alpha=None)` — brier su outcome_eventual; outcome_on_time derivato; legacy `outcome` specchia on_time; time_adjusted_score = 0 se mai accaduto, altrimenti (1−brier)×max(0, 1−alpha×|delta gg|)
+- `get_calibration()` — dual metric, bucket con accuracy su outcome_eventual (fallback legacy), per-bucket mean_time_adjusted_score, breakdown by_macro_area/by_prediction_type
+- `create_thesis_prediction(conn, thesis)` — auto-predizione economic per tesi approvata; clampa confidence a [0,1], default p=0.5/30gg, gestisce instrument NULL
+- `link_thesis_prediction_to_trade(conn, thesis_id, trade_id)` — aggancia SOLO la più vecchia predizione economic aperta e non collegata
+
+**CLI** (`pathosphere/cli.py`):
+- `predict add` — flag v2 completi, click.Choice da costanti (inclusi --domain)
+- `predict revise <id> --probability --rationale` — NUOVO
+- `predict resolve <id> --outcome-eventual true|false --resolved-date YYYY-MM-DD`
+- `predict list` — filtri --macro-area/--prediction-type/--domain; colonna Out con fallback legacy
+- `predict calibration` — dual metric + breakdown per area e tipo
+- `thesis approve` — auto-crea predizione economic (protetta: fallimento non maschera approvazione)
+- `trade open` — aggancia predizione via domain function
+- Gestione `sqlite3.IntegrityError` su FK inesistenti
+
+### Review (8 angoli multi-agente) — 10 finding, 9 fixati
+
+Fix principali: calibration accuracy usava `outcome` mentre brier usava `outcome_eventual` (metriche contraddittorie); backfill mancante di outcome_eventual (righe legacy mostravano '—'); auto-create non protetta dopo commit approvazione; UPDATE unbounded in trade open; business logic spostata da CLI a domain layer; timezone UTC coerente; alpha parametrico.
+
+Non fixato (documentato): CP-010 — migration girano solo con `pathos db init`.
+
+### Nuovi punti critici
+- **CP-007**: headroom (compressione token) — opzione futura se credito Claude stretto
+- **CP-008**: ruff F821 `sqlite3` undefined in 9 punti moduli ingest (pre-esistente, branch dedicato)
+- **CP-009**: cambio timing_penalty_alpha invalida comparabilità score storici
+- **CP-010**: dopo pull con modifiche schema serve `uv run pathos db init`
 
 ---
 
 ## Stato esatto al cut-off
 
-**Fase 3:** COMPLETA  
-**Branch:** `feat/fase-3d-approval` (tutto il lavoro 3d→3f è su questo branch)  
-**Test:** 375/375 verdi
+- Codice + test: **COMPLETI**, 416 verdi
+- Docs (wiki §8.6, schema.md, roadmap.md, overview_per_amico.md): agent haiku in aggiornamento
+- LOOP_STATE.md, CRITICAL_POINTS.md: aggiornati
+- **Nessun commit ancora fatto** sul branch
 
 ---
 
-## Riepilogo completo Fase 3
+## Prossima azione raccomandata
 
-### 3a — LLM client
-`pathosphere/llm/client.py` — Claude SDK + Qwen-local, stessa API OpenAI-compatible
-
-### 3b — Brief mattutino
-`pathosphere/agent/brief.py` — divergenze, hub entities, anomalie → Claude → testo strutturato + salvataggio `briefs`
-
-### 3c — Generatore tesi + debate pipeline
-`pathosphere/agent/thesis.py` — fast path 1 Claude call  
-`pathosphere/agent/debate.py` — 6 personas × 3 step Qwen + 1 Claude synthesis  
-`price_snapshot` no-lookahead, `watchlist_items` auto-popolati
-
-### 3d — Flusso approvazione CLI
-`pathosphere/agent/approval.py` — list/get/validate_ticker/approve/reject  
-CLI: `pathos thesis list/show/approve/reject`
-
-### 3e — Paper trading EOD
-`pathosphere/market/trading.py` — portfolios (agent/random/benchmark), open_trade, open_agent_trade, close_trade, get_portfolio_status  
-CLI: `pathos portfolio init/status`, `pathos trade open/close/list`
-
-### 3f — Predizioni non finanziarie
-`pathosphere/agent/predictions.py` — add/list/resolve/calibration  
-CLI: `pathos predict add/list/resolve/calibration`
-
----
-
-## Prossima azione: PR + Fase 4
-
-**PR suggerito:**
-```bash
-gh pr create \
-  --title "feat(3d–3f): approval flow + paper trading + Tetlock predictions" \
-  --body "..."
+1. Verificare docs aggiornate dall'agent
+2. Commit (Conventional Commits) + push + PR:
 ```
-
-**Fase 4 — Dashboard Streamlit:**
-- Mappa eventi (folium)
-- Confronto narrazioni per blocco
-- Portafogli: curva equity, P&L per trade
-- Tesi aperte + status approvazione
-- Storico brief
-- Calibrazione Tetlock (grafico bucket vs accuracy)
-
----
-
-## Punti critici aperti
-
-- **Ticker validation:** LLM produce ticker US-centrici e a volte inesistenti. Validazione fatta in `approve` (warn, non blocca). Correggere manualmente nel DB prima di `trade open`.
-- **Qwen locale:** debate pipeline richiede Ollama attivo (`ollama serve`). ConnectError con messaggio chiaro se non disponibile.
-- **`causal_chain` JSON schema:** `{"steps": [...], "trigger_summary": "...", "persona_notes": {}, "debate_context": {...}}` — non rompere la struttura.
-- **`theses` con `debate_id=NULL`:** generate via fast path. `list` mostra entrambe le tipologie.
+feat(predictions): v2 — macro_area/type separation, time-adjusted scoring,
+multi-domain taxonomy, revision history, geopolitical→thesis→economic chain
+```
+3. Dopo merge: **Fase 4 — Dashboard Streamlit**
 
 ---
 
 ## Comandi utili
 
 ```bash
-uv run pytest                              # 375 test
-uv run pathos thesis list                  # tesi pending
-uv run pathos thesis show <id>             # dettaglio tesi
-uv run pathos thesis approve <id>          # approva
+# Stato
+uv run pytest tests/ -q                    # 416 verdi
+uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
+
+# Predictions v2
+uv run pathos predict add "Desc" --macro-area world --prediction-type geopolitical \
+  --probability 0.65 --horizon 2026-08-10 --domain conflitto_armato \
+  --origin-scope regionale --impact-scope globale
+uv run pathos predict revise <id> --probability 0.7 --rationale "..."
+uv run pathos predict resolve <id> --outcome-eventual true --resolved-date 2026-08-05
+uv run pathos predict list --open --macro-area world --domain commercio
+uv run pathos predict calibration
+
+# Thesis / trading (v2: approve auto-crea predizione economic, trade open la aggancia)
+uv run pathos thesis list
+uv run pathos thesis approve <id>
 uv run pathos thesis reject <id> --reason "..."
-uv run pathos portfolio init               # crea portfolios + benchmark SPY
-uv run pathos portfolio status             # P&L per portfolio (live prices)
-uv run pathos trade open <thesis_id>       # apre agent + random trade
-uv run pathos trade close <trade_id>       # chiude trade
-uv run pathos trade list                   # trade aperti
-uv run pathos predict add "Desc" --probability 0.65 --horizon 2026-07-10
-uv run pathos predict list                 # tutte
-uv run pathos predict resolve <id> --outcome true
-uv run pathos predict calibration          # Brier score aggregato
-git log --oneline origin/main..HEAD        # commit sul branch
+uv run pathos trade open <thesis_id>
+uv run pathos portfolio status
 ```

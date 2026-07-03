@@ -1,6 +1,6 @@
 # Pathosphere — Roadmap
 
-Stato aggiornato: 2026-06-26.
+Stato aggiornato: 2026-07-03.
 
 ---
 
@@ -111,24 +111,40 @@ pathos thesis reject <id> --reason "..."  # status → rejected, rejection_reaso
 
 CLI: `pathos portfolio init/status` · `pathos trade open/close/list [--closed]`
 
-### 3f. Predizioni non finanziarie ✅
+### 3f. Predizioni non finanziarie (v2) ✅
 
-**`pathosphere/agent/predictions.py`**
+**`pathosphere/agent/predictions.py`** — Due binari, time-adjusted scoring, storia revisioni.
 
-- `add_prediction(conn, description, probability, horizon_date, thesis_id=None)` — valida probability 0–1 + data ISO
-- `list_predictions(conn, only_open, only_resolved)` — ordinate per horizon_date ASC
-- `resolve_prediction(conn, id, outcome: bool)` — `brier_score = (probability - outcome)²`
-- `get_calibration(conn)` — Brier score medio + 5 bucket (0-20%, 20-40%, 40-60%, 60-80%, 80-100%) con count/mean_brier/accuracy
+**Modello:**
+- `macro_area='world'` (geopolitical|political|social) → richiede origin_scope + impact_scope + ≥1 domain
+- `macro_area='economic'` (economic) → auto-creata su `pathos thesis approve` con probability=thesis.confidence, horizon=today + thesis.horizon_days
+- Nuove colonne: outcome_eventual (timing-independent), outcome_on_time (horizon-sensitive), time_horizon_class (breve|medio|lungo), time_adjusted_score (primaria operativa)
+- Nuove tabelle: `prediction_domains` (10-tassonomia + is_primary), `prediction_revisions` (storia prob + rationale, Superforecaster pattern)
+- Integrazione tesi: theses.prediction_id → economic prediction; trade.prediction_id ← link_thesis_prediction_to_trade()
 
-CLI:
+**Funzioni:**
+- `add_prediction()` — valida macro_area/prediction_type coerenza, domains, scopes world-only
+- `revise_prediction()` — update prob, log revision con timestamp + rationale
+- `resolve_prediction()` — compute brier_score + time_adjusted_score con alpha config
+- `list_predictions()` — filter by open/resolved/macro_area/prediction_type/domain
+- `get_calibration()` — dual-metric (time_adjusted primary, brier secondary) + 5-bucket + breakdown by_macro_area/by_prediction_type
+
+**CLI v2:**
 ```
-pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10 [--thesis-id <id>]
-pathos predict list [--open] [--resolved]
-pathos predict resolve <id> --outcome true|false
+pathos predict add "Desc" --macro-area world --prediction-type geopolitical \
+  --probability 0.65 --horizon 2026-07-10 \
+  --domain conflitto_armato --domain commercio --primary-domain conflitto_armato \
+  --origin-scope regionale --impact-scope globale
+
+pathos predict revise <id> --probability 0.7 --rationale "new intel"
+pathos predict list [--open] [--resolved] [--macro-area X] [--prediction-type X] [--domain X]
+pathos predict resolve <id> --outcome-eventual true|false --resolved-date 2026-07-10
 pathos predict calibration
 ```
 
-- 39 test in `tests/test_predictions.py`
+**Migration:** v1 rows backfilled as macro_area='world', prediction_type='geopolitical', outcome_on_time=outcome, outcome_eventual=outcome. Idempotent via `uv run pathos db init`.
+
+- 39 test in `tests/test_predictions.py` (test_revise_prediction, test_get_calibration, etc.)
 
 ---
 
