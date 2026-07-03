@@ -793,23 +793,47 @@ uv run pathos trade list [--portfolio agent|random|benchmark] [--closed]
 
 **No-lookahead:** `price_open = yfinance fetch al momento di `trade open`` (non il price_snapshot salvato alla generazione della tesi).
 
-### 8.6 Predizioni non finanziarie — `pathosphere/agent/predictions.py` ✅
+### 8.6 Predizioni non finanziarie (v2) — `pathosphere/agent/predictions.py` ✅
 
-**Calibrazione Tetlock** su `predictions(description, probability, horizon_date, outcome, brier_score)`.
+**Predictions v2**: due binari (`macro_area`), time-adjusted scoring, calibrazione Tetlock.
 
-- `add_prediction(conn, description, probability, horizon_date, thesis_id=None)` — valida 0≤p≤1 + data ISO
-- `resolve_prediction(conn, id, outcome: bool)` — `brier_score = (p − outcome)²`; 0 = perfetto, 1 = peggio
-- `get_calibration(conn)` — Brier medio + 5 bucket di probabilità (0-20%…80-100%) con count / mean_brier / accuracy
+**Binari:**
+- `world` — geopolitical|political|social; richiede `origin_scope` + `impact_scope` + `domains` (10-tassonomia)
+- `economic` — financial; legato a tesi approvata (`thesis_id` obbligatorio); scoring primario è EOD P&L
 
-CLI:
+**Scoring:**
+- `brier_score = (probability − outcome_eventual)²` — qualità direzione (0=perfetto)
+- `time_adjusted_score = (1 − brier) × max(0, 1 − alpha × |resolved − horizon| giorni)` — penalità timing
+- Se `outcome_eventual=false`, `time_adjusted_score=0` (evento non accaduto)
+- Dual metric in `get_calibration()`: time-adjusted primaria (operativa), Brier secondaria (Tetlock-compatibile)
+
+**Tabelle correlate:**
+- `prediction_domains(prediction_id, domain, is_primary)` — 10 domini (conflitto_armato, tensione_militare, politica_interna, diplomazia, commercio, tecnologia, infrastruttura, finanza, salute, clima_risorse)
+- `prediction_revisions(id, prediction_id, probability, rationale, revised_at)` — storia revisioni (superforecaster pattern)
+- `theses.prediction_id` — catena world-prediction → thesis → trade (misurabile end-to-end)
+
+**Comandi CLI:**
 ```
-pathos predict add "Descrizione" --probability 0.65 --horizon 2026-07-10
-pathos predict list [--open | --resolved]
-pathos predict resolve <id> --outcome true|false
+pathos predict add "Desc" \
+  --macro-area world \
+  --prediction-type geopolitical \
+  --probability 0.65 \
+  --horizon 2026-07-10 \
+  --domain conflitto_armato --domain commercio \
+  --primary-domain conflitto_armato \
+  --origin-scope regionale \
+  --impact-scope globale
+
+pathos predict revise <id> --probability 0.7 [--rationale "new data"]
+pathos predict list [--open|--resolved] [--macro-area world|economic] [--prediction-type X] [--domain X]
+pathos predict resolve <id> --outcome-eventual true|false --resolved-date 2026-07-10
 pathos predict calibration
 ```
 
-Brier score: 0 = perfetto, 0.25 = random (p=0.5 su evento binario), 1 = peggio possibile.
+**Nuovo comportamento:**
+- `pathos thesis approve <id>` → auto-crea `predictions` con `macro_area=economic` e `prediction_type=economic`
+- `pathos trade open <thesis_id>` → link oldest unresolved economic prediction a trade via `link_thesis_prediction_to_trade()`
+- Migrazione: `outcome` legacy specchia `outcome_on_time` per retrocompatibilità; pre-v2 righe auto-backfillate come `macro_area='world'` + `prediction_type='geopolitical'`
 
 ---
 
@@ -912,17 +936,32 @@ pathos
 │   └── list              Lista trade aperti (default) o chiusi (--closed)
 │       ├── --portfolio   Filtra per portfolio (agent|random|benchmark)
 │       └── --closed      Mostra trade chiusi invece di aperti
-├── predict             Predizioni non finanziarie (calibrazione Tetlock)
-│   ├── add "Desc"        Inserisce predizione (probabilità + orizzonte)
-│   │   ├── --probability Probabilità soggettiva 0.0–1.0 (obbligatoria)
-│   │   ├── --horizon     Scadenza ISO YYYY-MM-DD (obbligatoria)
-│   │   └── --thesis-id   Tesi associata (opzionale)
+├── predict             Predizioni non finanziarie (v2: world/economic, time-adjusted score)
+│   ├── add "Desc"        Inserisce predizione (world o economic track)
+│   │   ├── --macro-area         world|economic (obbligatorio)
+│   │   ├── --prediction-type    geopolitical|political|social|economic (obbligatorio)
+│   │   ├── --probability        0.0–1.0 (obbligatorio)
+│   │   ├── --horizon            YYYY-MM-DD (obbligatorio)
+│   │   ├── --domain             X (ripetibile, ≥1 richiesto) — 10-tassonomia
+│   │   ├── --primary-domain     X (default: primo --domain)
+│   │   ├── --origin-scope       locale|nazionale|regionale|multilaterale|globale (obbligatorio per world)
+│   │   ├── --impact-scope       locale|nazionale|regionale|multilaterale|globale (obbligatorio per world)
+│   │   ├── --thesis-id          int (obbligatorio per economic)
+│   │   └── --trade-id           int (opzionale, economic only)
+│   ├── revise <id>       Aggiorna probabilità + registra revisione (history)
+│   │   ├── --probability        0.0–1.0 (obbligatorio)
+│   │   └── --rationale          Motivo (opzionale, loggato)
 │   ├── list              Lista predizioni (default: tutte)
-│   │   ├── --open        Solo aperte (non risolte)
-│   │   └── --resolved    Solo risolte
-│   ├── resolve <id>      Risolve predizione e calcola Brier score
-│   │   └── --outcome     true|false (obbligatorio)
-│   └── calibration       Brier score medio + breakdown per bucket probabilità
+│   │   ├── --open               Solo aperte (non risolte)
+│   │   ├── --resolved           Solo risolte
+│   │   ├── --macro-area         Filtra track
+│   │   ├── --prediction-type    Filtra tipo
+│   │   └── --domain             Filtra per dominio tassonomia
+│   ├── resolve <id>      Risolve predizione: time-adjusted + Brier score
+│   │   ├── --outcome-eventual   true|false (obbligatorio — event ever happened)
+│   │   └── --resolved-date      YYYY-MM-DD (obbligatorio — actual event date or eval date)
+│   └── calibration       Dual-metric: time-adjusted score (primaria) + Brier (secondaria)
+│       └── breakdown per bucket probabilità, macro_area, prediction_type
 └── config              Mostra configurazione attiva (.env + defaults)
 ```
 

@@ -411,6 +411,46 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_persona_analyses_debate ON persona_analyses(debate_id, step)",
     # 3c: link theses to the debate that generated them
     "ALTER TABLE theses ADD COLUMN debate_id INTEGER REFERENCES debates(id)",
+    # predictions v2: two-track model (world|economic), time-adjusted scoring.
+    # NOT NULL requires DEFAULT for ALTER on populated tables; pre-v2 rows were
+    # all non-financial → 'world'/'geopolitical' is the correct backfill.
+    """ALTER TABLE predictions ADD COLUMN macro_area TEXT NOT NULL DEFAULT 'world'
+        CHECK (macro_area IN ('world','economic'))""",
+    """ALTER TABLE predictions ADD COLUMN prediction_type TEXT NOT NULL DEFAULT 'geopolitical'
+        CHECK (prediction_type IN ('geopolitical','political','social','economic'))""",
+    "ALTER TABLE predictions ADD COLUMN outcome_eventual INTEGER",
+    "ALTER TABLE predictions ADD COLUMN outcome_on_time INTEGER",
+    "ALTER TABLE predictions ADD COLUMN resolved_date TEXT",
+    "ALTER TABLE predictions ADD COLUMN time_adjusted_score REAL",
+    """ALTER TABLE predictions ADD COLUMN origin_scope TEXT
+        CHECK (origin_scope IN ('locale','nazionale','regionale','multilaterale','globale'))""",
+    """ALTER TABLE predictions ADD COLUMN impact_scope TEXT
+        CHECK (impact_scope IN ('locale','nazionale','regionale','multilaterale','globale'))""",
+    """ALTER TABLE predictions ADD COLUMN time_horizon_class TEXT
+        CHECK (time_horizon_class IN ('breve','medio','lungo'))""",
+    "ALTER TABLE predictions ADD COLUMN trade_id INTEGER REFERENCES trades(id)",
+    # backfill: old `outcome` meant "did it come true", judged at horizon —
+    # closest to both on-time and eventual; idempotent via IS NULL guards
+    """UPDATE predictions SET outcome_on_time = outcome
+        WHERE outcome IS NOT NULL AND outcome_on_time IS NULL""",
+    """UPDATE predictions SET outcome_eventual = outcome
+        WHERE outcome IS NOT NULL AND outcome_eventual IS NULL""",
+    """CREATE TABLE IF NOT EXISTS prediction_domains (
+        prediction_id INTEGER NOT NULL REFERENCES predictions(id),
+        domain        TEXT    NOT NULL,
+        is_primary    INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (prediction_id, domain)
+    )""",
+    """CREATE TABLE IF NOT EXISTS prediction_revisions (
+        id            INTEGER PRIMARY KEY,
+        prediction_id INTEGER NOT NULL REFERENCES predictions(id),
+        probability   REAL    NOT NULL,
+        rationale     TEXT,
+        revised_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_pred_revisions_pred ON prediction_revisions(prediction_id)",
+    "ALTER TABLE theses ADD COLUMN prediction_id INTEGER REFERENCES predictions(id)",
+    "CREATE INDEX IF NOT EXISTS idx_pred_macro_area ON predictions(macro_area)",
 ]
 
 

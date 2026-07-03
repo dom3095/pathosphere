@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # LLM backend for reasoning tasks (agent/brief/thesis)
     reasoning_model: str = "claude"  # "claude" | "qwen-local"
 
+    # Predictions v2: timing penalty per day of |resolved_date - horizon_date|
+    # in time_adjusted_score (0.001 → ~1000 days off = full penalty)
+    timing_penalty_alpha: float = 0.001
+
     @field_validator("log_level")
     @classmethod
     def log_level_upper(cls, v: str) -> str:

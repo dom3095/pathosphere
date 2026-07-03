@@ -164,6 +164,8 @@ erDiagram
     theses {
         INTEGER id PK
         INTEGER trigger_event FK
+        INTEGER prediction_id FK "v2: auto-economic prediction creata ad approvazione"
+        INTEGER debate_id FK "debate pipeline context"
         TEXT title
         TEXT causal_chain "testo libero o JSON con catena causale"
         TEXT instrument "ticker o ETF — es. USO, TSM, GLD"
@@ -176,6 +178,7 @@ erDiagram
         TEXT rejected_at "ISO 8601"
         TEXT rejection_reason
         TEXT sources_json "JSON array di URL"
+        REAL price_snapshot "prezzo snapshot al momento generazione (no-lookahead)"
         TEXT created_at "ISO 8601"
     }
 
@@ -206,15 +209,40 @@ erDiagram
 
     predictions {
         INTEGER id PK
-        INTEGER thesis_id FK
+        INTEGER thesis_id FK "v2: geopolitical→thesis→trade chain; NULL per predictions non legate"
+        INTEGER trade_id FK "v2: link a trade (economic only)"
         TEXT description "es. Escalation in X entro 2 settimane"
         REAL probability "0-1"
         TEXT horizon_date "scadenza ISO 8601"
         INTEGER resolved "0=aperta  1=risolta"
-        INTEGER outcome "NULL=aperta  1=vero  0=falso"
+        INTEGER outcome "DEPRECATO — legacy backfill di outcome_on_time"
+        INTEGER outcome_eventual "v2: event ever happened (timing-independent)"
+        INTEGER outcome_on_time "v2: event happened within horizon_date"
+        TEXT resolved_date "v2: actual event date or evaluation date YYYY-MM-DD"
+        TEXT macro_area "v2: world|economic (CHECK default world per pre-v2)"
+        TEXT prediction_type "v2: geopolitical|political|social|economic"
+        TEXT origin_scope "v2: locale|nazionale|regionale|multilaterale|globale (world only)"
+        TEXT impact_scope "v2: locale|nazionale|regionale|multilaterale|globale (world only)"
+        TEXT time_horizon_class "v2: breve(≤30gg)|medio(≤180gg)|lungo — computed at creation"
+        REAL brier_score "v2: (probability - outcome_eventual)^2 — 0=perfect, 1=worst"
+        REAL time_adjusted_score "v2: (1-brier)×max(0, 1-alpha×|resolved-horizon|days) — primary metric"
         TEXT resolved_at "ISO 8601"
-        REAL brier_score "(p - o)^2 — calcolato alla risoluzione"
         TEXT created_at "ISO 8601"
+    }
+
+    prediction_domains {
+        INTEGER prediction_id FK "references predictions(id)"
+        TEXT domain "tassonomia: conflitto_armato|tensione_militare|politica_interna|diplomazia|commercio|tecnologia|infrastruttura|finanza|salute|clima_risorse"
+        INTEGER is_primary "1 se dominio principale"
+        TEXT PRIMARY_KEY "(prediction_id, domain)"
+    }
+
+    prediction_revisions {
+        INTEGER id PK
+        INTEGER prediction_id FK "references predictions(id)"
+        REAL probability "probabilità revisione"
+        TEXT rationale "motivo revisione (opzionale)"
+        TEXT revised_at "ISO 8601 timestamp"
     }
 
     gdelt_file_log {
@@ -349,13 +377,29 @@ portfolios.name IN ('agent', 'random', 'benchmark')
   benchmark — buy & hold indice (es. SPY)
 ```
 
-### Brier Score (calibrazione Tetlock)
+### Scoring v2 (calibrazione Tetlock + timing)
 
+**Brier Score** (qualità direzione):
 ```
-brier_score = (probability - outcome)²
-  outcome ∈ {0, 1}
-  brier_score ∈ [0, 1]  — 0 = predizione perfetta
+brier_score = (probability - outcome_eventual)²
+  outcome_eventual ∈ {0, 1}  — did event ever happen (timing-independent)
+  brier_score ∈ [0, 1]  — 0 = perfetto, 0.25 = random (p=0.5), 1 = pessimo
 ```
+
+**Time-Adjusted Score** (metrica operativa primaria):
+```
+time_adjusted_score = 0 if outcome_eventual = false (evento non accaduto)
+                    = (1 - brier_score) × max(0, 1 - alpha × |resolved_date - horizon_date| days)
+
+  outcome_on_time = outcome_eventual AND resolved_date ≤ horizon_date
+  alpha = timing_penalty_alpha (config, default 0.001) — penalità per giorno di ritardo
+  time_adjusted_score ∈ [0, 1]  — 1 = predizione perfetta on-time, 0 = fallimento
+```
+
+**Doppio metricaggio:**
+- `time_adjusted_score` primaria (operativa, sensibile a timing)
+- `brier_score` secondaria (Tetlock-compatibile, pre-v2 legacy)
+- `get_calibration()` reporta entrambe le medie breakdown per bucket/macro_area/prediction_type
 
 ---
 

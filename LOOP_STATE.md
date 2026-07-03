@@ -1,34 +1,36 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: 3 — Agent e valutazione ✅ COMPLETA
+## Fase corrente: Predictions v2 — Implementazione
 
 | Subtask | Descrizione | Stato |
 |---|---|---|
-| 3a | LLM client (`pathosphere/llm/client.py`) | ✅ DONE |
-| 3b | Brief mattutino (`pathosphere/agent/brief.py`) | ✅ DONE |
-| 3c | Generatore tesi + debate pipeline | ✅ DONE |
-| 3d | Flusso approvazione CLI | ✅ DONE |
-| 3e | Paper trading EOD + yfinance | ✅ DONE |
-| 3f | Predizioni non finanziarie | ✅ DONE |
+| Design | Modello concettuale predictions v2 | ✅ DONE |
+| Schema | `predictions` nuove colonne + `prediction_domains` + `prediction_revisions` + `theses.prediction_id` + backfill | ✅ DONE |
+| Config | `timing_penalty_alpha` in config.py | ✅ DONE |
+| Code | `predictions.py` — add/revise/resolve/calibration + create_thesis_prediction + link_thesis_prediction_to_trade | ✅ DONE |
+| CLI | `pathos predict` nuovi flag + `revise` + `resolve` v2 + filtri list + `thesis approve` auto-create + `trade open` link | ✅ DONE |
+| Test | 80 test predictions (416 totali verdi) | ✅ DONE |
+| Review | code review 8 angoli → 10 finding, 9 fixati, 1 documentato (CP-010) | ✅ DONE |
+| Docs | `wiki.md` §8.6 + `schema.md` + `roadmap.md` + `overview_per_amico.md` | 🔄 IN CORSO |
+| PR | commit + push + PR conventional commits | ⬜ TODO |
 
-## Prossima fase: 4 — Dashboard Streamlit
+## Fase successiva: 4 — Dashboard Streamlit
 
 ## Ultima azione completata
-3f completo: predictions.py (add_prediction, list_predictions, get_prediction,
-resolve_prediction, get_calibration). CLI: `pathos predict add/list/resolve/calibration`.
-39 test nuovi. 375 test verdi totali. Branch: feat/fase-3d-approval.
+Review multi-agente su diff v2: fixati calibration accuracy vs brier mismatch,
+backfill outcome_eventual, auto-create protetta, link trade targettizzato,
+business logic spostata in domain layer, IntegrityError gestita, UTC coerente,
+alpha parametrico, click.Choice da costanti. 416 test verdi.
 
-## Prossima azione: Fase 4 — Dashboard Streamlit
-- Mappa eventi (folium)
-- Confronto narrazioni per blocco geopolitico
-- Portafogli: curva equity, P&L per trade
-- Tesi aperte + status approvazione
-- Storico brief giornaliero
-- Calibrazione Tetlock (grafico bucket vs accuracy)
-- CLI: `pathos serve` → localhost:8501
+## Prossima azione: completare docs → commit → PR
 
-## Note tecniche
-- Test suite: `uv run pytest tests/ -x -q` (375 test)
-- Linting: `uv run ruff check pathosphere/`
-- predictions.py: brier_score = (probability - outcome)², bucket = [0,0.2), [0.2,0.4), [0.4,0.6), [0.6,0.8), [0.8,1.0]
-- Tetlock calibration: 5 bucket, accuracy = frazione predizioni vere per bucket
+### Note tecniche
+- Test suite: `uv run pytest tests/ -q` (416 verdi)
+- **Dopo pull con modifiche schema: `uv run pathos db init`** (CP-010)
+- Scoring: brier su `outcome_eventual`; `outcome` legacy specchia `outcome_on_time`
+- `time_horizon_class`: breve ≤30gg, medio ≤180gg, lungo — derivato a creazione (UTC)
+- alpha default 0.001; cambiarlo invalida comparabilità storica (CP-009)
+- `create_thesis_prediction`: clampa confidence a [0,1], default 0.5/30gg, gestisce instrument NULL
+- `link_thesis_prediction_to_trade`: solo la più vecchia predizione economic aperta e non collegata
+- Domini validi (10): conflitto_armato · tensione_militare · politica_interna · diplomazia · commercio · tecnologia · infrastruttura · finanza · salute · clima_risorse
+- Branch policy: MAI commit diretti su main — sempre branch → PR → merge
