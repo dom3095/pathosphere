@@ -113,3 +113,13 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 **Workaround:** dopo ogni pull con modifiche schema: `uv run pathos db init` (sicuro, idempotente).
 
 **Impatto:** crash CLI su DB non migrato. Documentato in HANDOFF comandi utili.
+
+---
+
+## CP-011: embed processa tutto il raw GDELT senza filtro a monte
+
+**Contesto:** `pathos embed` embedda TUTTI i `raw_documents` con `embedded=0` (`semantic/embedder.py`, query senza filtro rilevanza/età). Backfill GDELT 6 mesi → ~169k doc → 1-3+ ore su M1 CPU. Viola il principio "filtraggio aggressivo a monte": la ridondanza GDELT si paga in ore di embedding invece di essere tagliata prima.
+
+**Workaround:** commit per batch (32) → Ctrl+C sicuro, riprende dai residui `embedded=0`. Backfill grossi: lanciare di notte o in assenza. Progresso visibile solo via `sqlite3 data/pathosphere.db "SELECT sum(embedded=1), count(*) FROM raw_documents;"` (log batch è DEBUG).
+
+**Impatto:** ore di CPU per backfill lunghi; nel ciclo notturno incrementale (1 giorno di doc) impatto trascurabile. Fix futuro: filtro pre-embedding (keyword/QuadClass GDELT, dedup URL aggressiva) o embed limitato a finestra recente + progress log a INFO.
