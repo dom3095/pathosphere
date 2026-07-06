@@ -1,12 +1,22 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-03, sessione implementazione Predictions v2*
+*Aggiornato: 2026-07-06, fix IODA endpoint + chunking (branch fix/ioda-endpoint-chunking)*
+
+## Fix IODA (2026-07-06)
+
+`pathos ingest ioda --start 2026-01-01` crashava con `JSONDecodeError`. Tre cause, tutte fixate in `pathosphere/ingest/ioda.py`:
+
+1. **Base URL sbagliato**: `ioda.inetintel.cc.gatech.edu/api/v2` è frontend SPA → HTML con 200. Corretto: `https://api.ioda.inetintel.cc.gatech.edu/v2`
+2. **Limite API <100 giorni** per query singola → chunking automatico 90gg (`IODA_MAX_CHUNK_DAYS`), delay 1s tra chunk
+3. **Shape reale annidata** `{"data": [[{...}]]}` → flatten un livello (vecchie shape restano supportate)
+
+In più: risposta non-JSON ora → `RuntimeError` pulito in `IODAResult.errors` invece di crash. +3 test (chunking, shape annidata, non-JSON). Smoke test reale: IR 2026-01-01→07-05, 185 metriche, 3 chunk, 0 errori, 5 eventi outage.
 
 ## Stato al momento del handoff
 
-**Branch:** `feat/predictions-v2` — implementazione completa, review fatta, fix applicati
-**Test:** 416 verdi (80 in test_predictions.py)
-**Manca:** completamento docs (agent in corso) → commit → push → PR
+**Branch:** main (predictions v2 mergiato)
+**Test:** 419 verdi (80 in test_predictions.py)
+**Docs:** complete e allineate (wiki §8.6, schema.md, roadmap.md, overview_per_amico.md)
 
 ---
 
@@ -57,7 +67,7 @@ Non fixato (documentato): CP-010 — migration girano solo con `pathos db init`.
 
 ## Stato esatto al cut-off
 
-- Codice + test: **COMPLETI**, 416 verdi
+- Codice + test: **COMPLETI**, 419 verdi
 - Docs (wiki §8.6, schema.md, roadmap.md, overview_per_amico.md): agent haiku in aggiornamento
 - LOOP_STATE.md, CRITICAL_POINTS.md: aggiornati
 - **Nessun commit ancora fatto** sul branch
@@ -66,13 +76,25 @@ Non fixato (documentato): CP-010 — migration girano solo con `pathos db init`.
 
 ## Prossima azione raccomandata
 
-1. Verificare docs aggiornate dall'agent
-2. Commit (Conventional Commits) + push + PR:
+**Fase 4 — Dashboard Streamlit**
+
+Scope:
+- Mappa mondiale eventi (folium)
+- Confronto narrazioni per blocco geopolitico
+- Curva equity tre portafogli (agent/random/benchmark)
+- Tesi aperte (status pending/approved/rejected)
+- Storico brief mattutini
+- Grafico calibrazione Tetlock (bucket vs accuracy)
+
+CLI: `pathos serve` → `localhost:8501`
+
+Dipende da Fase 3 (predictions v2) completa. DB popolo via:
 ```
-feat(predictions): v2 — macro_area/type separation, time-adjusted scoring,
-multi-domain taxonomy, revision history, geopolitical→thesis→economic chain
+uv run pathos cycle run           # ciclo notturno completo
+uv run pathos brief              # brief mattutino
+uv run pathos thesis generate    # tesi
+uv run pathos thesis approve <id> # auto-crea economic prediction
 ```
-3. Dopo merge: **Fase 4 — Dashboard Streamlit**
 
 ---
 
@@ -80,7 +102,7 @@ multi-domain taxonomy, revision history, geopolitical→thesis→economic chain
 
 ```bash
 # Stato
-uv run pytest tests/ -q                    # 416 verdi
+uv run pytest tests/ -q                    # 419 verdi
 uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
 
 # Predictions v2
