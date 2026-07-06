@@ -10,7 +10,7 @@ Prefix "passage: " follows intfloat/multilingual-e5 training convention.
 
 import struct
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from loguru import logger
@@ -78,6 +78,11 @@ def embed_documents(
 
     logger.info(f"Embedding {len(rows)} documents (batch_size={batch_size})")
 
+    from tqdm import tqdm
+
+    progress = tqdm(
+        total=len(rows), unit="doc", desc="Embedding", dynamic_ncols=True
+    )
     for batch_start in range(0, len(rows), batch_size):
         batch = rows[batch_start : batch_start + batch_size]
         texts: list[str] = []
@@ -102,6 +107,7 @@ def embed_documents(
             result.docs_skipped += len(skip_ids)
 
         if not texts:
+            progress.update(len(batch))
             continue
 
         try:
@@ -109,6 +115,7 @@ def embed_documents(
         except Exception as exc:
             logger.warning(f"Batch {batch_start // batch_size} encode failed: {exc}")
             result.errors += len(texts)
+            progress.update(len(batch))
             continue
 
         with conn:
@@ -124,9 +131,12 @@ def embed_documents(
                 )
                 result.docs_processed += 1
 
+        progress.update(len(batch))
         logger.debug(
             f"Embedded batch {batch_start // batch_size + 1}: {len(valid_ids)} docs"
         )
+
+    progress.close()
 
     if _own_model:
         del model
