@@ -499,6 +499,8 @@ uv run pathos ingest ioda --start 2026-01-01       # bootstrap storico
 
 **Rate limit:** 1 req/s (cortesia verso l'API pubblica). Errori per singolo paese non bloccanti → `IODAResult.errors`.
 
+**API (2026-07):** endpoint corretto `https://api.ioda.inetintel.cc.gatech.edu/v2` (il vecchio host `ioda.inetintel.cc.gatech.edu/api/v2` risponde HTML SPA con 200). Query singola limitata a <100 giorni → range lunghi spezzati automaticamente in chunk da 90 giorni (`IODA_MAX_CHUNK_DAYS`). Risposta reale annidata `{"data": [[{...}]]}` — gestita insieme alle shape `{"data": {"signals": [...]}}` e `{"data": [...]}`.
+
 ### 5.5 Export Parquet
 
 **Stato: ✅ Implementato** — `export/parquet.py`
@@ -1057,7 +1059,7 @@ tests/
 ├── test_portwatch.py    PortWatch fetch, upsert, anomalie z-score
 ├── test_physical.py     USGS quake parse/store; FIRMS window logic, metrics, anomalie
 ├── test_anomaly.py      find_anomalies: surge/drop/both, whole_history, min_value (8 test)
-├── test_ioda.py         _aggregate_daily, _fetch_signals, ingest_ioda: upsert, outage, dedup, errori (12 test)
+├── test_ioda.py         _aggregate_daily, _fetch_signals, ingest_ioda: upsert, outage, dedup, errori, chunking 90gg, shape annidate, non-JSON (15 test)
 ├── test_parquet.py      export_to_parquet: partizioni, roundtrip, undated, idempotenza (9 test)
 ├── test_prices.py       fetch_price: EOD, ticker vuoto, history empty, exception (5 test)
 ├── test_brief.py        generate_brief, _query_*, dry-run (mock LLM)

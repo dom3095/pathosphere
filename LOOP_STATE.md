@@ -1,31 +1,23 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Predictions v2 — Implementazione
+## Fase corrente: Predictions v2 — MERGIATO
 
-| Subtask | Descrizione | Stato |
-|---|---|---|
-| Design | Modello concettuale predictions v2 | ✅ DONE |
-| Schema | `predictions` nuove colonne + `prediction_domains` + `prediction_revisions` + `theses.prediction_id` + backfill | ✅ DONE |
-| Config | `timing_penalty_alpha` in config.py | ✅ DONE |
-| Code | `predictions.py` — add/revise/resolve/calibration + create_thesis_prediction + link_thesis_prediction_to_trade | ✅ DONE |
-| CLI | `pathos predict` nuovi flag + `revise` + `resolve` v2 + filtri list + `thesis approve` auto-create + `trade open` link | ✅ DONE |
-| Test | 80 test predictions (416 totali verdi) | ✅ DONE |
-| Review | code review 8 angoli → 10 finding, 9 fixati, 1 documentato (CP-010) | ✅ DONE |
-| Docs | `wiki.md` §8.6 + `schema.md` + `roadmap.md` + `overview_per_amico.md` | 🔄 IN CORSO |
-| PR | commit + push + PR conventional commits | ⬜ TODO |
+| Subtask | Stato |
+|---|---|
+| Implementazione completa | ✅ DONE |
+| Docs aggiornate | ✅ DONE (wiki §8.6, schema, roadmap, overview) |
+| Test: 419 verdi | ✅ DONE |
+| Merge su main | ✅ DONE (2026-07-05) |
 
 ## Fase successiva: 4 — Dashboard Streamlit
 
 ## Ultima azione completata
-Review multi-agente su diff v2: fixati calibration accuracy vs brier mismatch,
-backfill outcome_eventual, auto-create protetta, link trade targettizzato,
-business logic spostata in domain layer, IntegrityError gestita, UTC coerente,
-alpha parametrico, click.Choice da costanti. 416 test verdi.
+Fix IODA (2026-07-06, branch fix/ioda-endpoint-chunking): base URL corretto `api.ioda.inetintel.cc.gatech.edu/v2`, chunking 90gg per limite API <100gg, flatten shape annidata `[[...]]`, errori non-JSON non bloccanti. 419 test verdi. Dettagli in HANDOFF.md.
 
-## Prossima azione: completare docs → commit → PR
+## Prossima azione: merge PR fix IODA → poi Fase 4 — Dashboard Streamlit
 
 ### Note tecniche
-- Test suite: `uv run pytest tests/ -q` (416 verdi)
+- Test suite: `uv run pytest tests/ -q` (419 verdi)
 - **Dopo pull con modifiche schema: `uv run pathos db init`** (CP-010)
 - Scoring: brier su `outcome_eventual`; `outcome` legacy specchia `outcome_on_time`
 - `time_horizon_class`: breve ≤30gg, medio ≤180gg, lungo — derivato a creazione (UTC)

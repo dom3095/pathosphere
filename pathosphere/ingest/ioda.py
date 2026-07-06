@@ -21,17 +21,19 @@ Nessuna chiave API richiesta (dati pubblici). Rate limit: 1 req/s circa.
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import httpx
 from loguru import logger
 
 from pathosphere.ingest.anomaly import find_anomalies
 
-IODA_BASE = "https://ioda.inetintel.cc.gatech.edu/api/v2"
+IODA_BASE = "https://api.ioda.inetintel.cc.gatech.edu/v2"
 IODA_SIGNALS_URL = IODA_BASE + "/signals/raw/country/{code}"
 
 IODA_REQUEST_DELAY = 1.0   # seconds between country requests (be polite)
+# API rejects single queries spanning >=100 days ("Time range for a single
+# query must be less than 100 days") — split long ranges into 90-day chunks.
+IODA_MAX_CHUNK_DAYS = 90
 DEFAULT_IODA_DAYS = 1
 DEFAULT_BASELINE_DAYS = 30
 DEFAULT_Z_THRESHOLD = 2.5  # stricter than fire/portwatch: internet drops are rarer
@@ -106,7 +108,33 @@ def _fetch_signals(
     until_ts: int,
     datasource: str = "bgp",
 ) -> dict[str, float]:
-    """Fetch IODA signals for a country; return daily averages keyed by date string."""
+    """Fetch IODA signals for a country; return daily averages keyed by date string.
+
+    Splits ranges longer than IODA_MAX_CHUNK_DAYS into sequential chunks and
+    merges the per-day results (API caps a single query at <100 days).
+    """
+    chunk_seconds = IODA_MAX_CHUNK_DAYS * 86400
+    daily: dict[str, float] = {}
+    chunk_from = from_ts
+    while True:
+        chunk_until = min(chunk_from + chunk_seconds, until_ts)
+        daily.update(
+            _fetch_signals_chunk(client, code, chunk_from, chunk_until, datasource)
+        )
+        if chunk_until >= until_ts:
+            break
+        chunk_from = chunk_until
+        time.sleep(IODA_REQUEST_DELAY)
+    return daily
+
+
+def _fetch_signals_chunk(
+    client: httpx.Client,
+    code: str,
+    from_ts: int,
+    until_ts: int,
+    datasource: str,
+) -> dict[str, float]:
     url = IODA_SIGNALS_URL.format(code=code)
     params = {"from": from_ts, "until": until_ts, "datasource": datasource}
     try:
@@ -117,7 +145,11 @@ def _fetch_signals(
     except Exception as exc:
         raise RuntimeError(str(exc)) from exc
 
-    body = resp.json()
+    try:
+        body = resp.json()
+    except ValueError as exc:
+        content_type = resp.headers.get("content-type", "?")
+        raise RuntimeError(f"non-JSON response (content-type: {content_type})") from exc
 
     # IODA v2 response: {"data": {"signals": [{"from":..., "step":..., "values":[...]}]}}
     # or flat: {"data": [...]} — handle both shapes defensively
@@ -128,6 +160,10 @@ def _fetch_signals(
         signals = data
     else:
         return {}
+
+    # real API nests one more level: {"data": [[{...sig...}]]}
+    if signals and isinstance(signals[0], list):
+        signals = signals[0]
 
     if not signals:
         return {}

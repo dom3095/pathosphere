@@ -3,7 +3,6 @@
 Network mocked with httpx.MockTransport — no real calls.
 """
 
-import json
 from datetime import datetime, timezone
 
 import httpx
@@ -260,3 +259,89 @@ def test_ioda_flat_data_response_format(tmp_db):
     )
 
     assert result.metrics_upserted == 1
+
+
+def test_ioda_nested_list_response_format(tmp_db):
+    """Real API v2 wraps signals one level deeper: {"data": [[{...sig...}]]}."""
+    base_ts = int(datetime(2026, 5, 1, tzinfo=timezone.utc).timestamp())
+    values = [9000.0] * _SLOTS_PER_DAY
+
+    nested_body = {
+        "data": [
+            [
+                {
+                    "entityCode": "IR",
+                    "datasource": "bgp",
+                    "from": base_ts,
+                    "step": _ONE_DAY_STEP,
+                    "nativeStep": _ONE_DAY_STEP,
+                    "values": values,
+                }
+            ]
+        ]
+    }
+
+    def handler(request):
+        return httpx.Response(200, json=nested_body)
+
+    client = _mock_client(handler)
+    result = ingest_ioda(
+        tmp_db,
+        countries={"IR": "Iran"},
+        start="2026-05-01", end="2026-05-01",
+        client=client,
+    )
+
+    assert result.metrics_upserted == 1
+    assert result.errors == []
+
+
+def test_ioda_long_range_split_into_chunks(tmp_db, monkeypatch):
+    """Ranges over 90 days are split: each request spans <100 days (API cap)."""
+    monkeypatch.setattr("pathosphere.ingest.ioda.IODA_REQUEST_DELAY", 0)
+    seen_spans: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        params = dict(request.url.params)
+        from_ts, until_ts = int(params["from"]), int(params["until"])
+        seen_spans.append(until_ts - from_ts)
+        step = 86400  # one value per day keeps the payload small
+        n_days = (until_ts - from_ts) // step
+        return httpx.Response(
+            200, json=_ioda_response(from_ts, step, [9000.0] * n_days)
+        )
+
+    client = _mock_client(handler)
+    result = ingest_ioda(
+        tmp_db,
+        countries={"IR": "Iran"},
+        start="2026-01-01", end="2026-07-05",  # 185 days
+        client=client,
+    )
+
+    assert len(seen_spans) == 3  # 90 + 90 + 5 days
+    assert all(span < 100 * 86400 for span in seen_spans)
+    assert result.errors == []
+    assert result.metrics_upserted == 185
+
+
+def test_ioda_non_json_response_recorded_as_error(tmp_db):
+    """HTML 200 (e.g. SPA fallback page) must not crash the ingest loop."""
+
+    def handler(request):
+        return httpx.Response(
+            200, text="<!doctype html><html></html>",
+            headers={"content-type": "text/html"},
+        )
+
+    client = _mock_client(handler)
+    result = ingest_ioda(
+        tmp_db,
+        countries={"IR": "Iran"},
+        start="2026-05-01", end="2026-05-02",
+        client=client,
+    )
+
+    assert len(result.errors) == 1
+    assert "non-JSON" in result.errors[0]
+    assert result.metrics_upserted == 0
