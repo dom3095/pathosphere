@@ -126,6 +126,13 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
+## CP-012: dedup — transazione unica, non riprendibile, nessun progresso
+
+**Contesto:** `dedup_documents` (`semantic/dedup.py:70`) avvolge l'intero loop in un solo `with conn:` → una transazione per 169k doc. Ctrl+C o crash = rollback totale, riparte da zero (a differenza di embed, commit per batch). Nessun log di progresso tra inizio e fine; progresso invisibile anche da fuori (update uncommitted). KNN sqlite-vec è brute-force: 169k query × scan 169k vettori ≈ ore su backfill grossi.
+
+**Workaround:** non interrompere; lanciare con `caffeinate -i` e lasciar finire. Vitalità verificabile solo via `ps aux | grep pathos` (CPU ~100%).
+
+**Impatto:** backfill grossi fragili (ore di lavoro persi su interrupt). Fix futuro: commit ogni N doc + tqdm, come embed.
 ## CP-012: stoplist Wikidata curata a mano — nuovi termini generici possono emergere
 
 **Contesto:** `GENERIC_ENTITY_STOPLIST` (`semantic/extract.py`, ~110 voci) blocca lookup Wikidata per nomi comuni/ruoli/demonimi ALL CAPS prodotti dal NER su testo GDELT (`CRIMINAL`, `MILITARY`, `MALE`…). Lista statica: termini generici nuovi (altre lingue, plurali mancanti) passano il filtro e consumano budget lookup.
