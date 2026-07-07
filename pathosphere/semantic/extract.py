@@ -567,6 +567,11 @@ def link_wikidata(
                                 (canonical["id"], row["id"]),
                             )
                     result.conflicts += 1
+                    with conn:
+                        conn.execute(
+                            "UPDATE entities SET wikidata_checked = 1 WHERE id = ?",
+                            (row["id"],),
+                        )
     finally:
         if _own_client:
             client.close()

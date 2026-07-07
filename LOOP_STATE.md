@@ -23,24 +23,12 @@
 ## Fase successiva: Fase 4 — Dashboard Streamlit (dopo commit/PR di questo fix)
 
 ## Ultima azione completata
+Fix Wikidata linking (2026-07-07, branch fix/wikidata-linking): delay 1 req/s rispettato anche su errore (prima `continue` su exception saltava sleep → 429 auto-amplificato), abort run su 429 (entità restanti ritentate ciclo successivo), stoplist ~110 nomi generici (`CRIMINAL`, `MILITARY`, `MALE`…) marcati checked senza lookup + strip QID legacy sbagliati. 423 test verdi. Dettagli in HANDOFF.md.
 
-Fix CP-016 implementato (sessione 2026-07-07, branch `refactor/gdelt-numeric-split`):
-1. `semantic/embedder.py`: `NON_PROSE_ORIGINS = ("gdelt", "comtrade")`, esclusi dalla query candidati di `embed_documents` — restano `embedded=0` per sempre, il che li esclude automaticamente anche da `extract.py`/`cluster.py` (entrambi richiedono `embedded=1`), senza dover toccare quei moduli.
-2. Nuovo `ingest/gdelt_anomaly.py` + comando `pathos ingest gdelt-anomalies`: aggrega `gdelt_events` per giorno+paese (nuova colonna `action_geo_country`, popolata in `gdelt.py::store_rows` da `ActionGeo_CountryCode`)+quad_class, riusa `ingest/anomaly.py::find_anomalies` (stesso trailing-baseline no-lookahead di PortWatch/FIRMS/IODA) per promuovere deviazioni Goldstein a `events` (`event_type='gdelt_anomaly'`). Wired nel ciclo notturno.
-3. **Bug scoperto durante i test**: `find_anomalies` ha `min_value=0.0` default (floor pensato per metriche non-negative come conteggi PortWatch) — su Goldstein (range -10..+10) scartava silenziosamente tutti i valori negativi, cioè quelli destabilizzanti. Fix locale in `gdelt_anomaly.py`: `min_value=-10.0` passato esplicitamente. Default condiviso non toccato (PortWatch/FIRMS ne dipendono).
-
-Dettagli completi in CRITICAL_POINTS.md (CP-016, ora marcato ✅ risolto) e HANDOFF.md.
-
-**Follow-up stessa sessione**: utente ha lanciato il backfill reale (`gdelt-history --start 2021-01-01` + `gdelt-anomalies --full`) → 0 eventi anomalia. Causa: `store_rows` usa `INSERT OR IGNORE` su `global_event_id`, quindi rilanciare `gdelt-history` su range già presente non aggiorna la nuova colonna `action_geo_country` sulle righe vecchie (230k/234k restavano NULL). Fix: `backfill_action_geo_country()` recupera il country dall'ultimo campo di `events.title` (era già lì, mai perso), esposto via `--backfill-country`. Verificato: 583 eventi `gdelt_anomaly` creati sul DB reale dopo `pathos ingest gdelt-anomalies --backfill-country --full`.
-
-**Scope deciso con l'utente**: solo codice, NO cleanup del DB reale in questa sessione (i 174k doc gdelt già `embedded=1`/`ner_done=1` da run precedenti al fix, e le entità/eventi/cluster derivati, restano contaminati finché non si lancia un reset manuale — non ancora scritto).
-
-**Quarto giro (notebook + secondo gap)**: notebook `study_04_post_fix_verification.ipynb` (nuovo, non sovrascrive i 3 esistenti) ha verificato il fix sui dati reali e trovato che `extract.py` non aveva lo stesso filtro `origin` di `embedder.py` — 46.196 doc gdelt legacy erano `embedded=1 AND ner_done=0`, contaminazione ATTIVA non solo storica (ogni `extract` futuro ne avrebbe processati). Fixato: `extract.py` ora importa `NON_PROSE_ORIGINS` da `embedder.py`. 437 test verdi. Utente deve rilanciare `pathos extract` per smaltire la coda con la query corretta.
-
-## Prossima azione: utente rilancia `pathos extract` sul DB reale (da terminale) → poi commit fix extract.py + PR di tutto su `refactor/gdelt-numeric-split` → poi CP-017 (schedulare `pathos cycle run`) → poi Fase 4 Dashboard Streamlit. Se si vuole ripulire il DB reale (128k doc gdelt storici già contaminati con ner_done=1), scrivere prima uno script/comando di reset (vedi CRITICAL_POINTS CP-016, sezione "non incluso").
+## Prossima azione: PR fix Wikidata → poi Fase 4 — Dashboard Streamlit
 
 ### Note tecniche
-- Test suite: `uv run pytest tests/ -q` (437 verdi)
+- Test suite: `uv run pytest tests/ -q` (423 verdi)
 - **Dopo pull con modifiche schema: `uv run pathos db init`** (CP-010)
 - `pathos ingest gdelt-anomalies [--full] [--baseline-days N] [--z-threshold N] [--min-events-per-day N] [--backfill-country]`
 - **`gdelt-history` su range già ingerito NON aggiorna colonne nuove su righe esistenti** (`INSERT OR IGNORE` su `global_event_id`) — ogni nuova colonna su `gdelt_events` va backfillata a mano se serve sullo storico
