@@ -12,9 +12,9 @@
 ## Fase successiva: 4 — Dashboard Streamlit
 
 ## Ultima azione completata
-Fix IODA (2026-07-06, branch fix/ioda-endpoint-chunking): base URL corretto `api.ioda.inetintel.cc.gatech.edu/v2`, chunking 90gg per limite API <100gg, flatten shape annidata `[[...]]`, errori non-JSON non bloccanti. 419 test verdi. Dettagli in HANDOFF.md.
+Fix Wikidata linking (2026-07-07, branch fix/wikidata-linking, pushato, PR da creare — gh non autenticato): rate limit rispettato, abort su 429, stoplist generici + strip QID legacy. 423 test verdi. Avviato studio qualità embed/extract/graph su branch docs/quality-study-notebooks — solo ricognizione, notebook non ancora creati. Dettagli e vincoli utente in HANDOFF.md (sezione PROSSIMA AZIONE).
 
-## Prossima azione: merge PR fix IODA → poi Fase 4 — Dashboard Streamlit
+## Prossima azione: notebook studio qualità (HANDOFF.md § PROSSIMA AZIONE) → PR fix Wikidata → Fase 4 Dashboard
 
 ### Note tecniche
 - Test suite: `uv run pytest tests/ -q` (419 verdi)

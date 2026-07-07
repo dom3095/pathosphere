@@ -1,6 +1,50 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-06, fix IODA endpoint + chunking (branch fix/ioda-endpoint-chunking)*
+*Aggiornato: 2026-07-07, sessione fix Wikidata + avvio studio qualità (branch docs/quality-study-notebooks)*
+
+## ⏭ PROSSIMA AZIONE — Studio qualità output embed/extract/graph (IN CORSO, notebook non ancora creati)
+
+**Richiesta utente**: valutare la bontà di quanto prodotto da `pathos embed`, `pathos extract`, `pathos graph` sul DB reale. Deliverable: **notebook di studio** in `notebooks/`, con esempi concreti a supporto delle interpretazioni, atteggiamento agnostico, caccia alle criticità.
+
+**Vincoli espliciti dell'utente** (non negoziabili):
+1. **Analisi as-is**: non creare nulla che non esista già — niente fix, niente feature. Obiettivo: evidenziare apporti mancanti / criticità di ciò che c'è.
+2. **Tutto dentro i notebook**: utente ha rifiutato query sqlite via terminale. Le esplorazioni vanno nei notebook stessi, eseguiti con output visibili.
+
+**Stato**: branch `docs/quality-study-notebooks` creato (da main). Solo ricognizione fatta; **zero notebook scritti**. Nessuna modifica a codice.
+
+**Fatti utili già raccolti (risparmiano ricognizione):**
+- DB reale: `data/db/pathosphere.db` (NON `data/pathosphere.db`)
+- ~130k `raw_documents`, ~11.5k+ entities, ~4.9k events, 311k+ mentions (numeri da run extract 2026-07-07)
+- `vec_documents` è tabella virtuale sqlite-vec → connessione via `pathosphere.db.schema.get_connection(path)` (carica estensione), path assoluto (cwd notebook ≠ repo root)
+- Cluster (`semantic/cluster.py`): union-find greedy, similarity 0.85 (commento in codice: 0.75 collassava tutto in mega-catena), finestra 72h su `COALESCE(published_at, fetched_at)`, KNN 20, `max_cluster_size=30`
+- Graph (`semantic/graph.py::build_entity_links`): SOLO co-occorrenza entità in eventi condivisi, `relation_type='co-occurs'`, `strength=min(1, cooc/10)`, `min_cooccurrences=1`, DELETE+rebuild a ogni run. Le relazioni tipate dello schema (`depends_on`, `supplies`…) NON sono mai popolate
+- Dedup: soglia 0.92 (`semantic/dedup.py`), flag `is_duplicate`/`duplicate_of`/`dedup_checked` su raw_documents
+- Jupyter NON in dipendenze → eseguire con `uv run --with jupyter,nbconvert,ipykernel,pandas jupyter nbconvert --to notebook --execute --inplace <nb>`
+
+**Piste di criticità già emerse (da verificare nei notebook con esempi):**
+- Entità generiche ALL CAPS (`CRIMINAL`, `MILITARY`…) dominano le classifiche mentions → inquinano graph (co-occorrenza con tutto) e budget Wikidata (fix su branch separato, vedi sotto)
+- 731 eventi non geocodabili (miss cachati) — quota alta su ~4.9k
+- `min_cooccurrences=1` + entità generiche → rischio hairball nel grafo; strength satura a 10 co-occorrenze
+- Eventi da sensori fisici (USGS/FIRMS/PortWatch/IODA) entrano in `events` direttamente senza clustering — mischiati ai cluster articoli
+- Qualità NER `xx_ent_wiki_sm` su testo GDELT ALL CAPS mai misurata
+
+**Struttura proposta** (3 notebook, da validare col collega): `notebooks/study_01_embed.ipynb` (coverage embedding, qualità dedup con coppie esempio, distribuzione dimensioni cluster + coerenza titoli), `study_02_extract.ipynb` (distribuzione tipi entità, rapporto segnale/rumore, copertura QID e link errati, copertura geocoding), `study_03_graph.ipynb` (grado nodi, hairball check, top archi sensati vs spazzatura, test caso d'uso "se chiude Hormuz chi soffre?").
+
+---
+
+## Fix Wikidata linking (2026-07-07) — branch `fix/wikidata-linking`, pushato, PR DA CREARE
+
+Run reale `pathos extract` mostrava 40×429 su 50 lookups Wikidata. Due cause fixate in `pathosphere/semantic/extract.py` (dettagli nel HANDOFF.md di quel branch):
+1. `continue` su exception saltava sleep → 429 auto-amplificato; delay 0.2→1.0s, rispettato sempre; su 429 abort run pulito (`rate_limited=True`), entità restanti ritentate a ciclo successivo
+2. Budget bruciato su entità generiche → `GENERIC_ENTITY_STOPLIST` (~112 nomi), ritirate senza lookup + strip QID legacy errati (`PRESIDENT`→Q30461, `SCHOOL`→Q3914 trovati in DB reale)
+
+423 test verdi. Run reale post-fix: PAKISTAN→Q843, UKRAINE→Q212, RUSSIA→Q159; 429 residuo dopo 10 lookups (probabile penalità IP dal run storm mattutino — se persiste, alzare delay o onorare `Retry-After`).
+
+**BLOCCO: `gh` non autenticato** → PR non creata. Fare `gh auth login`, poi PR da `fix/wikidata-linking` (titolo/body pronti nei commit). NB: quel branch aggiorna anche HANDOFF/LOOP_STATE/CRITICAL_POINTS (CP-012) — al merge riconciliare con questo file.
+
+---
+
+*Sezioni precedenti (2026-07-06 e prima):*
 
 ## Fix IODA (2026-07-06)
 
