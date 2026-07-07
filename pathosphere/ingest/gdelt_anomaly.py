@@ -43,6 +43,39 @@ class GdeltAnomalyResult:
     events_created: int = 0
 
 
+def backfill_action_geo_country(conn) -> int:
+    """One-time repair for gdelt_events rows stored before this column existed.
+
+    `store_rows` uses INSERT OR IGNORE keyed on global_event_id, so re-running
+    `gdelt-history` over an already-ingested range does NOT retroactively fill
+    the new column on pre-existing rows — only brand-new rows get it. The
+    country code isn't lost though: `events.title` is the dedup key
+    `Actor1CC|Actor2CC|EventRootCode|SQLDATE|ActionGeoCC` built at insert time,
+    so the last field recovers it. Idempotent (only touches NULL rows).
+    Returns rows updated.
+    """
+    rows = conn.execute(
+        """SELECT ge.global_event_id, e.title
+           FROM gdelt_events ge JOIN events e ON e.id = ge.event_id
+           WHERE ge.action_geo_country IS NULL"""
+    ).fetchall()
+
+    updated = 0
+    with conn:
+        for r in rows:
+            parts = r["title"].split("|")
+            if len(parts) != 5 or not parts[4]:
+                continue
+            conn.execute(
+                "UPDATE gdelt_events SET action_geo_country = ? WHERE global_event_id = ?",
+                (parts[4], r["global_event_id"]),
+            )
+            updated += 1
+
+    logger.info(f"GDELT action_geo_country backfill: {updated}/{len(rows)} rows recovered")
+    return updated
+
+
 def _aggregate_series(conn, min_events_per_day: int) -> dict[tuple[str, int], list[dict]]:
     """Daily (country, quad_class) Goldstein/tone series, oldest→newest per key."""
     rows = conn.execute(

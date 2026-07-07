@@ -1,10 +1,20 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-07 (secondo aggiornamento), sessione fix CP-016 — split GDELT numerico/prosa-NLP implementato (branch refactor/gdelt-numeric-split)*
+*Aggiornato: 2026-07-07 (terzo aggiornamento), sessione fix CP-016 — split GDELT numerico/prosa-NLP implementato + backfill reale verificato (branch refactor/gdelt-numeric-split)*
 
-## ⏭ PROSSIMA AZIONE — Commit + PR di questo fix, poi CP-017 (schedulare cycle run), poi Fase 4 Dashboard
+## ⏭ PROSSIMA AZIONE — PR di questo fix, poi CP-017 (schedulare cycle run), poi Fase 4 Dashboard
 
-Sessione precedente (stesso giorno) aveva prodotto solo diagnosi + notebook (vedi sezione sotto). Questa sessione ha implementato il fix in codice. Scope concordato con l'utente: **solo codice, niente cleanup del DB reale** (i 174k documenti `origin=gdelt` già `embedded=1` da run precedenti al fix restano contaminati — vedi "Cosa NON è stato fatto" sotto).
+Sessione precedente (stesso giorno) aveva prodotto solo diagnosi + notebook (vedi sezione sotto). Poi implementato il fix in codice (secondo aggiornamento) e committato. **Questo terzo aggiornamento** documenta un bug trovato lanciando il backfill storico reale (`gdelt-history` + `gdelt-anomalies --full`), fixato e verificato: ora **583 eventi anomalia** nel DB reale. Scope concordato con l'utente resta: **solo codice, niente cleanup del DB reale** (i 174k documenti `origin=gdelt` già `embedded=1` da run precedenti al fix restano contaminati — vedi "Cosa NON è stato fatto" sotto).
+
+### Follow-up: bug trovato lanciando il backfill reale (0 eventi anomalia al primo giro)
+
+Utente ha lanciato `pathos ingest gdelt-history --start 2021-01-01` (fallito prima volta per colonna mancante → `pathos db init` mancante, poi rilanciato ok) e `pathos ingest gdelt-anomalies --full` → **0 eventi creati**. Causa: `gdelt.py::store_rows` fa `INSERT OR IGNORE` su `global_event_id` (chiave primaria) — rilanciare `gdelt-history` su range già ingerito **non aggiorna** righe esistenti. La nuova colonna `action_geo_country` (aggiunta da questo stesso fix) restava quindi NULL su 230.941/234.502 righe storiche (98.5%) — solo le righe della sessione di ingest più recente l'avevano. Ogni serie (paese+quad_class) aveva perciò 1-2 giorni di dati reali, mai i 10 minimi richiesti dal baseline.
+
+Il country code non era perso: incastonato nell'ultimo campo di `events.title` (chiave dedup `Actor1CC|Actor2CC|EventRootCode|SQLDATE|ActionGeoCC`). Fix: `gdelt_anomaly.py::backfill_action_geo_country(conn)` — UPDATE mirato via join `gdelt_events.event_id → events.id`, parse ultimo campo del title, idempotente. Esposto via `pathos ingest gdelt-anomalies --backfill-country` (gira prima del sweep). 4 nuovi test.
+
+**Verificato sul DB reale**: 201.860/234.502 righe recuperate (resto ha `ActionGeo_CountryCode` vuoto anche nel CSV GDELT originale — non recuperabile senza ri-scaricare). Sweep `--full` post-backfill: **324 serie, 583 eventi `gdelt_anomaly` creati**. Comando completo lanciato: `pathos ingest gdelt-anomalies --backfill-country --full`.
+
+**Da ricordare per il futuro**: ogni volta che si aggiunge una colonna a `gdelt_events` (o si cambia la logica di popolamento) e poi si ri-lancia `gdelt-history` su uno storico già presente, quella colonna resterà NULL sulle righe vecchie — `INSERT OR IGNORE` non fa update. Serve sempre un backfill esplicito per le colonne nuove, non basta rilanciare l'ingest.
 
 ### Cosa è stato fatto
 

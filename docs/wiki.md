@@ -384,7 +384,10 @@ subito dopo `ingest gdelt` (`cycle/orchestrator.py::_phase_ingest`).
 uv run pathos ingest gdelt-anomalies                             # ultimo giorno per serie, baseline 30gg
 uv run pathos ingest gdelt-anomalies --full                      # sweep intera storia (dopo gdelt-history)
 uv run pathos ingest gdelt-anomalies --z-threshold 2.5 --min-events-per-day 5
+uv run pathos ingest gdelt-anomalies --backfill-country --full   # dopo un gdelt-history su range già ingerito, vedi nota sotto
 ```
+
+**Nota `--backfill-country`:** `gdelt.py::store_rows` fa `INSERT OR IGNORE` su `global_event_id` — rilanciare `gdelt-history` su un range di date già scaricato **non aggiorna** le righe `gdelt_events` esistenti. Se `action_geo_country` è stata aggiunta dopo che quel range era già in DB (caso reale del 2026-07-07: 230k/234k righe storiche con la colonna NULL), il sweep anomalie non ha abbastanza giorni per serie e produce 0 eventi in silenzio. `--backfill-country` recupera il country code dall'ultimo campo di `events.title` (chiave dedup `Actor1CC|Actor2CC|EventRootCode|SQLDATE|ActionGeoCC`, sempre stata lì) prima di far girare il sweep — idempotente, va eseguito una volta dopo qualunque `gdelt-history` su storico pre-esistente.
 
 **HTTP:** httpx + tenacity (3 retry, backoff esponenziale). Ctrl+C safe.
 
@@ -882,7 +885,8 @@ pathos
 │   │   ├── --baseline-days      Finestra trailing baseline [default: 30]
 │   │   ├── --z-threshold        |z| soglia anomalia [default: 2.0]
 │   │   ├── --min-events-per-day Minimo righe grezze per cella paese/giorno [default: 3]
-│   │   └── --full               Sweep intera storia invece di solo l'ultimo giorno
+│   │   ├── --full               Sweep intera storia invece di solo l'ultimo giorno
+│   │   └── --backfill-country   Ripara action_geo_country su righe pre-migration prima del sweep
 │   ├── rss             Fetch RSS da tutte le fonti attive
 │   │   ├── --max-age-days  Salta articoli più vecchi di N giorni [default: 2]
 │   │   └── --source-ids    Comma-separated IDs sorgente

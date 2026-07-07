@@ -9,10 +9,13 @@
 | Migration `gdelt_events.action_geo_country` | ✅ DONE |
 | CLI `pathos ingest gdelt-anomalies` | ✅ DONE |
 | Wired in `cycle/orchestrator.py::_phase_ingest` (dopo `ingest_gdelt`) | ✅ DONE |
-| Test: 432 verdi (8 nuovi) | ✅ DONE |
+| Test: 436 verdi (12 nuovi) | ✅ DONE |
 | Docs (wiki §5.1/§6.3, schema.md, roadmap.md, CRITICAL_POINTS CP-016) | ✅ DONE |
+| `backfill_action_geo_country` + `--backfill-country` (bug trovato nel backfill reale) | ✅ DONE |
+| Verificato su DB reale: 583 eventi `gdelt_anomaly` creati | ✅ DONE |
 | Cleanup DB reale (174k doc gdelt già embedded/estratti pre-fix) | ⬜ NON FATTO — scelta esplicita utente, solo codice questa sessione |
-| Commit + PR | ⬜ da fare |
+| Commit fix codice | ✅ DONE (push su refactor/gdelt-numeric-split) |
+| Commit backfill-country + PR | ⬜ da fare |
 
 ## Fase successiva: Fase 4 — Dashboard Streamlit (dopo commit/PR di questo fix)
 
@@ -25,14 +28,17 @@ Fix CP-016 implementato (sessione 2026-07-07, branch `refactor/gdelt-numeric-spl
 
 Dettagli completi in CRITICAL_POINTS.md (CP-016, ora marcato ✅ risolto) e HANDOFF.md.
 
+**Follow-up stessa sessione**: utente ha lanciato il backfill reale (`gdelt-history --start 2021-01-01` + `gdelt-anomalies --full`) → 0 eventi anomalia. Causa: `store_rows` usa `INSERT OR IGNORE` su `global_event_id`, quindi rilanciare `gdelt-history` su range già presente non aggiorna la nuova colonna `action_geo_country` sulle righe vecchie (230k/234k restavano NULL). Fix: `backfill_action_geo_country()` recupera il country dall'ultimo campo di `events.title` (era già lì, mai perso), esposto via `--backfill-country`. Verificato: 583 eventi `gdelt_anomaly` creati sul DB reale dopo `pathos ingest gdelt-anomalies --backfill-country --full`.
+
 **Scope deciso con l'utente**: solo codice, NO cleanup del DB reale in questa sessione (i 174k doc gdelt già `embedded=1`/`ner_done=1` da run precedenti al fix, e le entità/eventi/cluster derivati, restano contaminati finché non si lancia un reset manuale — non ancora scritto).
 
-## Prossima azione: commit + PR di questo fix su `refactor/gdelt-numeric-split` (branch pushato, aggiungere commit) → poi CP-017 (schedulare `pathos cycle run`) → poi Fase 4 Dashboard Streamlit. Se si vuole ripulire il DB reale, scrivere prima uno script/comando di reset (vedi CRITICAL_POINTS CP-016, sezione "non incluso").
+## Prossima azione: commit del backfill-country fix + PR di tutto su `refactor/gdelt-numeric-split` → poi CP-017 (schedulare `pathos cycle run`) → poi Fase 4 Dashboard Streamlit. Se si vuole ripulire il DB reale, scrivere prima uno script/comando di reset (vedi CRITICAL_POINTS CP-016, sezione "non incluso").
 
 ### Note tecniche
-- Test suite: `uv run pytest tests/ -q` (432 verdi)
+- Test suite: `uv run pytest tests/ -q` (436 verdi)
 - **Dopo pull con modifiche schema: `uv run pathos db init`** (CP-010)
-- `pathos ingest gdelt-anomalies [--full] [--baseline-days N] [--z-threshold N] [--min-events-per-day N]`
+- `pathos ingest gdelt-anomalies [--full] [--baseline-days N] [--z-threshold N] [--min-events-per-day N] [--backfill-country]`
+- **`gdelt-history` su range già ingerito NON aggiorna colonne nuove su righe esistenti** (`INSERT OR IGNORE` su `global_event_id`) — ogni nuova colonna su `gdelt_events` va backfillata a mano se serve sullo storico
 - Scoring predictions: brier su `outcome_eventual`; `outcome` legacy specchia `outcome_on_time`
 - `time_horizon_class`: breve ≤30gg, medio ≤180gg, lungo — derivato a creazione (UTC)
 - alpha default 0.001; cambiarlo invalida comparabilità storica (CP-009)

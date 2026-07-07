@@ -9,6 +9,7 @@ from datetime import date, timedelta
 
 from pathosphere.ingest.gdelt_anomaly import (
     GdeltAnomalyResult,
+    backfill_action_geo_country,
     detect_gdelt_anomalies,
 )
 
@@ -138,3 +139,83 @@ def test_separate_series_per_country_and_quad_class(tmp_db):
 
     assert result.series_checked == 2
     assert result.events_created == 1
+
+
+# ─── backfill_action_geo_country ─────────────────────────────────────────────
+
+
+def _insert_legacy_gdelt_event(
+    conn: sqlite3.Connection,
+    *,
+    global_event_id: int,
+    action_geo_country: str | None,  # last field of the event_key title
+    quad_class: int = 4,
+) -> None:
+    """Mimic a pre-migration row: events.title carries the 5-tuple dedup key
+    (Actor1CC|Actor2CC|EventRootCode|SQLDATE|ActionGeoCC, see gdelt.py::store_rows)
+    but gdelt_events.action_geo_country is NULL — the column didn't exist yet."""
+    title = f"CN|TW|19|20260601|{action_geo_country or ''}"
+    cur = conn.execute(
+        """INSERT INTO events (title, first_seen, last_seen, origin)
+           VALUES (?, '2026-06-01', '2026-06-01', 'gdelt')""",
+        (title,),
+    )
+    event_id = cur.lastrowid
+    conn.execute(
+        """INSERT INTO gdelt_events
+           (global_event_id, event_id, quad_class, goldstein, avg_tone, date_added)
+           VALUES (?, ?, ?, -2.0, -1.0, '2026-06-01')""",
+        (global_event_id, event_id, quad_class),
+    )
+    conn.commit()
+
+
+def test_backfill_recovers_country_from_event_title(tmp_db):
+    _insert_legacy_gdelt_event(tmp_db, global_event_id=1, action_geo_country="TW")
+
+    recovered = backfill_action_geo_country(tmp_db)
+
+    assert recovered == 1
+    row = tmp_db.execute(
+        "SELECT action_geo_country FROM gdelt_events WHERE global_event_id = 1"
+    ).fetchone()
+    assert row["action_geo_country"] == "TW"
+
+
+def test_backfill_skips_rows_with_empty_country_in_title(tmp_db):
+    # GDELT itself sometimes leaves ActionGeo_CountryCode blank — not recoverable
+    _insert_legacy_gdelt_event(tmp_db, global_event_id=2, action_geo_country=None)
+
+    recovered = backfill_action_geo_country(tmp_db)
+
+    assert recovered == 0
+    row = tmp_db.execute(
+        "SELECT action_geo_country FROM gdelt_events WHERE global_event_id = 2"
+    ).fetchone()
+    assert row["action_geo_country"] is None
+
+
+def test_backfill_is_idempotent(tmp_db):
+    _insert_legacy_gdelt_event(tmp_db, global_event_id=3, action_geo_country="US")
+
+    first = backfill_action_geo_country(tmp_db)
+    second = backfill_action_geo_country(tmp_db)
+
+    assert first == 1
+    assert second == 0  # already filled, WHERE action_geo_country IS NULL excludes it
+
+
+def test_backfill_does_not_touch_already_populated_rows(tmp_db):
+    _insert_legacy_gdelt_event(tmp_db, global_event_id=4, action_geo_country=None)
+    tmp_db.execute(
+        "UPDATE gdelt_events SET action_geo_country = 'FR' WHERE global_event_id = 4"
+    )
+    tmp_db.commit()
+
+    recovered = backfill_action_geo_country(tmp_db)
+
+    assert recovered == 0
+    row = tmp_db.execute(
+        "SELECT action_geo_country FROM gdelt_events WHERE global_event_id = 4"
+    ).fetchone()
+    assert row["action_geo_country"] == "FR"

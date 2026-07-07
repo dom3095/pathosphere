@@ -229,8 +229,12 @@ def ingest_gdelt(
               help="Minimum raw GDELT events in a country/day/quad_class cell to consider it.")
 @click.option("--full", is_flag=True, default=False,
               help="Sweep the whole stored history instead of just the latest day per series.")
+@click.option("--backfill-country", is_flag=True, default=False,
+              help="Repair action_geo_country on gdelt_events rows stored before "
+                   "this column existed (recovered from events.title), then run.")
 def ingest_gdelt_anomalies(
-    baseline_days: int, z_threshold: float, min_events_per_day: int, full: bool
+    baseline_days: int, z_threshold: float, min_events_per_day: int, full: bool,
+    backfill_country: bool,
 ) -> None:
     """Aggregate gdelt_events (goldstein/tone) and promote anomalies to events.
 
@@ -240,12 +244,20 @@ def ingest_gdelt_anomalies(
     cluster involved.
     """
     from pathosphere.db.schema import get_connection
-    from pathosphere.ingest.gdelt_anomaly import detect_gdelt_anomalies
+    from pathosphere.ingest.gdelt_anomaly import (
+        backfill_action_geo_country,
+        detect_gdelt_anomalies,
+    )
 
     settings = get_settings()
     _require_db(settings)
 
     conn = get_connection(settings.db_path)
+
+    if backfill_country:
+        recovered = backfill_action_geo_country(conn)
+        click.echo(f"Backfilled action_geo_country on {recovered} rows.\n")
+
     result = detect_gdelt_anomalies(
         conn,
         baseline_days=baseline_days,

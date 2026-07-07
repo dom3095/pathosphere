@@ -184,6 +184,10 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 **Impatto:** alto — root cause architetturale risolta a livello di codice. 6 nuovi test (`tests/test_gdelt_anomaly.py`) + 2 (`test_semantic.py::test_embed_excludes_gdelt_and_comtrade_origin`, `test_gdelt.py::test_store_rows_action_geo_country_stored`), 432 verdi totali.
 
+**Follow-up nella stessa sessione — bug scoperto lanciando il backfill storico reale:** `pathos ingest gdelt-history --start 2021-01-01` + `pathos ingest gdelt-anomalies --full` sul DB reale (176k→180k doc) hanno prodotto **0 eventi anomalia**. Causa: `gdelt.py::store_rows` usa `INSERT OR IGNORE` su `global_event_id` (chiave primaria) — rilanciare `gdelt-history` su un range già ingerito **non aggiorna** le righe esistenti, quindi la nuova colonna `action_geo_country` restava NULL su 230.941/234.502 righe (98.5%, tutto lo storico pre-fix). Ogni serie (paese+quad_class) aveva perciò 1-2 giorni di dati reali — mai i 10 minimi richiesti da `find_anomalies` per costruire un baseline.
+
+Il country code non era perso: è già incastonato nell'ultimo campo di `events.title` (chiave dedup `Actor1CC|Actor2CC|EventRootCode|SQLDATE|ActionGeoCC`, costruita da sempre in `store_rows`). Fix: nuova funzione `gdelt_anomaly.py::backfill_action_geo_country(conn)` — UPDATE mirato su `gdelt_events.action_geo_country IS NULL`, recupera il valore da `events.title` via join su `event_id`, idempotente (non tocca righe già popolate). Esposta via `pathos ingest gdelt-anomalies --backfill-country` (gira prima del sweep, stesso comando). 4 nuovi test. Sul DB reale: 201.860/234.502 righe ora popolate (il resto ha `ActionGeo_CountryCode` vuoto anche nel CSV originale GDELT — non recuperabile senza ri-scaricare). Risultato dopo fix: **324 serie, 583 eventi anomalia creati**.
+
 ---
 
 ## CP-017: copertura fonti prosa (RSS) — collo di bottiglia è la cadenza, non il catalogo
