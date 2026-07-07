@@ -1,6 +1,19 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-06, fix IODA endpoint + chunking (branch fix/ioda-endpoint-chunking)*
+*Aggiornato: 2026-07-07, fix Wikidata linking (branch fix/wikidata-linking)*
+
+## Fix Wikidata linking (2026-07-07)
+
+Run `pathos extract` produceva 40 errori 429 su 50 lookups Wikidata (10 QIDs). Due cause, fixate in `pathosphere/semantic/extract.py` (`link_wikidata`):
+
+1. **Sleep saltato su errore**: `continue` su exception bypassava `time.sleep(delay_s)` → dopo primo 429 richieste a raffica senza pausa (~8 req/s), 429 auto-amplificato. Ora delay a inizio iterazione, rispettato sempre. `WIKIDATA_DELAY_S` 0.2→1.0 (limite anonimo Wikimedia ~1 req/s).
+2. **Budget bruciato su entità spazzatura**: top-mentioned erano nomi generici ALL CAPS (`CRIMINAL`, `MILITARY`, `MALE`…) → link inutili o sbagliati (`MALE`→Malé). Nuova `GENERIC_ENTITY_STOPLIST` (~110 nomi comuni/ruoli/demonimi, match case-insensitive): marcati `wikidata_checked=1` senza lookup a inizio run, contati in `WikidataResult.stoplisted`. La stessa UPDATE azzera QID sbagliati assegnati pre-fix (es. `PRESIDENT`→Q30461 trovato nel DB reale).
+
+In più: su 429 il run si interrompe subito (`WikidataResult.rate_limited=True`), entità restanti restano `wikidata_checked=0` → ritentate ciclo successivo. Errori non-429 continuano come prima. Output CLI e orchestrator mostrano stoplisted + flag rate limited. +4 test (stoplist, strip QID legacy, abort su 429, errore non-429 continua). 423 test verdi.
+
+Smoke test reale (subagent, DB di produzione): 146 generici ritirati, 3 lookups a ~1 req/s, ISRAEL→Q801, US→Q30, `rate_limited=False`.
+
+Run `pathos extract` completo post-fix: 9 QIDs validi (PAKISTAN→Q843, UKRAINE→Q212, RUSSIA→Q159…), poi 429 dopo 10 lookups anche a 1 req/s → abort pulito (1 warning vs 40 pre-fix), 40 entità rimandate. Probabile penalità residua IP dal run storm mattutino; se 429 persiste a IP pulito nei cicli successivi, alzare `WIKIDATA_DELAY_S` o onorare `Retry-After`. `SCHOOL`→Q3914 sfuggito → aggiunto a stoplist (QID verrà azzerato automaticamente al prossimo run dallo strip legacy).
 
 ## Fix IODA (2026-07-06)
 
@@ -14,8 +27,8 @@ In più: risposta non-JSON ora → `RuntimeError` pulito in `IODAResult.errors` 
 
 ## Stato al momento del handoff
 
-**Branch:** main (predictions v2 mergiato)
-**Test:** 419 verdi (80 in test_predictions.py)
+**Branch:** fix/wikidata-linking (da pushare + PR)
+**Test:** 423 verdi (22 in test_extract.py)
 **Docs:** complete e allineate (wiki §8.6, schema.md, roadmap.md, overview_per_amico.md)
 
 ---

@@ -211,7 +211,8 @@ def _phase_extract() -> None:
     wd = link_wikidata(conn, user_agent=settings.nominatim_user_agent)
     logger.info(
         f"EXTRACT/WIKIDATA: {wd.qids_found} QIDs on {wd.entities_checked} checked "
-        f"({wd.conflicts} conflicts)"
+        f"({wd.conflicts} conflicts, {wd.stoplisted} stoplisted"
+        + (", rate limited" if wd.rate_limited else "") + ")"
     )
 
     conn.close()
