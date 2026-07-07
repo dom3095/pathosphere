@@ -350,6 +350,95 @@ def test_wikidata_skips_already_checked(tmp_db):
     assert result.entities_checked == 0
 
 
+def test_wikidata_stoplists_generic_names(tmp_db):
+    junk = _insert_entity(tmp_db, "CRIMINAL", entity_type="other")
+    good = _insert_entity(tmp_db, "TSMC")
+    client = _mock_client(_wikidata_handler(
+        {"TSMC": [{"id": "Q713418", "label": "TSMC", "aliases": []}]}
+    ))
+
+    result = link_wikidata(tmp_db, client=client, delay_s=0)
+
+    assert result.stoplisted == 1
+    assert result.qids_found == 1
+    junk_row = tmp_db.execute(
+        "SELECT * FROM entities WHERE id = ?", (junk,)
+    ).fetchone()
+    assert junk_row["wikidata_checked"] == 1
+    assert junk_row["wikidata_qid"] is None
+    good_row = tmp_db.execute(
+        "SELECT wikidata_qid FROM entities WHERE id = ?", (good,)
+    ).fetchone()
+    assert good_row["wikidata_qid"] == "Q713418"
+
+
+def test_wikidata_stoplist_strips_legacy_qid(tmp_db):
+    eid = _insert_entity(tmp_db, "PRESIDENT", entity_type="other")
+    tmp_db.execute(
+        """UPDATE entities SET wikidata_qid = 'Q30461', canonical_name = 'president',
+           wikidata_checked = 1 WHERE id = ?""",
+        (eid,),
+    )
+    tmp_db.commit()
+    client = _mock_client(_wikidata_handler({}))
+
+    result = link_wikidata(tmp_db, client=client, delay_s=0)
+
+    assert result.stoplisted == 1
+    row = tmp_db.execute("SELECT * FROM entities WHERE id = ?", (eid,)).fetchone()
+    assert row["wikidata_qid"] is None
+    assert row["canonical_name"] is None
+    assert row["wikidata_checked"] == 1
+
+
+def test_wikidata_aborts_on_429(tmp_db):
+    a = _insert_entity(tmp_db, "Alpha Corp")
+    b = _insert_entity(tmp_db, "Beta Corp")
+    doc = _insert_doc(tmp_db, url="https://x.com/429")
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 9)",
+        (doc, a),
+    )
+    tmp_db.commit()
+
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params["search"])
+        return httpx.Response(429, json={})
+
+    result = link_wikidata(tmp_db, client=_mock_client(handler), delay_s=0)
+
+    assert result.rate_limited is True
+    assert calls == ["Alpha Corp"]  # stops at first 429, no hammering
+    rows = tmp_db.execute(
+        "SELECT wikidata_checked FROM entities WHERE id IN (?, ?)", (a, b)
+    ).fetchall()
+    # both stay unchecked → retried next cycle
+    assert all(r["wikidata_checked"] == 0 for r in rows)
+
+
+def test_wikidata_non_429_error_continues(tmp_db):
+    doc = _insert_doc(tmp_db, url="https://x.com/err")
+    a = _insert_entity(tmp_db, "Alpha Corp")
+    _insert_entity(tmp_db, "Beta Corp")
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 9)",
+        (doc, a),
+    )
+    tmp_db.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["search"] == "Alpha Corp":
+            return httpx.Response(500, json={})
+        return httpx.Response(200, json={"search": []})
+
+    result = link_wikidata(tmp_db, client=_mock_client(handler), delay_s=0)
+
+    assert result.rate_limited is False
+    assert result.entities_checked == 1  # Beta checked despite Alpha 500
+
+
 def test_wikidata_prioritises_most_mentioned(tmp_db):
     doc = _insert_doc(tmp_db, url="https://x.com/1")
     minor = _insert_entity(tmp_db, "Minor Corp")

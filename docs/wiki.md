@@ -676,7 +676,7 @@ Tre step indipendenti e riprendibili:
 
 **Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup).
 
-**Wikidata:** `wbsearchentities` API per entità ordinate per `mentions DESC` (priorità alle più citate). Conflict on `UNIQUE(wikidata_qid)` gestito: marca `wikidata_checked=1` senza sovrascrivere (merge futura work).
+**Wikidata:** `wbsearchentities` API per entità ordinate per `mentions DESC` (priorità alle più citate). Rate: 1 req/s (`WIKIDATA_DELAY_S`), delay rispettato anche su errore. Su HTTP 429 il run si interrompe subito (le entità restanti restano `wikidata_checked=0` → ritentate al ciclo successivo). Stoplist `GENERIC_ENTITY_STOPLIST` (~110 nomi comuni/ruoli/demonimi es. `CRIMINAL`, `MILITARY`, `MALE`): marcati `wikidata_checked=1` senza lookup (e QID legacy sbagliati azzerati), così il budget va a entità vere. Conflict on `UNIQUE(wikidata_qid)` gestito: marca `wikidata_checked=1` senza sovrascrivere (merge futura work).
 
 **Prerequisito una-tantum:**
 

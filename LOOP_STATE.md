@@ -12,12 +12,12 @@
 ## Fase successiva: 4 — Dashboard Streamlit
 
 ## Ultima azione completata
-Fix IODA (2026-07-06, branch fix/ioda-endpoint-chunking): base URL corretto `api.ioda.inetintel.cc.gatech.edu/v2`, chunking 90gg per limite API <100gg, flatten shape annidata `[[...]]`, errori non-JSON non bloccanti. 419 test verdi. Dettagli in HANDOFF.md.
+Fix Wikidata linking (2026-07-07, branch fix/wikidata-linking): delay 1 req/s rispettato anche su errore (prima `continue` su exception saltava sleep → 429 auto-amplificato), abort run su 429 (entità restanti ritentate ciclo successivo), stoplist ~110 nomi generici (`CRIMINAL`, `MILITARY`, `MALE`…) marcati checked senza lookup + strip QID legacy sbagliati. 423 test verdi. Dettagli in HANDOFF.md.
 
-## Prossima azione: merge PR fix IODA → poi Fase 4 — Dashboard Streamlit
+## Prossima azione: PR fix Wikidata → poi Fase 4 — Dashboard Streamlit
 
 ### Note tecniche
-- Test suite: `uv run pytest tests/ -q` (419 verdi)
+- Test suite: `uv run pytest tests/ -q` (423 verdi)
 - **Dopo pull con modifiche schema: `uv run pathos db init`** (CP-010)
 - Scoring: brier su `outcome_eventual`; `outcome` legacy specchia `outcome_on_time`
 - `time_horizon_class`: breve ≤30gg, medio ≤180gg, lungo — derivato a creazione (UTC)

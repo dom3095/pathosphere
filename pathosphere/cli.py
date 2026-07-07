@@ -779,7 +779,8 @@ def extract(
         )
         click.echo(
             f"Wikidata: {wd.qids_found} QIDs | {wd.entities_checked} checked | "
-            f"{wd.conflicts} conflicts"
+            f"{wd.conflicts} conflicts | {wd.stoplisted} stoplisted"
+            + (" | RATE LIMITED" if wd.rate_limited else "")
         )
 
     conn.close()

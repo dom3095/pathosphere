@@ -36,7 +36,35 @@ LABEL_MAP = {
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_DELAY_S = 1.1  # usage policy: max 1 req/s
 WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
-WIKIDATA_DELAY_S = 0.2
+WIKIDATA_DELAY_S = 1.0  # Wikimedia anonymous rate limit: stay ~1 req/s
+
+# Generic common nouns / roles / demonyms that GDELT-derived NER surfaces in
+# ALL CAPS with huge mention counts. Linking them wastes the lookup budget and
+# produces wrong QIDs ("MALE" → Malé). Matched case-insensitively.
+GENERIC_ENTITY_STOPLIST = frozenset({
+    "activist", "actor", "administration", "agency", "airline", "airport",
+    "ambassador", "american", "analyst", "armed", "army", "attorney",
+    "authorities", "authority", "bank", "border", "business", "businesses",
+    "cabinet", "candidate", "chairman", "chief", "citizen", "citizens",
+    "civilian", "civilians", "coalition", "commander", "commission",
+    "committee", "community", "companies", "company", "congress", "council",
+    "court", "criminal", "criminals", "customer", "defence", "defense",
+    "deputy", "director", "doctor", "economy", "editor", "election",
+    "embassy", "employee", "employees", "expert", "family", "farmer",
+    "federal", "female", "firefighter", "general", "goverment", "government",
+    "governor", "hospital", "industry", "insurgent", "intelligence",
+    "investor", "israeli", "journalist", "judge", "lawmaker", "lawyer", "leader",
+    "leaders", "male", "manager", "mayor", "media", "migrant", "military",
+    "minister", "ministry", "minority", "official", "officials", "opposition",
+    "parliament", "party", "patient", "police", "politician", "president",
+    "prime minister", "prisoner", "professor", "prosecutor", "protester",
+    "protesters", "rebel", "refugee", "researcher", "resident", "residents",
+    "school", "scientist",
+    "secretary", "security", "senate", "senator", "soldier", "spokesman",
+    "spokesperson", "student", "supreme", "teacher", "terrorist", "tourist",
+    "union", "university", "victim", "villager", "voter", "voters", "witness",
+    "worker", "workers",
+})
 
 
 @dataclass
@@ -60,6 +88,8 @@ class WikidataResult:
     entities_checked: int = 0
     qids_found: int = 0
     conflicts: int = 0      # QID already taken by another entity row
+    stoplisted: int = 0     # generic names marked checked without lookup
+    rate_limited: bool = False  # run aborted on 429; rest retried next cycle
 
 
 @runtime_checkable
@@ -341,6 +371,22 @@ def link_wikidata(
     """
     result = WikidataResult()
 
+    # Retire generic names before spending the lookup budget on them; also
+    # strips wrong QIDs assigned before the stoplist existed (PRESIDENT → …).
+    placeholders = ",".join("?" * len(GENERIC_ENTITY_STOPLIST))
+    with conn:
+        cur = conn.execute(
+            f"""UPDATE entities
+                SET wikidata_checked = 1, wikidata_qid = NULL,
+                    canonical_name = NULL, aliases = NULL
+                WHERE (wikidata_checked = 0 OR wikidata_qid IS NOT NULL)
+                  AND lower(name) IN ({placeholders})""",
+            tuple(GENERIC_ENTITY_STOPLIST),
+        )
+    result.stoplisted = cur.rowcount
+    if result.stoplisted:
+        logger.info(f"Stoplisted {result.stoplisted} generic entities")
+
     rows = conn.execute(
         """SELECT e.id, e.name
            FROM entities e
@@ -361,9 +407,23 @@ def link_wikidata(
     logger.info(f"Wikidata linking for {len(rows)} entities")
 
     try:
-        for row in rows:
+        for i, row in enumerate(rows):
+            if delay_s and i:
+                time.sleep(delay_s)
             try:
                 hit = _wikidata_search(client, row["name"], user_agent)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 429:
+                    # Hammering past a 429 only digs the hole deeper; the
+                    # unchecked rows stay queued for the next cycle.
+                    logger.warning(
+                        f"Wikidata rate limited (429) at {row['name']!r} — "
+                        f"aborting run, remaining entities retried next cycle"
+                    )
+                    result.rate_limited = True
+                    break
+                logger.warning(f"Wikidata failed for {row['name']!r}: {exc}")
+                continue
             except Exception as exc:
                 logger.warning(f"Wikidata failed for {row['name']!r}: {exc}")
                 continue
@@ -396,15 +456,14 @@ def link_wikidata(
                             "UPDATE entities SET wikidata_checked = 1 WHERE id = ?",
                             (row["id"],),
                         )
-
-            if delay_s:
-                time.sleep(delay_s)
     finally:
         if _own_client:
             client.close()
 
     logger.info(
         f"Wikidata complete: {result.entities_checked} checked, "
-        f"{result.qids_found} QIDs, {result.conflicts} conflicts"
+        f"{result.qids_found} QIDs, {result.conflicts} conflicts, "
+        f"{result.stoplisted} stoplisted"
+        + (", rate limited" if result.rate_limited else "")
     )
     return result
