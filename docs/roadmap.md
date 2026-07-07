@@ -1,6 +1,6 @@
 # Pathosphere — Roadmap
 
-Stato aggiornato: 2026-07-03.
+Stato aggiornato: 2026-07-07.
 
 ---
 
@@ -33,6 +33,7 @@ Stato aggiornato: 2026-07-03.
 | Task | File | Tabelle | Stato |
 |---|---|---|---|
 | GDELT 2.0 (incrementale + bootstrap storico) | `ingest/gdelt.py` | `raw_documents`, `gdelt_events`, `events` | ✅ |
+| GDELT anomalie numeriche (Goldstein, CP-016) | `ingest/gdelt_anomaly.py` | `gdelt_events` → `events` | ✅ |
 | RSS multi-blocco (52 fonti, 7 blocchi) | `ingest/rss.py` | `raw_documents` | ✅ |
 | IMF PortWatch (chokepoint, anomalie z-score) | `ingest/portwatch.py` | `chokepoint_metrics`, `events` | ✅ |
 | UN Comtrade semiconduttori (HS 8541/8542/8486) | `ingest/comtrade.py` | `raw_documents`, `comtrade_flows` | ✅ |
@@ -49,7 +50,7 @@ Stato aggiornato: 2026-07-03.
 
 | Task | File | Tabelle | Stato |
 |---|---|---|---|
-| Embedding multilingual-e5-small (384d, batch) | `semantic/embedder.py` | `vec_documents` | ✅ |
+| Embedding multilingual-e5-small (384d, batch, esclude origin gdelt/comtrade CP-016) | `semantic/embedder.py` | `vec_documents` | ✅ |
 | Dedup semantica KNN (cosine ≥ 0.92, 72h) | `semantic/dedup.py` | `raw_documents.is_duplicate` | ✅ |
 | Clustering → eventi (union-find, soglia 0.85) | `semantic/cluster.py` | `events`, `event_documents` | ✅ |
 | NER multilingua (spaCy `xx_ent_wiki_sm`) | `semantic/extract.py` | `entities`, `document_entities` | ✅ |

@@ -289,3 +289,61 @@ def test_divergence_idempotency(tmp_db):
     ).fetchone()[0]
 
     assert count_first == count_second == 1
+
+
+def test_entity_links_collapses_canonical_aliases(tmp_db):
+    """Entities marked as aliases (canonical_entity_id) should be collapsed
+    in the co-occurrence graph, so Trump/Donald Trump→same node."""
+    # Canonical Trump
+    trump_canonical = _insert_entity(tmp_db, "Donald Trump")
+    # Alias variants
+    trump_variant1 = _insert_entity(tmp_db, "Donald J. Trump")
+    trump_variant2 = _insert_entity(tmp_db, "Trump")
+    # Unrelated
+    clinton = _insert_entity(tmp_db, "Hillary Clinton")
+
+    # Mark variants as aliases
+    tmp_db.execute(
+        "UPDATE entities SET canonical_entity_id = ? WHERE id = ?",
+        (trump_canonical, trump_variant1),
+    )
+    tmp_db.execute(
+        "UPDATE entities SET canonical_entity_id = ? WHERE id = ?",
+        (trump_canonical, trump_variant2),
+    )
+    tmp_db.commit()
+
+    # Create event with both canonical Trump and variants, plus Clinton
+    ev = _insert_event(tmp_db)
+    doc = _insert_doc(tmp_db, url="http://ex.com/1")
+    _assign_doc_to_event(tmp_db, ev, doc)
+
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 2)",
+        (doc, trump_canonical),
+    )
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 1)",
+        (doc, trump_variant1),
+    )
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 1)",
+        (doc, trump_variant2),
+    )
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 1)",
+        (doc, clinton),
+    )
+    tmp_db.commit()
+
+    build_entity_links(tmp_db)
+
+    # Should have exactly 1 link: canonical Trump ↔ Clinton
+    links = tmp_db.execute(
+        "SELECT entity_a, entity_b FROM entity_links WHERE relation_type = 'co-occurs'"
+    ).fetchall()
+    assert len(links) == 1
+    # Link should involve canonical Trump (lowest ID if canonical < clinton)
+    link = links[0]
+    assert trump_canonical in (link["entity_a"], link["entity_b"])
+    assert clinton in (link["entity_a"], link["entity_b"])

@@ -19,8 +19,11 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+import bleach
 import httpx
 from loguru import logger
+
+from pathosphere.semantic.embedder import NON_PROSE_ORIGINS
 
 NER_MODEL_NAME = "xx_ent_wiki_sm"
 MAX_NER_CHARS = 2000  # title + body head; bounds CPU per doc
@@ -32,6 +35,46 @@ LABEL_MAP = {
     "LOC": "location",
     "MISC": "other",
 }
+
+# Demonyms/adjectival country forms spaCy tags NORP/MISC (→ "other") — they
+# are unambiguous references to a place and read better reclassified as
+# location with the country as canonical_name. Matched case-insensitively,
+# exact full-name match only (avoids swallowing unrelated "other" entities).
+DEMONYM_TO_COUNTRY: dict[str, str] = {
+    "israeli": "Israel", "russian": "Russia", "chinese": "China",
+    "american": "United States", "british": "United Kingdom",
+    "french": "France", "german": "Germany", "italian": "Italy",
+    "spanish": "Spain", "japanese": "Japan", "korean": "South Korea",
+    "indian": "India", "pakistani": "Pakistan", "iranian": "Iran",
+    "iraqi": "Iraq", "syrian": "Syria", "turkish": "Turkey",
+    "ukrainian": "Ukraine", "polish": "Poland", "canadian": "Canada",
+    "mexican": "Mexico", "brazilian": "Brazil", "australian": "Australia",
+    "egyptian": "Egypt", "saudi": "Saudi Arabia", "emirati": "United Arab Emirates",
+    "lebanese": "Lebanon", "jordanian": "Jordan", "afghan": "Afghanistan",
+    "vietnamese": "Vietnam", "taiwanese": "Taiwan", "thai": "Thailand",
+    "indonesian": "Indonesia", "nigerian": "Nigeria", "kenyan": "Kenya",
+    "ethiopian": "Ethiopia", "south african": "South Africa",
+    "colombian": "Colombia", "argentine": "Argentina", "venezuelan": "Venezuela",
+    "dutch": "Netherlands", "swedish": "Sweden", "norwegian": "Norway",
+    "finnish": "Finland", "danish": "Denmark", "swiss": "Switzerland",
+    "greek": "Greece", "portuguese": "Portugal", "irish": "Ireland",
+    "scottish": "United Kingdom", "welsh": "United Kingdom",
+    "yemeni": "Yemen", "qatari": "Qatar", "kuwaiti": "Kuwait",
+    "libyan": "Libya", "algerian": "Algeria", "moroccan": "Morocco",
+    "sudanese": "Sudan", "somali": "Somalia", "north korean": "North Korea",
+}
+
+
+def _classify(name: str, spacy_label: str) -> tuple[str, str | None]:
+    """(entity_type, canonical_name) for a cleaned entity name.
+
+    Falls back to the spaCy label mapping; overrides to location+country for
+    known demonyms regardless of what spaCy tagged them as.
+    """
+    country = DEMONYM_TO_COUNTRY.get(name.lower())
+    if country is not None:
+        return "location", country
+    return LABEL_MAP.get(spacy_label), None
 
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_DELAY_S = 1.1  # usage policy: max 1 req/s
@@ -115,7 +158,12 @@ def _build_text(title: str | None, body: str | None) -> str | None:
     if title:
         parts.append(title.strip())
     if body:
-        parts.append(body.strip())
+        # Strip HTML tags from body before NER (common in RSS feeds).
+        # bleach.clean with tags=[] removes all markup. Collapse internal
+        # whitespace (including newlines from block tags) to single spaces.
+        clean_body = bleach.clean(body, tags=[], strip=True)
+        clean_body = " ".join(clean_body.split())
+        parts.append(clean_body)
     if not parts:
         return None
     return " ".join(parts)[:MAX_NER_CHARS]
@@ -133,6 +181,7 @@ def _get_or_create_entity(
     cache: dict[tuple[str, str], int],
     name: str,
     entity_type: str,
+    canonical_name: str | None = None,
 ) -> tuple[int, bool]:
     """Return (entity_id, created). Cache avoids per-mention SELECTs."""
     key = (name, entity_type)
@@ -148,8 +197,8 @@ def _get_or_create_entity(
         return row["id"], False
 
     cur = conn.execute(
-        "INSERT INTO entities (name, entity_type) VALUES (?, ?)",
-        (name, entity_type),
+        "INSERT INTO entities (name, entity_type, canonical_name) VALUES (?, ?, ?)",
+        (name, entity_type, canonical_name),
     )
     cache[key] = cur.lastrowid
     return cur.lastrowid, True
@@ -166,14 +215,19 @@ def extract_entities(
 
     result = ExtractResult()
 
-    sql = """
+    # origin exclusion mirrors semantic/embedder.py::NON_PROSE_ORIGINS — needed
+    # here too because raw_documents already embedded=1 from before that fix
+    # (e.g. legacy GDELT backfills) would otherwise still reach NER (CP-016).
+    placeholders = ", ".join("?" for _ in NON_PROSE_ORIGINS)
+    sql = f"""
         SELECT id, title, body FROM raw_documents
         WHERE embedded = 1 AND is_duplicate = 0 AND ner_done = 0
+          AND (origin IS NULL OR origin NOT IN ({placeholders}))
         ORDER BY id
     """
     if limit is not None:
         sql += f" LIMIT {int(limit)}"
-    rows = conn.execute(sql).fetchall()
+    rows = conn.execute(sql, NON_PROSE_ORIGINS).fetchall()
     if not rows:
         return result
 
@@ -197,19 +251,23 @@ def extract_entities(
 
         doc = model(text)
         counts: Counter[tuple[str, str]] = Counter()
+        canonical_names: dict[tuple[str, str], str | None] = {}
         for ent in doc.ents:
-            entity_type = LABEL_MAP.get(ent.label_)
-            if entity_type is None:
-                continue
             name = _clean_entity(ent.text)
             if name is None:
                 continue
-            counts[(name, entity_type)] += 1
+            entity_type, canonical_name = _classify(name, ent.label_)
+            if entity_type is None:
+                continue
+            key = (name, entity_type)
+            counts[key] += 1
+            canonical_names[key] = canonical_name
 
         with conn:
             for (name, entity_type), n in counts.items():
                 entity_id, created = _get_or_create_entity(
-                    conn, entity_cache, name, entity_type
+                    conn, entity_cache, name, entity_type,
+                    canonical_name=canonical_names[(name, entity_type)],
                 )
                 if created:
                     result.entities_created += 1
@@ -235,6 +293,55 @@ def extract_entities(
         f"+{result.entities_created} entities, {result.mentions_recorded} mentions"
     )
     return result
+
+
+def backfill_demonym_entities(conn: sqlite3.Connection) -> int:
+    """One-time repair: reclassify existing demonym entities (`entity_type`
+    != 'location', e.g. spaCy-tagged 'other') to location+canonical_name.
+
+    If a 'location' entity with the same name already exists (created after
+    this fix), merges document_entities/entity_links into it and drops the
+    duplicate instead of violating the (name, entity_type) unique index.
+    Idempotent — running twice updates 0 rows the second time.
+    """
+    updated = 0
+    with conn:
+        for demonym, country in DEMONYM_TO_COUNTRY.items():
+            row = conn.execute(
+                "SELECT id, name FROM entities WHERE lower(name) = ? AND entity_type != 'location'",
+                (demonym,),
+            ).fetchone()
+            if row is None:
+                continue
+            old_id, name = row["id"], row["name"]
+
+            dup = conn.execute(
+                "SELECT id FROM entities WHERE name = ? AND entity_type = 'location'",
+                (name,),
+            ).fetchone()
+
+            if dup is not None:
+                new_id = dup["id"]
+                conn.execute(
+                    """INSERT INTO document_entities (document_id, entity_id, mentions)
+                       SELECT document_id, ?, mentions FROM document_entities WHERE entity_id = ?
+                       ON CONFLICT(document_id, entity_id)
+                       DO UPDATE SET mentions = mentions + excluded.mentions""",
+                    (new_id, old_id),
+                )
+                conn.execute("DELETE FROM document_entities WHERE entity_id = ?", (old_id,))
+                conn.execute("UPDATE entity_links SET entity_a = ? WHERE entity_a = ?", (new_id, old_id))
+                conn.execute("UPDATE entity_links SET entity_b = ? WHERE entity_b = ?", (new_id, old_id))
+                conn.execute("DELETE FROM entities WHERE id = ?", (old_id,))
+            else:
+                conn.execute(
+                    "UPDATE entities SET entity_type = 'location', canonical_name = ? WHERE id = ?",
+                    (country, old_id),
+                )
+            updated += 1
+
+    logger.info(f"Demonym backfill: {updated} entities reclassified to location")
+    return updated
 
 
 def _nominatim_lookup(
@@ -449,7 +556,16 @@ def link_wikidata(
                     result.qids_found += 1
                 except sqlite3.IntegrityError:
                     # QID already owned by another entity row (e.g. "TSMC" vs
-                    # "台積電"); merging duplicates is future work — mark checked.
+                    # "台積電"). Mark current entity as alias of the earlier one.
+                    canonical = conn.execute(
+                        "SELECT id FROM entities WHERE wikidata_qid = ?", (qid,)
+                    ).fetchone()
+                    if canonical is not None:
+                        with conn:
+                            conn.execute(
+                                "UPDATE entities SET canonical_entity_id = ?, wikidata_checked = 1 WHERE id = ?",
+                                (canonical["id"], row["id"]),
+                            )
                     result.conflicts += 1
                     with conn:
                         conn.execute(

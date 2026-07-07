@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from pathosphere.semantic.extract import (
+    backfill_demonym_entities,
     extract_entities,
     geocode_events,
     link_wikidata,
@@ -56,12 +57,13 @@ def _insert_doc(
     body: str = "Body",
     embedded: int = 1,
     is_duplicate: int = 0,
+    origin: str | None = None,
 ) -> int:
     h = hashlib.sha256((url + body).encode()).hexdigest()
     cur = conn.execute(
-        "INSERT INTO raw_documents (url, title, body, content_hash, embedded, is_duplicate) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (url, title, body, h, embedded, is_duplicate),
+        "INSERT INTO raw_documents (url, title, body, content_hash, embedded, is_duplicate, origin) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (url, title, body, h, embedded, is_duplicate, origin),
     )
     conn.commit()
     return cur.lastrowid
@@ -132,6 +134,95 @@ def test_ner_label_mapping(tmp_db):
     }
 
 
+def test_ner_demonym_reclassified_to_location(tmp_db):
+    """spaCy tags 'Israeli' MISC (other) — demonym override reclassifies it
+    to location with the country as canonical_name."""
+    _insert_doc(tmp_db, url="https://x.com/1", title="x", body="x")
+    ner = MockNer({"x": [("Israeli", "MISC"), ("Russian", "MISC")]})
+
+    extract_entities(tmp_db, model=ner)
+
+    rows = {
+        r["name"]: (r["entity_type"], r["canonical_name"])
+        for r in tmp_db.execute("SELECT name, entity_type, canonical_name FROM entities")
+    }
+    assert rows == {
+        "Israeli": ("location", "Israel"),
+        "Russian": ("location", "Russia"),
+    }
+
+
+def test_backfill_demonym_entities_reclassifies_existing(tmp_db):
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type) VALUES ('Israeli', 'other')"
+    )
+    tmp_db.commit()
+
+    updated = backfill_demonym_entities(tmp_db)
+
+    assert updated == 1
+    row = tmp_db.execute(
+        "SELECT entity_type, canonical_name FROM entities WHERE name = 'Israeli'"
+    ).fetchone()
+    assert row["entity_type"] == "location"
+    assert row["canonical_name"] == "Israel"
+
+
+def test_backfill_demonym_entities_is_idempotent(tmp_db):
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type) VALUES ('Russian', 'other')"
+    )
+    tmp_db.commit()
+
+    first = backfill_demonym_entities(tmp_db)
+    second = backfill_demonym_entities(tmp_db)
+
+    assert first == 1
+    assert second == 0
+
+
+def test_backfill_demonym_entities_merges_into_existing_location(tmp_db):
+    """If NER already created a fresh 'Israeli'/location (post-fix) alongside
+    the legacy 'Israeli'/other, merge document_entities into the survivor."""
+    doc_a = _insert_doc(tmp_db, url="https://x.com/1")
+    doc_b = _insert_doc(tmp_db, url="https://x.com/2")
+
+    tmp_db.execute("INSERT INTO entities (name, entity_type) VALUES ('Israeli', 'other')")
+    old_id = tmp_db.execute(
+        "SELECT id FROM entities WHERE name='Israeli' AND entity_type='other'"
+    ).fetchone()["id"]
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type, canonical_name) VALUES ('Israeli', 'location', 'Israel')"
+    )
+    new_id = tmp_db.execute(
+        "SELECT id FROM entities WHERE name='Israeli' AND entity_type='location'"
+    ).fetchone()["id"]
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 3)",
+        (doc_a, old_id),
+    )
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 2)",
+        (doc_b, new_id),
+    )
+    tmp_db.commit()
+
+    updated = backfill_demonym_entities(tmp_db)
+
+    assert updated == 1
+    assert tmp_db.execute(
+        "SELECT COUNT(*) FROM entities WHERE name='Israeli'"
+    ).fetchone()[0] == 1
+    mentions = {
+        r["document_id"]: r["mentions"]
+        for r in tmp_db.execute(
+            "SELECT document_id, mentions FROM document_entities WHERE entity_id = ?",
+            (new_id,),
+        )
+    }
+    assert mentions == {doc_a: 3, doc_b: 2}
+
+
 def test_ner_skips_duplicates_and_unembedded(tmp_db):
     _insert_doc(tmp_db, url="https://x.com/1", embedded=0)
     _insert_doc(tmp_db, url="https://x.com/2", is_duplicate=1)
@@ -141,6 +232,28 @@ def test_ner_skips_duplicates_and_unembedded(tmp_db):
 
     assert result.docs_processed == 0
     assert ner.calls == []
+
+
+def test_ner_excludes_gdelt_and_comtrade_origin_even_if_already_embedded(tmp_db):
+    """CP-016 follow-up: extract.py must skip gdelt/comtrade docs that were
+    already embedded=1 before the embedder.py fix existed — otherwise NER
+    keeps ingesting synthetic CAMEO metadata as if it were prose."""
+    _insert_doc(tmp_db, url="https://x.com/1", origin="gdelt")
+    _insert_doc(tmp_db, url="https://x.com/2", origin="comtrade")
+    _insert_doc(tmp_db, url="https://x.com/3", origin="rss")
+    _insert_doc(tmp_db, url="https://x.com/4", origin=None)
+    ner = MockNer()
+
+    result = extract_entities(tmp_db, model=ner)
+
+    assert result.docs_processed == 2  # rss + legacy NULL origin only
+    still_pending = {
+        r["url"]
+        for r in tmp_db.execute(
+            "SELECT url FROM raw_documents WHERE ner_done = 0"
+        ).fetchall()
+    }
+    assert still_pending == {"https://x.com/1", "https://x.com/2"}
 
 
 def test_ner_marks_done_and_is_resumable(tmp_db):
@@ -458,3 +571,69 @@ def test_wikidata_prioritises_most_mentioned(tmp_db):
     link_wikidata(tmp_db, client=_mock_client(handler), max_lookups=1, delay_s=0)
 
     assert seen == ["Major Corp"]
+
+
+def test_wikidata_marks_duplicate_as_alias(tmp_db):
+    """On QID conflict, mark the new entity as canonical_entity_id alias."""
+    # Insert canonical Trump first
+    trump1 = _insert_entity(tmp_db, "Donald Trump", entity_type="person")
+    # Manually assign QID as if first lookup succeeded
+    tmp_db.execute(
+        "UPDATE entities SET wikidata_qid = 'Q22686', wikidata_checked = 1 WHERE id = ?",
+        (trump1,),
+    )
+    tmp_db.commit()
+
+    # Insert alternate form (should get same QID, trigger conflict)
+    trump2 = _insert_entity(tmp_db, "Donald J. Trump", entity_type="person")
+
+    # Mock handler returns same QID for both lookups
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "search": [
+                    {"id": "Q22686", "label": "Donald Trump", "aliases": []}
+                ]
+            },
+        )
+
+    result = link_wikidata(tmp_db, client=_mock_client(handler), delay_s=0)
+
+    # Second entity (trump2) should be marked as alias of trump1
+    assert result.conflicts == 1
+    row = tmp_db.execute(
+        "SELECT canonical_entity_id, wikidata_checked FROM entities WHERE id = ?",
+        (trump2,),
+    ).fetchone()
+    assert row["canonical_entity_id"] == trump1
+    assert row["wikidata_checked"] == 1
+
+
+def test_extract_strips_html_from_body(tmp_db):
+    """NER input should have HTML tags stripped before processing."""
+    doc_id = _insert_doc(
+        tmp_db,
+        url="https://example.com/article",
+        title="Article Title",
+        body="<p>Reuters reported <strong>bold</strong> text.</p><br/><p>Second paragraph.</p>",
+        embedded=1,
+    )
+
+    model = MockNer(
+        {
+            "Article Title Reuters reported bold text. Second paragraph.": [
+                ("Reuters", "ORG"),
+                ("bold text", "MISC"),
+            ],
+        }
+    )
+
+    result = extract_entities(tmp_db, model=model)
+
+    assert result.docs_processed == 1
+    assert result.entities_created == 2  # Reuters + "bold text"
+    rows = tmp_db.execute("SELECT name FROM entities ORDER BY name").fetchall()
+    assert len(rows) == 2
+    assert rows[0]["name"] == "Reuters"
+    assert rows[1]["name"] == "bold text"

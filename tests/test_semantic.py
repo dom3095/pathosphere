@@ -57,12 +57,13 @@ def _insert_doc(
     body: str = "Body",
     published_at: str = "2026-06-01T00:00:00",
     embedded: int = 0,
+    origin: str | None = None,
 ) -> int:
     h = hashlib.sha256((url + body).encode()).hexdigest()
     conn.execute(
-        "INSERT INTO raw_documents (url, title, body, published_at, content_hash, embedded) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (url, title, body, published_at, h, embedded),
+        "INSERT INTO raw_documents (url, title, body, published_at, content_hash, embedded, origin) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (url, title, body, published_at, h, embedded, origin),
     )
     conn.commit()
     return conn.execute(
@@ -128,6 +129,26 @@ def test_embed_skips_already_embedded(tmp_db):
     result = embed_documents(tmp_db, model=MockModel())
 
     assert result.docs_processed == 0
+
+
+def test_embed_excludes_gdelt_and_comtrade_origin(tmp_db):
+    """GDELT/Comtrade docs are synthetic metadata, not prose (CP-016) — the
+    NLP embed/extract/cluster pipeline must never touch them."""
+    _insert_doc(tmp_db, url="http://gdelt.com", origin="gdelt")
+    _insert_doc(tmp_db, url="http://comtrade.com", origin="comtrade")
+    _insert_doc(tmp_db, url="http://rss.com", origin="rss")
+    _insert_doc(tmp_db, url="http://legacy.com", origin=None)
+
+    result = embed_documents(tmp_db, model=MockModel())
+
+    assert result.docs_processed == 2  # rss + legacy (NULL origin) only
+    still_unembedded = {
+        r["url"]
+        for r in tmp_db.execute(
+            "SELECT url FROM raw_documents WHERE embedded = 0"
+        ).fetchall()
+    }
+    assert still_unembedded == {"http://gdelt.com", "http://comtrade.com"}
 
 
 def test_embed_skips_doc_without_text(tmp_db):

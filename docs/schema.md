@@ -77,6 +77,7 @@ erDiagram
         INTEGER num_mentions
         INTEGER num_sources
         INTEGER num_articles
+        TEXT action_geo_country "ISO-2, per aggregazione anomalie (CP-016)"
     }
 
     comtrade_flows {
@@ -331,7 +332,7 @@ graph TD
 | `raw_documents` | 1 | migliaia/giorno | `content_hash` previene duplicati esatti; `origin` = ingestor di provenienza |
 | `events` | 2 | centinaia/giorno | Aggregano N documenti sullo stesso evento; `origin` = ingestor |
 | `event_documents` | 2 | join N:M | |
-| `gdelt_events` | 1 | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions) → `events` |
+| `gdelt_events` | 1 | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions) → aggregato per giorno+paese+quad_class, anomalie Goldstein → `events` (CP-016, `ingest/gdelt_anomaly.py`) |
 | `comtrade_flows` | 1 | 1/record commerciale | Valori numerici flussi (USD, kg) accanto al doc sintetico |
 | `chokepoint_metrics` | 1 | 1/(chokepoint, giorno) | Timeseries transiti PortWatch; anomalie z-score → `events`. PK `(portid, date)`, no FK |
 | `fire_metrics` | 1 | 1/(area, giorno) | Timeseries rilevazioni FIRMS; surge z-score → `events`. PK `(area, date)`, no FK |

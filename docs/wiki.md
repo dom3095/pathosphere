@@ -243,7 +243,7 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 | `raw_documents` | 10k-500k | Documenti grezzi (URL, titolo, hash dedup, flag semantici, `origin`) |
 | `events` | 1k-50k | Eventi aggregati da cluster di articoli (`origin` = ingestor) |
 | `event_documents` | N:M | Join eventi ↔ documenti |
-| `gdelt_events` | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions) |
+| `gdelt_events` | 1/riga GDELT | Dettaglio numerico per `GlobalEventID` (Goldstein/tone/mentions), aggregato → anomalie `events` (CP-016) |
 | `comtrade_flows` | 1/record | Valori numerici flussi commerciali (USD, kg) |
 | `chokepoint_metrics` | 1/(chokepoint, giorno) | Timeseries transiti PortWatch (anomalie z-score → `events`) |
 | `fire_metrics` | 1/(area, giorno) | Timeseries rilevazioni FIRMS (surge z-score → `events`) |
@@ -365,9 +365,29 @@ come data canonica → `published_at` / `first_seen`. `SQLDATE` è inaffidabile
 
 **Dettaglio numerico:** ogni riga GDELT (`GlobalEventID`) è salvata in
 **`gdelt_events`** con i segnali numerici per-riga (`goldstein`, `avg_tone`,
-`quad_class`, `num_mentions`/`sources`/`articles`, `event_code`, `date_added`),
-legata al cluster `events` e al documento. `raw_documents.origin` / `events.origin`
-= `gdelt`.
+`quad_class`, `num_mentions`/`sources`/`articles`, `event_code`, `date_added`,
+`action_geo_country`), legata al cluster `events` e al documento. `raw_documents.origin`
+/ `events.origin` = `gdelt`.
+
+**Percorso numerico anomalie (CP-016)** — `pathosphere/ingest/gdelt_anomaly.py`,
+comando `pathos ingest gdelt-anomalies`: aggrega `gdelt_events` per
+giorno+paese (`action_geo_country`)+`quad_class` (media Goldstein/tone, conteggio
+righe), poi riusa il rilevatore trailing-baseline condiviso (`ingest/anomaly.py`,
+stesso usato da PortWatch/FIRMS/IODA, no lookahead) per promuovere deviazioni
+|z| ≥ soglia direttamente a `events` (`event_type='gdelt_anomaly'`, dedup by
+title). Bypassa NER/embed/cluster — il segnale quantitativo di GDELT (prima
+scritto e mai letto) ora produce eventi propri invece di passare per la
+pipeline NLP pensata per prosa reale (vedi nota §6.3). Nel ciclo notturno gira
+subito dopo `ingest gdelt` (`cycle/orchestrator.py::_phase_ingest`).
+
+```bash
+uv run pathos ingest gdelt-anomalies                             # ultimo giorno per serie, baseline 30gg
+uv run pathos ingest gdelt-anomalies --full                      # sweep intera storia (dopo gdelt-history)
+uv run pathos ingest gdelt-anomalies --z-threshold 2.5 --min-events-per-day 5
+uv run pathos ingest gdelt-anomalies --backfill-country --full   # dopo un gdelt-history su range già ingerito, vedi nota sotto
+```
+
+**Nota `--backfill-country`:** `gdelt.py::store_rows` fa `INSERT OR IGNORE` su `global_event_id` — rilanciare `gdelt-history` su un range di date già scaricato **non aggiorna** le righe `gdelt_events` esistenti. Se `action_geo_country` è stata aggiunta dopo che quel range era già in DB (caso reale del 2026-07-07: 230k/234k righe storiche con la colonna NULL), il sweep anomalie non ha abbastanza giorni per serie e produce 0 eventi in silenzio. `--backfill-country` recupera il country code dall'ultimo campo di `events.title` (chiave dedup `Actor1CC|Actor2CC|EventRootCode|SQLDATE|ActionGeoCC`, sempre stata lì) prima di far girare il sweep — idempotente, va eseguito una volta dopo qualunque `gdelt-history` su storico pre-esistente.
 
 **HTTP:** httpx + tenacity (3 retry, backoff esponenziale). Ctrl+C safe.
 
@@ -609,7 +629,7 @@ Algoritmo union-find con size-cap:
 
 Risultato campione (2026-06-15, 800 doc RSS 72h): 329 eventi, di cui 268 singleton + 10 cappati a 30 (storie più coperte). Cluster top con copertura multi-blocco: Taiwan/defense (4 blocchi), Iran drones (6 blocchi), Russia oil ban (4 blocchi).
 
-**Nota GDELT**: GDELT escluso dall'embedding (opzione a) — `UPDATE raw_documents SET embedded=1 WHERE origin='gdelt'` prima di `pathos embed`. Body vuoto → titolo sintetico non utile per clustering semantico. Se in futuro si arricchisce via GKG, resettare `embedded=0` sui doc GDELT e ri-eseguire.
+**Nota GDELT (CP-016, risolto 2026-07-07)**: `origin IN ('gdelt','comtrade')` esclusi a monte in `semantic/embedder.py` (`NON_PROSE_ORIGINS`) — mai selezionati dalla query `embed_documents`, quindi restano `embedded=0` per sempre e non entrano mai in extract/cluster/graph (tutti richiedono `embedded=1`). Non più il workaround manuale precedente (`UPDATE ... SET embedded=1`, che falsificava il flag). GDELT ha ora un percorso numerico proprio, vedi §5.1.
 
 ### 6.5 Grafo entità + Divergenza narrativa
 
@@ -699,7 +719,7 @@ INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF
 
 | Fase | Funzione | Stato | Descrizione |
 |---|---|---|---|
-| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS |
+| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT (+ anomalie Goldstein CP-016) + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS |
 | `EMBED` | `_phase_embed` | ✅ | Embedding e5-small + dedup semantica KNN |
 | `EXTRACT` | `_phase_extract` | ✅ | NER (spaCy) + geocoding Nominatim + Wikidata QID |
 | `CLUSTER` | `_phase_cluster` | ✅ | Union-find clustering → eventi |
@@ -861,6 +881,12 @@ pathos
 │   │   ├── --start         YYYY-MM-DD (obbligatorio)
 │   │   ├── --end           YYYY-MM-DD [default: ieri]
 │   │   └── --sample-hours  1 file ogni N ore [default: 1]
+│   ├── gdelt-anomalies Aggrega gdelt_events (goldstein/tone) → anomalie in eventi (CP-016)
+│   │   ├── --baseline-days      Finestra trailing baseline [default: 30]
+│   │   ├── --z-threshold        |z| soglia anomalia [default: 2.0]
+│   │   ├── --min-events-per-day Minimo righe grezze per cella paese/giorno [default: 3]
+│   │   ├── --full               Sweep intera storia invece di solo l'ultimo giorno
+│   │   └── --backfill-country   Ripara action_geo_country su righe pre-migration prima del sweep
 │   ├── rss             Fetch RSS da tutte le fonti attive
 │   │   ├── --max-age-days  Salta articoli più vecchi di N giorni [default: 2]
 │   │   └── --source-ids    Comma-separated IDs sorgente
