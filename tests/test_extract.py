@@ -571,3 +571,40 @@ def test_wikidata_prioritises_most_mentioned(tmp_db):
     link_wikidata(tmp_db, client=_mock_client(handler), max_lookups=1, delay_s=0)
 
     assert seen == ["Major Corp"]
+
+
+def test_wikidata_marks_duplicate_as_alias(tmp_db):
+    """On QID conflict, mark the new entity as canonical_entity_id alias."""
+    # Insert canonical Trump first
+    trump1 = _insert_entity(tmp_db, "Donald Trump", entity_type="person")
+    # Manually assign QID as if first lookup succeeded
+    tmp_db.execute(
+        "UPDATE entities SET wikidata_qid = 'Q22686', wikidata_checked = 1 WHERE id = ?",
+        (trump1,),
+    )
+    tmp_db.commit()
+
+    # Insert alternate form (should get same QID, trigger conflict)
+    trump2 = _insert_entity(tmp_db, "Donald J. Trump", entity_type="person")
+
+    # Mock handler returns same QID for both lookups
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "search": [
+                    {"id": "Q22686", "label": "Donald Trump", "aliases": []}
+                ]
+            },
+        )
+
+    result = link_wikidata(tmp_db, client=_mock_client(handler), delay_s=0)
+
+    # Second entity (trump2) should be marked as alias of trump1
+    assert result.conflicts == 1
+    row = tmp_db.execute(
+        "SELECT canonical_entity_id, wikidata_checked FROM entities WHERE id = ?",
+        (trump2,),
+    ).fetchone()
+    assert row["canonical_entity_id"] == trump1
+    assert row["wikidata_checked"] == 1

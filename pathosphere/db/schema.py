@@ -456,6 +456,11 @@ _MIGRATIONS = [
     # gdelt_events into per-country/day anomaly series (CP-016 numeric path)
     "ALTER TABLE gdelt_events ADD COLUMN action_geo_country TEXT",
     "CREATE INDEX IF NOT EXISTS idx_gdelt_ev_country_day ON gdelt_events(action_geo_country, date_added)",
+    # canonical_entity_id: alias resolution via Wikidata QID. If populated,
+    # this entity is a duplicate of (points to) another. Used in graph.py
+    # to collapse aliases before building links (Trump/Donald Trump → same node).
+    "ALTER TABLE entities ADD COLUMN canonical_entity_id INTEGER REFERENCES entities(id)",
+    "CREATE INDEX IF NOT EXISTS idx_entity_canonical ON entities(canonical_entity_id)",
 ]
 
 

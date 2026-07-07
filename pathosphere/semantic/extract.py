@@ -550,13 +550,17 @@ def link_wikidata(
                     result.qids_found += 1
                 except sqlite3.IntegrityError:
                     # QID already owned by another entity row (e.g. "TSMC" vs
-                    # "台積電"); merging duplicates is future work — mark checked.
+                    # "台積電"). Mark current entity as alias of the earlier one.
+                    canonical = conn.execute(
+                        "SELECT id FROM entities WHERE wikidata_qid = ?", (qid,)
+                    ).fetchone()
+                    if canonical is not None:
+                        with conn:
+                            conn.execute(
+                                "UPDATE entities SET canonical_entity_id = ?, wikidata_checked = 1 WHERE id = ?",
+                                (canonical["id"], row["id"]),
+                            )
                     result.conflicts += 1
-                    with conn:
-                        conn.execute(
-                            "UPDATE entities SET wikidata_checked = 1 WHERE id = ?",
-                            (row["id"],),
-                        )
     finally:
         if _own_client:
             client.close()

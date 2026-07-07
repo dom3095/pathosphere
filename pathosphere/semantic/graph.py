@@ -44,7 +44,11 @@ def build_entity_links(
     *,
     min_cooccurrences: int = 1,
 ) -> GraphResult:
-    """Populate entity_links from entity co-occurrences within shared events."""
+    """Populate entity_links from entity co-occurrences within shared events.
+
+    Collapses canonical_entity_id aliases before aggregating, so Trump/Donald Trump
+    end up as co-occurrence links from the canonical entity, not separate nodes.
+    """
     result = GraphResult()
 
     with conn:
@@ -53,17 +57,21 @@ def build_entity_links(
         )
         result.links_deleted = cur.rowcount
 
+    # Resolve aliases: if entity_a/entity_b have canonical_entity_id set,
+    # use that instead. This collapses Trump/Donald Trump → same canonical node.
     pairs = conn.execute(
         """
         SELECT
-            de1.entity_id AS entity_a,
-            de2.entity_id AS entity_b,
+            COALESCE(e1.canonical_entity_id, de1.entity_id) AS entity_a,
+            COALESCE(e2.canonical_entity_id, de2.entity_id) AS entity_b,
             COUNT(DISTINCT ed.event_id) AS cooc_count
         FROM event_documents ed
         JOIN document_entities de1 ON de1.document_id = ed.document_id
         JOIN document_entities de2 ON de2.document_id = ed.document_id
-        WHERE de1.entity_id < de2.entity_id
-        GROUP BY de1.entity_id, de2.entity_id
+        JOIN entities e1 ON e1.id = de1.entity_id
+        JOIN entities e2 ON e2.id = de2.entity_id
+        WHERE COALESCE(e1.canonical_entity_id, de1.entity_id) < COALESCE(e2.canonical_entity_id, de2.entity_id)
+        GROUP BY COALESCE(e1.canonical_entity_id, de1.entity_id), COALESCE(e2.canonical_entity_id, de2.entity_id)
         HAVING COUNT(DISTINCT ed.event_id) >= ?
         """,
         (min_cooccurrences,),
