@@ -1,8 +1,54 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-07, sessione studio qualità + diagnosi causa radice (branch refactor/gdelt-numeric-split, ex docs/quality-study-notebooks)*
+*Aggiornato: 2026-07-07 (secondo aggiornamento), sessione fix CP-016 — split GDELT numerico/prosa-NLP implementato (branch refactor/gdelt-numeric-split)*
 
-## ⏭ PROSSIMA AZIONE — Split pipeline GDELT-numerico/prosa-NLP (branch nuovo da aprire) → poi Fase 4 Dashboard
+## ⏭ PROSSIMA AZIONE — Commit + PR di questo fix, poi CP-017 (schedulare cycle run), poi Fase 4 Dashboard
+
+Sessione precedente (stesso giorno) aveva prodotto solo diagnosi + notebook (vedi sezione sotto). Questa sessione ha implementato il fix in codice. Scope concordato con l'utente: **solo codice, niente cleanup del DB reale** (i 174k documenti `origin=gdelt` già `embedded=1` da run precedenti al fix restano contaminati — vedi "Cosa NON è stato fatto" sotto).
+
+### Cosa è stato fatto
+
+1. **`pathosphere/semantic/embedder.py`** — `NON_PROSE_ORIGINS = ("gdelt", "comtrade")`, esclusi dalla query candidati di `embed_documents` (`WHERE embedded=0 AND (origin IS NULL OR origin NOT IN (...))`). Questi documenti restano `embedded=0` per sempre → **si escludono automaticamente anche da `extract.py` e `cluster.py`**, che richiedono entrambi `embedded=1` come precondizione. Non serve toccare quei due moduli.
+
+2. **`pathosphere/ingest/gdelt_anomaly.py`** (nuovo) — percorso numerico per GDELT:
+   - `_aggregate_series`: raggruppa `gdelt_events` per `(action_geo_country, quad_class, day)`, media Goldstein/tone, conta righe grezze
+   - `detect_gdelt_anomalies`: per ogni serie (country, quad_class) ordinata per giorno, riusa `ingest/anomaly.py::find_anomalies` (trailing-baseline no-lookahead, stesso modulo di PortWatch/FIRMS/IODA) sul valore Goldstein; deviazioni |z|≥soglia → INSERT su `events` (`event_type='gdelt_anomaly'`, `origin='gdelt'`), dedup by title, skip se già esiste
+   - `whole_history=False` (default, incrementale): controlla solo l'ultimo giorno per serie. `whole_history=True` (`--full`): sweep intera storia (usare dopo `gdelt-history`)
+   - `min_events_per_day` (default 3): filtro rumore, ignora celle paese/giorno/quad con troppo pochi eventi grezzi
+
+3. **Migration schema** (`pathosphere/db/schema.py`): `ALTER TABLE gdelt_events ADD COLUMN action_geo_country TEXT` + indice `(action_geo_country, date_added)`. Popolata in `ingest/gdelt.py::store_rows` da `row["ActionGeo_CountryCode"]`.
+
+4. **CLI**: `pathos ingest gdelt-anomalies [--baseline-days 30] [--z-threshold 2.0] [--min-events-per-day 3] [--full]`
+
+5. **Orchestrator** (`cycle/orchestrator.py::_phase_ingest`): `detect_gdelt_anomalies(conn)` chiamato subito dopo `ingest_gdelt(...)`, log del conteggio.
+
+6. **Bug trovato scrivendo i test**: `find_anomalies` (`ingest/anomaly.py`) ha `min_value=0.0` di default — un floor sensato per metriche non-negative (conteggi transiti PortWatch) ma che su Goldstein (range -10..+10) **scartava silenziosamente ogni valore negativo**, cioè esattamente quelli destabilizzanti che questo detector deve trovare. Fix: `gdelt_anomaly.py` chiama `find_anomalies(..., min_value=-10.0)` esplicitamente. Il default della funzione condivisa non è stato cambiato (PortWatch/FIRMS dipendono dal floor a 0). **Attenzione per detector futuri su metriche con range negativo**: stesso accorgimento necessario, altrimenti falsi negativi silenziosi (nessun errore, semplicemente zero anomalie rilevate).
+
+7. **Test**: `tests/test_gdelt_anomaly.py` (8 test: aggregazione multi-serie, dedup, whole_history vs incrementale, filtro min_events_per_day, no-anomaly su baseline stabile), + `test_semantic.py::test_embed_excludes_gdelt_and_comtrade_origin`, + `test_gdelt.py::test_store_rows_action_geo_country_stored`. **432 test verdi totali** (era 423).
+
+8. **Docs aggiornate**: `docs/wiki.md` (§5.1 GDELT — nuova sezione percorso anomalie; §6.3 clustering — nota GDELT riscritta; tabella tabelle; CLI reference), `docs/schema.md` (colonna `action_geo_country`, riga `gdelt_events`), `docs/roadmap.md` (nuova riga Fase 1, data aggiornata), `CRITICAL_POINTS.md` (CP-016 marcato ✅ risolto, dettaglio fix + bug min_value + nota cleanup non fatto).
+
+### Cosa NON è stato fatto (scelta esplicita, vedi risposta utente a inizio sessione)
+
+**Cleanup del DB reale.** Il fix impedisce che il problema *si ripeta* andando avanti, ma il DB reale (`data/db/pathosphere.db`, 176k `raw_documents`) contiene ancora, da run precedenti al fix:
+- Doc `origin=gdelt` con `embedded=1`/`ner_done=1` (elaborati dalla pipeline NLP prima che questo fix esistesse)
+- Entità generiche (`GDELT`, ruoli CAMEO) in `entities`/`document_entities` derivate da quei doc
+- Cluster `events` derivati via `cluster.py` da quei doc (da distinguere dagli eventi creati direttamente in `gdelt.py::store_rows`, che restano validi — sono la 5-tupla Actor1/Actor2/EventRootCode/SQLDATE/ActionGeoCC, non passano da NLP)
+- Archi `entity_links` inquinati nel grafo (hairball 94.8%, vedi notebook studio sessione precedente)
+
+Se si vuole un DB pulito: scrivere un comando/script di reset che azzeri `embedded`/`ner_done`/`dedup_checked` su `origin IN ('gdelt','comtrade')` e ripulisca `entities`/`document_entities`/`entity_links` derivati (NON gli `events` creati da `store_rows`). Non fatto in questa sessione — non richiesto, e serve giudizio su come distinguere "eventi validi da store_rows" da "eventi spuri da cluster.py" (probabilmente via `event_documents` → se i doc collegati sono `origin=gdelt` E l'evento non ha un `gdelt_events.event_id` diretto, è spurio).
+
+### Verificare prima di procedere
+
+- `uv run pytest tests/ -q` → 432 verdi (già verificato in sessione)
+- `ruff check` sui file toccati → nessun nuovo errore (errori pre-esistenti in `cli.py`/`test_gdelt.py`/`test_semantic.py`, non toccati da questa modifica)
+- **Non ancora committato** — branch `refactor/gdelt-numeric-split` ha modifiche in working tree, nessun commit di questa sessione
+
+---
+
+*Sezione precedente (stessa giornata, prima di questo fix):*
+
+## Split pipeline GDELT-numerico/prosa-NLP — diagnosi + notebook (sessione precedente, 2026-07-07)
 
 **Per il collega che riprende**: questa sessione ha prodotto 3 notebook di studio qualità (as-is, nessun fix) e una diagnosi di causa radice discussa con l'utente. La diagnosi è il lavoro prioritario da trasformare in codice — leggi tutto prima di aprire la Fase 4 Dashboard, altrimenti costruisci sopra dati inaffidabili.
 

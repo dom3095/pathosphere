@@ -99,6 +99,7 @@ def _phase_ingest() -> None:
     from pathosphere.db.schema import get_connection
     from pathosphere.ingest.comtrade import ingest_comtrade
     from pathosphere.ingest.gdelt import QUAD_CONFLICT, ingest_gdelt
+    from pathosphere.ingest.gdelt_anomaly import detect_gdelt_anomalies
     from pathosphere.ingest.physical import ingest_firms, ingest_usgs
     from pathosphere.ingest.portwatch import ingest_portwatch
     from pathosphere.ingest.rss import ingest_rss
@@ -115,6 +116,12 @@ def _phase_ingest() -> None:
     )
     logger.info(
         f"INGEST/GDELT: {gdelt.events_inserted} events, {gdelt.docs_inserted} docs"
+    )
+
+    gdelt_anom = detect_gdelt_anomalies(conn)
+    logger.info(
+        f"INGEST/GDELT-ANOMALIES: {gdelt_anom.series_checked} series, "
+        f"+{gdelt_anom.events_created} anomaly events"
     )
 
     rss = ingest_rss(conn, max_age_days=2)

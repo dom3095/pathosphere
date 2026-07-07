@@ -337,6 +337,15 @@ def test_store_rows_location_stored(tmp_db):
     assert row["lon"] == pytest.approx(122.0)
 
 
+def test_store_rows_action_geo_country_stored(tmp_db):
+    """action_geo_country feeds the numeric anomaly aggregation (CP-016)."""
+    rows = [make_gdelt_row(ActionGeo_CountryCode="TW")]
+    with tmp_db:
+        store_rows(tmp_db, rows)
+    row = tmp_db.execute("SELECT action_geo_country FROM gdelt_events").fetchone()
+    assert row["action_geo_country"] == "TW"
+
+
 def test_store_rows_empty_list(tmp_db):
     with tmp_db:
         ev_ins, doc_ins = store_rows(tmp_db, [])

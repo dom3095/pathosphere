@@ -359,8 +359,8 @@ def store_rows(
                 """INSERT OR IGNORE INTO gdelt_events
                    (global_event_id, event_id, document_id, sqldate, date_added,
                     event_code, event_root_code, quad_class, goldstein, avg_tone,
-                    num_mentions, num_sources, num_articles)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    num_mentions, num_sources, num_articles, action_geo_country)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     gid,
                     event_id,
@@ -375,6 +375,7 @@ def store_rows(
                     _safe_int(row.get("NumMentions", ""), 0),
                     _safe_int(row.get("NumSources", ""), 0),
                     _safe_int(row.get("NumArticles", ""), 0),
+                    row.get("ActionGeo_CountryCode") or None,
                 ),
             )
 

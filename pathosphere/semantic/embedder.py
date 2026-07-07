@@ -20,6 +20,12 @@ MODEL_NAME = "intfloat/multilingual-e5-small"
 BATCH_SIZE = 32
 MAX_TEXT_CHARS = 1024  # generous; tokenizer will truncate at 512 tokens
 
+# origins whose raw_documents are synthetic (built from structured metadata,
+# not prose) — the NLP pipeline (embed→extract→cluster→graph) would treat
+# their templated titles/bodies as if they were real text. They get their own
+# numeric anomaly path instead (see ingest/gdelt_anomaly.py). CP-016.
+NON_PROSE_ORIGINS = ("gdelt", "comtrade")
+
 
 @dataclass
 class EmbedResult:
@@ -69,8 +75,12 @@ def embed_documents(
 
     result = EmbedResult()
 
+    placeholders = ", ".join("?" for _ in NON_PROSE_ORIGINS)
     rows = conn.execute(
-        "SELECT id, title, body FROM raw_documents WHERE embedded = 0"
+        f"""SELECT id, title, body FROM raw_documents
+            WHERE embedded = 0
+              AND (origin IS NULL OR origin NOT IN ({placeholders}))""",
+        NON_PROSE_ORIGINS,
     ).fetchall()
 
     if not rows:

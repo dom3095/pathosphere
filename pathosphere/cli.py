@@ -220,6 +220,48 @@ def ingest_gdelt(
         click.echo(f"\nFirst errors: {result.errors[:3]}")
 
 
+@ingest.command("gdelt-anomalies")
+@click.option("--baseline-days", default=30, show_default=True,
+              help="Trailing window for the Goldstein anomaly baseline.")
+@click.option("--z-threshold", default=2.0, show_default=True,
+              help="|z-score| above which a country/day Goldstein deviation becomes an event.")
+@click.option("--min-events-per-day", default=3, show_default=True,
+              help="Minimum raw GDELT events in a country/day/quad_class cell to consider it.")
+@click.option("--full", is_flag=True, default=False,
+              help="Sweep the whole stored history instead of just the latest day per series.")
+def ingest_gdelt_anomalies(
+    baseline_days: int, z_threshold: float, min_events_per_day: int, full: bool
+) -> None:
+    """Aggregate gdelt_events (goldstein/tone) and promote anomalies to events.
+
+    Numeric path for GDELT (CP-016): reads the goldstein/avg_tone signal
+    already stored by `pathos ingest gdelt` per country+quad_class+day and
+    flags trailing-baseline deviations directly as events — no NER/embed/
+    cluster involved.
+    """
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.gdelt_anomaly import detect_gdelt_anomalies
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = detect_gdelt_anomalies(
+        conn,
+        baseline_days=baseline_days,
+        z_threshold=z_threshold,
+        min_events_per_day=min_events_per_day,
+        whole_history=full,
+    )
+    conn.close()
+
+    click.echo(
+        f"\nGDELT anomalies result:\n"
+        f"  Series checked: {result.series_checked}\n"
+        f"  Events created: {result.events_created}"
+    )
+
+
 @ingest.command("gdelt-history")
 @click.option(
     "--start", required=True,

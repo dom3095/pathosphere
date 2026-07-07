@@ -167,7 +167,7 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
-## CP-016: causa radice — pipeline NLP prosa applicata a documenti sintetici GDELT (98.8% del corpus)
+## CP-016: causa radice — pipeline NLP prosa applicata a documenti sintetici GDELT (98.8% del corpus) — ✅ RISOLTO 2026-07-07 (branch `refactor/gdelt-numeric-split`)
 
 **Contesto:** `pathos ingest gdelt` costruisce documenti sintetici da metadata strutturato CAMEO, non da prosa: `title = f"GDELT: {Actor1Name} → {Actor2Name} [{EventCode}]"` (`ingest/gdelt.py:284`), body analogo (righe 330-332). Quando GDELT non identifica un attore specifico, `Actor1Name`/`Actor2Name` sono **codici di ruolo generici** (`PRESIDENT`, `POLICE`, `MILITARY`, `SCHOOL`…), non nomi propri. Il DB reale conferma lo squilibrio: `raw_documents` per origin — gdelt 174.286 (98.8%), rss 1.939 (1.1%), comtrade 252 (0.1%). Pipeline semantica (`embed`→`extract`→`cluster`→`graph`) tratta tutte le origin allo stesso modo, come se fossero prosa.
 
@@ -175,11 +175,14 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 **Il segnale numerico reale di GDELT è inutilizzato:** `gdelt_events` ha campi quantitativi (`goldstein`, `avg_tone`, `quad_class`, `num_mentions`, `num_sources`) — verificato via grep: usati SOLO come filtro a monte in ingest (`--max-goldstein`, `cli.py:177`), mai aggregati/analizzati a valle. Il valore vero di GDELT (intensità conflitto/cooperazione nel tempo/spazio) è scritto e mai letto.
 
-**Fix proposto (non applicato in questa sessione — analisi as-is):**
-1. Escludere `origin='gdelt'` (e `'comtrade'`) dalle query candidate in `semantic/embedder.py`, `semantic/extract.py` (NER), `semantic/cluster.py`, `semantic/graph.py` (via `document_entities`) — pipeline NLP ristretta a prosa reale.
-2. Riusare `pathosphere/ingest/anomaly.py::find_anomalies` (stesso modulo già usato da PortWatch/FIRMS/IODA, pattern trailing-baseline no-lookahead) per promuovere direttamente `gdelt_events` anomali (goldstein/tone aggregati per giorno+paese+quad_class) a `events`, saltando NER/embed/cluster. Template di riferimento: `ingest/portwatch.py` righe 175-214 (`_detect_and_promote` — query serie storica, `find_anomalies(...)`, poi INSERT su `events` con dedup by title).
+**Fix applicato (2026-07-07, codice+test, NO cleanup DB reale — scelta esplicita utente, vedi sotto):**
+1. `semantic/embedder.py`: `NON_PROSE_ORIGINS = ("gdelt", "comtrade")` escluso dalla query `embed_documents` (`WHERE embedded=0 AND origin NOT IN (...)`). `extract.py`/`cluster.py` non hanno bisogno di filtro proprio: entrambi richiedono `embedded=1` a monte, che questi doc non raggiungeranno mai — l'esclusione a un solo punto si propaga a tutta la pipeline.
+2. Nuovo modulo `ingest/gdelt_anomaly.py` (+ comando `pathos ingest gdelt-anomalies`, wired in `cycle/orchestrator.py::_phase_ingest` subito dopo `ingest_gdelt`): aggrega `gdelt_events` per giorno+`action_geo_country`+`quad_class` (nuova colonna, migration `ALTER TABLE gdelt_events ADD COLUMN action_geo_country TEXT`, popolata in `gdelt.py::store_rows` da `ActionGeo_CountryCode`), poi riusa `ingest/anomaly.py::find_anomalies` per promuovere deviazioni Goldstein a `events` (`event_type='gdelt_anomaly'`), stesso pattern PortWatch. Dedup by title, no lookahead.
+3. **Bug scoperto in `ingest/anomaly.py::find_anomalies` durante i test**: `min_value=0.0` di default è un floor pensato per metriche non-negative (conteggi transiti PortWatch) — applicato a Goldstein (range -10..+10) scartava silenziosamente ogni valore negativo, cioè esattamente quelli destabilizzanti. Fix locale: `gdelt_anomaly.py` chiama `find_anomalies(..., min_value=-10.0)`. Il default della funzione condivisa non è stato toccato (PortWatch/FIRMS ne dipendono) — se altri detector futuri useranno metriche con range negativo, stesso accorgimento necessario.
 
-**Impatto:** alto — root cause architetturale, non un bug isolato. Branch dedicato consigliato: `fix/gdelt-numeric-split` (o `refactor/gdelt-pipeline`).
+**NON incluso in questo fix (scope deciso con l'utente, sessione 2026-07-07):** cleanup del DB reale. I 174k `raw_documents` origin=gdelt già `embedded=1`/`ner_done=1` da run precedenti, e le entità/eventi/cluster già derivati da loro, restano nel DB così come sono — il fix impedisce solo che il problema *si ripeta* andando avanti. Se si vuole un DB pulito, serve un comando/script di reset separato (non fatto): azzerare `embedded`/`ner_done`/`dedup_checked` su `origin IN ('gdelt','comtrade')`, e ripulire `entities`/`document_entities`/`entity_links`/eventi da cluster derivati da quei doc (distinguerli dagli eventi creati direttamente da `store_rows`, che restano validi).
+
+**Impatto:** alto — root cause architetturale risolta a livello di codice. 6 nuovi test (`tests/test_gdelt_anomaly.py`) + 2 (`test_semantic.py::test_embed_excludes_gdelt_and_comtrade_origin`, `test_gdelt.py::test_store_rows_action_geo_country_stored`), 432 verdi totali.
 
 ---
 

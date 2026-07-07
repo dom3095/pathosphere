@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS gdelt_events (
     avg_tone        REAL,                         -- average article tone
     num_mentions    INTEGER,
     num_sources     INTEGER,
-    num_articles    INTEGER
+    num_articles    INTEGER,
+    action_geo_country TEXT                       -- ISO-2, for per-country anomaly aggregation
 );
 
 CREATE INDEX IF NOT EXISTS idx_gdelt_ev_event ON gdelt_events(event_id);
@@ -451,6 +452,10 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_pred_revisions_pred ON prediction_revisions(prediction_id)",
     "ALTER TABLE theses ADD COLUMN prediction_id INTEGER REFERENCES predictions(id)",
     "CREATE INDEX IF NOT EXISTS idx_pred_macro_area ON predictions(macro_area)",
+    # action_geo_country: ISO-2 of the event location, needed to aggregate
+    # gdelt_events into per-country/day anomaly series (CP-016 numeric path)
+    "ALTER TABLE gdelt_events ADD COLUMN action_geo_country TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_gdelt_ev_country_day ON gdelt_events(action_geo_country, date_added)",
 ]
 
 
