@@ -35,6 +35,46 @@ LABEL_MAP = {
     "MISC": "other",
 }
 
+# Demonyms/adjectival country forms spaCy tags NORP/MISC (→ "other") — they
+# are unambiguous references to a place and read better reclassified as
+# location with the country as canonical_name. Matched case-insensitively,
+# exact full-name match only (avoids swallowing unrelated "other" entities).
+DEMONYM_TO_COUNTRY: dict[str, str] = {
+    "israeli": "Israel", "russian": "Russia", "chinese": "China",
+    "american": "United States", "british": "United Kingdom",
+    "french": "France", "german": "Germany", "italian": "Italy",
+    "spanish": "Spain", "japanese": "Japan", "korean": "South Korea",
+    "indian": "India", "pakistani": "Pakistan", "iranian": "Iran",
+    "iraqi": "Iraq", "syrian": "Syria", "turkish": "Turkey",
+    "ukrainian": "Ukraine", "polish": "Poland", "canadian": "Canada",
+    "mexican": "Mexico", "brazilian": "Brazil", "australian": "Australia",
+    "egyptian": "Egypt", "saudi": "Saudi Arabia", "emirati": "United Arab Emirates",
+    "lebanese": "Lebanon", "jordanian": "Jordan", "afghan": "Afghanistan",
+    "vietnamese": "Vietnam", "taiwanese": "Taiwan", "thai": "Thailand",
+    "indonesian": "Indonesia", "nigerian": "Nigeria", "kenyan": "Kenya",
+    "ethiopian": "Ethiopia", "south african": "South Africa",
+    "colombian": "Colombia", "argentine": "Argentina", "venezuelan": "Venezuela",
+    "dutch": "Netherlands", "swedish": "Sweden", "norwegian": "Norway",
+    "finnish": "Finland", "danish": "Denmark", "swiss": "Switzerland",
+    "greek": "Greece", "portuguese": "Portugal", "irish": "Ireland",
+    "scottish": "United Kingdom", "welsh": "United Kingdom",
+    "yemeni": "Yemen", "qatari": "Qatar", "kuwaiti": "Kuwait",
+    "libyan": "Libya", "algerian": "Algeria", "moroccan": "Morocco",
+    "sudanese": "Sudan", "somali": "Somalia", "north korean": "North Korea",
+}
+
+
+def _classify(name: str, spacy_label: str) -> tuple[str, str | None]:
+    """(entity_type, canonical_name) for a cleaned entity name.
+
+    Falls back to the spaCy label mapping; overrides to location+country for
+    known demonyms regardless of what spaCy tagged them as.
+    """
+    country = DEMONYM_TO_COUNTRY.get(name.lower())
+    if country is not None:
+        return "location", country
+    return LABEL_MAP.get(spacy_label), None
+
 NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_DELAY_S = 1.1  # usage policy: max 1 req/s
 WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
@@ -135,6 +175,7 @@ def _get_or_create_entity(
     cache: dict[tuple[str, str], int],
     name: str,
     entity_type: str,
+    canonical_name: str | None = None,
 ) -> tuple[int, bool]:
     """Return (entity_id, created). Cache avoids per-mention SELECTs."""
     key = (name, entity_type)
@@ -150,8 +191,8 @@ def _get_or_create_entity(
         return row["id"], False
 
     cur = conn.execute(
-        "INSERT INTO entities (name, entity_type) VALUES (?, ?)",
-        (name, entity_type),
+        "INSERT INTO entities (name, entity_type, canonical_name) VALUES (?, ?, ?)",
+        (name, entity_type, canonical_name),
     )
     cache[key] = cur.lastrowid
     return cur.lastrowid, True
@@ -204,19 +245,23 @@ def extract_entities(
 
         doc = model(text)
         counts: Counter[tuple[str, str]] = Counter()
+        canonical_names: dict[tuple[str, str], str | None] = {}
         for ent in doc.ents:
-            entity_type = LABEL_MAP.get(ent.label_)
-            if entity_type is None:
-                continue
             name = _clean_entity(ent.text)
             if name is None:
                 continue
-            counts[(name, entity_type)] += 1
+            entity_type, canonical_name = _classify(name, ent.label_)
+            if entity_type is None:
+                continue
+            key = (name, entity_type)
+            counts[key] += 1
+            canonical_names[key] = canonical_name
 
         with conn:
             for (name, entity_type), n in counts.items():
                 entity_id, created = _get_or_create_entity(
-                    conn, entity_cache, name, entity_type
+                    conn, entity_cache, name, entity_type,
+                    canonical_name=canonical_names[(name, entity_type)],
                 )
                 if created:
                     result.entities_created += 1
@@ -242,6 +287,55 @@ def extract_entities(
         f"+{result.entities_created} entities, {result.mentions_recorded} mentions"
     )
     return result
+
+
+def backfill_demonym_entities(conn: sqlite3.Connection) -> int:
+    """One-time repair: reclassify existing demonym entities (`entity_type`
+    != 'location', e.g. spaCy-tagged 'other') to location+canonical_name.
+
+    If a 'location' entity with the same name already exists (created after
+    this fix), merges document_entities/entity_links into it and drops the
+    duplicate instead of violating the (name, entity_type) unique index.
+    Idempotent — running twice updates 0 rows the second time.
+    """
+    updated = 0
+    with conn:
+        for demonym, country in DEMONYM_TO_COUNTRY.items():
+            row = conn.execute(
+                "SELECT id, name FROM entities WHERE lower(name) = ? AND entity_type != 'location'",
+                (demonym,),
+            ).fetchone()
+            if row is None:
+                continue
+            old_id, name = row["id"], row["name"]
+
+            dup = conn.execute(
+                "SELECT id FROM entities WHERE name = ? AND entity_type = 'location'",
+                (name,),
+            ).fetchone()
+
+            if dup is not None:
+                new_id = dup["id"]
+                conn.execute(
+                    """INSERT INTO document_entities (document_id, entity_id, mentions)
+                       SELECT document_id, ?, mentions FROM document_entities WHERE entity_id = ?
+                       ON CONFLICT(document_id, entity_id)
+                       DO UPDATE SET mentions = mentions + excluded.mentions""",
+                    (new_id, old_id),
+                )
+                conn.execute("DELETE FROM document_entities WHERE entity_id = ?", (old_id,))
+                conn.execute("UPDATE entity_links SET entity_a = ? WHERE entity_a = ?", (new_id, old_id))
+                conn.execute("UPDATE entity_links SET entity_b = ? WHERE entity_b = ?", (new_id, old_id))
+                conn.execute("DELETE FROM entities WHERE id = ?", (old_id,))
+            else:
+                conn.execute(
+                    "UPDATE entities SET entity_type = 'location', canonical_name = ? WHERE id = ?",
+                    (country, old_id),
+                )
+            updated += 1
+
+    logger.info(f"Demonym backfill: {updated} entities reclassified to location")
+    return updated
 
 
 def _nominatim_lookup(

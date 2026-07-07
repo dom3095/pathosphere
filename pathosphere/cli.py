@@ -274,6 +274,57 @@ def ingest_gdelt_anomalies(
     )
 
 
+@ingest.command("gdelt-reset")
+@click.option("--yes", is_flag=True, default=False,
+              help="Actually delete. Without this flag, only previews counts.")
+def ingest_gdelt_reset(yes: bool) -> None:
+    """Wipe everything derived from origin='gdelt' for a clean re-ingest.
+
+    Scope: raw_documents/gdelt_events/events with origin='gdelt', their
+    vec_documents/document_entities, entities left with zero remaining
+    mentions (elsewhere), affected entity_links, and gdelt_file_log (so
+    `gdelt-history` re-downloads instead of skipping). RSS/Comtrade/PortWatch
+    and everything derived from them are untouched. Defaults to a read-only
+    preview — pass --yes to actually delete.
+    """
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.gdelt_reset import preview_gdelt_reset, reset_gdelt
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    if not yes:
+        c = preview_gdelt_reset(conn)
+        conn.close()
+        click.echo(
+            f"\nGDELT reset PREVIEW (nothing deleted — pass --yes to execute):\n"
+            f"  raw_documents:      -{c.raw_documents:,}\n"
+            f"  gdelt_events:       -{c.gdelt_events:,}\n"
+            f"  events:             -{c.events:,}\n"
+            f"  vec_documents:      -{c.vec_documents:,}\n"
+            f"  document_entities:  -{c.document_entities:,}\n"
+            f"  entities (orphaned):-{c.entities_orphaned:,}\n"
+            f"  entity_links:       -{c.entity_links:,}\n"
+            f"  gdelt_file_log:     -{c.file_log:,}"
+        )
+        return
+
+    c = reset_gdelt(conn)
+    conn.close()
+    click.echo(
+        f"\nGDELT reset complete:\n"
+        f"  raw_documents:      -{c.raw_documents:,}\n"
+        f"  gdelt_events:       -{c.gdelt_events:,}\n"
+        f"  events:             -{c.events:,}\n"
+        f"  vec_documents:      -{c.vec_documents:,}\n"
+        f"  document_entities:  -{c.document_entities:,}\n"
+        f"  entities (orphaned):-{c.entities_orphaned:,}\n"
+        f"  entity_links:       -{c.entity_links:,}\n"
+        f"  gdelt_file_log:     -{c.file_log:,}"
+    )
+
+
 @ingest.command("gdelt-history")
 @click.option(
     "--start", required=True,
@@ -793,12 +844,17 @@ def embed(batch_size: int, skip_dedup: bool, skip_cluster: bool) -> None:
               help="Network lookup budget for geocoding and Wikidata (each).")
 @click.option("--skip-geocode", is_flag=True, help="Skip Nominatim geocoding.")
 @click.option("--skip-wikidata", is_flag=True, help="Skip Wikidata entity linking.")
+@click.option("--backfill-demonyms", is_flag=True, default=False,
+              help="Reclassify existing demonym entities (Israeli, Russian...) "
+                   "to location+country before running NER.")
 def extract(
-    limit: int | None, max_lookups: int, skip_geocode: bool, skip_wikidata: bool
+    limit: int | None, max_lookups: int, skip_geocode: bool, skip_wikidata: bool,
+    backfill_demonyms: bool,
 ) -> None:
     """Run NER, geocode events, link entities to Wikidata."""
     from pathosphere.db.schema import get_connection
     from pathosphere.semantic.extract import (
+        backfill_demonym_entities,
         extract_entities,
         geocode_events,
         link_wikidata,
@@ -807,6 +863,10 @@ def extract(
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
+
+    if backfill_demonyms:
+        reclassified = backfill_demonym_entities(conn)
+        click.echo(f"Demonym backfill: {reclassified} entities reclassified to location\n")
 
     ner = extract_entities(conn, limit=limit)
     click.echo(

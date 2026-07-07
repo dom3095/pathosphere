@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from pathosphere.semantic.extract import (
+    backfill_demonym_entities,
     extract_entities,
     geocode_events,
     link_wikidata,
@@ -131,6 +132,95 @@ def test_ner_label_mapping(tmp_db):
         "Iran": "location",
         "Semiconductors": "other",
     }
+
+
+def test_ner_demonym_reclassified_to_location(tmp_db):
+    """spaCy tags 'Israeli' MISC (other) — demonym override reclassifies it
+    to location with the country as canonical_name."""
+    _insert_doc(tmp_db, url="https://x.com/1", title="x", body="x")
+    ner = MockNer({"x": [("Israeli", "MISC"), ("Russian", "MISC")]})
+
+    extract_entities(tmp_db, model=ner)
+
+    rows = {
+        r["name"]: (r["entity_type"], r["canonical_name"])
+        for r in tmp_db.execute("SELECT name, entity_type, canonical_name FROM entities")
+    }
+    assert rows == {
+        "Israeli": ("location", "Israel"),
+        "Russian": ("location", "Russia"),
+    }
+
+
+def test_backfill_demonym_entities_reclassifies_existing(tmp_db):
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type) VALUES ('Israeli', 'other')"
+    )
+    tmp_db.commit()
+
+    updated = backfill_demonym_entities(tmp_db)
+
+    assert updated == 1
+    row = tmp_db.execute(
+        "SELECT entity_type, canonical_name FROM entities WHERE name = 'Israeli'"
+    ).fetchone()
+    assert row["entity_type"] == "location"
+    assert row["canonical_name"] == "Israel"
+
+
+def test_backfill_demonym_entities_is_idempotent(tmp_db):
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type) VALUES ('Russian', 'other')"
+    )
+    tmp_db.commit()
+
+    first = backfill_demonym_entities(tmp_db)
+    second = backfill_demonym_entities(tmp_db)
+
+    assert first == 1
+    assert second == 0
+
+
+def test_backfill_demonym_entities_merges_into_existing_location(tmp_db):
+    """If NER already created a fresh 'Israeli'/location (post-fix) alongside
+    the legacy 'Israeli'/other, merge document_entities into the survivor."""
+    doc_a = _insert_doc(tmp_db, url="https://x.com/1")
+    doc_b = _insert_doc(tmp_db, url="https://x.com/2")
+
+    tmp_db.execute("INSERT INTO entities (name, entity_type) VALUES ('Israeli', 'other')")
+    old_id = tmp_db.execute(
+        "SELECT id FROM entities WHERE name='Israeli' AND entity_type='other'"
+    ).fetchone()["id"]
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type, canonical_name) VALUES ('Israeli', 'location', 'Israel')"
+    )
+    new_id = tmp_db.execute(
+        "SELECT id FROM entities WHERE name='Israeli' AND entity_type='location'"
+    ).fetchone()["id"]
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 3)",
+        (doc_a, old_id),
+    )
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 2)",
+        (doc_b, new_id),
+    )
+    tmp_db.commit()
+
+    updated = backfill_demonym_entities(tmp_db)
+
+    assert updated == 1
+    assert tmp_db.execute(
+        "SELECT COUNT(*) FROM entities WHERE name='Israeli'"
+    ).fetchone()[0] == 1
+    mentions = {
+        r["document_id"]: r["mentions"]
+        for r in tmp_db.execute(
+            "SELECT document_id, mentions FROM document_entities WHERE entity_id = ?",
+            (new_id,),
+        )
+    }
+    assert mentions == {doc_a: 3, doc_b: 2}
 
 
 def test_ner_skips_duplicates_and_unembedded(tmp_db):
