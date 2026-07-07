@@ -12,12 +12,12 @@
 ## Fase successiva: 4 — Dashboard Streamlit
 
 ## Ultima azione completata
-Fix Wikidata linking (2026-07-07, branch fix/wikidata-linking, pushato, PR da creare — gh non autenticato): rate limit rispettato, abort su 429, stoplist generici + strip QID legacy. 423 test verdi. Avviato studio qualità embed/extract/graph su branch docs/quality-study-notebooks — solo ricognizione, notebook non ancora creati. Dettagli e vincoli utente in HANDOFF.md (sezione PROSSIMA AZIONE).
+Fix Wikidata linking + fix IODA mergiati in locale su main (2026-07-07, gh non autenticato → niente PR GitHub): rate limit rispettato, abort su 429, stoplist generici + strip QID legacy. 423 test verdi. Merge riportato anche su branch docs/quality-study-notebooks. Avviato studio qualità embed/extract/graph — solo ricognizione, notebook non ancora creati. Dettagli e vincoli utente in HANDOFF.md (sezione PROSSIMA AZIONE).
 
-## Prossima azione: notebook studio qualità (HANDOFF.md § PROSSIMA AZIONE) → PR fix Wikidata → Fase 4 Dashboard
+## Prossima azione: utente rilancia `pathos extract` per ripulire QID legacy/entità generiche col fix mergiato → poi notebook studio qualità (HANDOFF.md § PROSSIMA AZIONE) → Fase 4 Dashboard
 
 ### Note tecniche
-- Test suite: `uv run pytest tests/ -q` (419 verdi)
+- Test suite: `uv run pytest tests/ -q` (423 verdi)
 - **Dopo pull con modifiche schema: `uv run pathos db init`** (CP-010)
 - Scoring: brier su `outcome_eventual`; `outcome` legacy specchia `outcome_on_time`
 - `time_horizon_class`: breve ≤30gg, medio ≤180gg, lungo — derivato a creazione (UTC)

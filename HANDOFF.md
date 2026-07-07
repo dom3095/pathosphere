@@ -22,7 +22,7 @@
 - Jupyter NON in dipendenze → eseguire con `uv run --with jupyter,nbconvert,ipykernel,pandas jupyter nbconvert --to notebook --execute --inplace <nb>`
 
 **Piste di criticità già emerse (da verificare nei notebook con esempi):**
-- Entità generiche ALL CAPS (`CRIMINAL`, `MILITARY`…) dominano le classifiche mentions → inquinano graph (co-occorrenza con tutto) e budget Wikidata (fix su branch separato, vedi sotto)
+- Entità generiche ALL CAPS (`CRIMINAL`, `MILITARY`…) dominano le classifiche mentions → inquinano graph (co-occorrenza con tutto) e budget Wikidata. Fix stoplist mergiato (vedi sotto) blocca nuovi lookup e azzera QID legacy sbagliati, ma NON rimuove le righe entità generiche già esistenti — resta criticità da documentare nei notebook
 - 731 eventi non geocodabili (miss cachati) — quota alta su ~4.9k
 - `min_cooccurrences=1` + entità generiche → rischio hairball nel grafo; strength satura a 10 co-occorrenze
 - Eventi da sensori fisici (USGS/FIRMS/PortWatch/IODA) entrano in `events` direttamente senza clustering — mischiati ai cluster articoli
@@ -32,15 +32,20 @@
 
 ---
 
-## Fix Wikidata linking (2026-07-07) — branch `fix/wikidata-linking`, pushato, PR DA CREARE
+## Fix Wikidata linking (2026-07-07) — branch `fix/wikidata-linking`, MERGIATO in locale su main (2026-07-07)
 
-Run reale `pathos extract` mostrava 40×429 su 50 lookups Wikidata. Due cause fixate in `pathosphere/semantic/extract.py` (dettagli nel HANDOFF.md di quel branch):
-1. `continue` su exception saltava sleep → 429 auto-amplificato; delay 0.2→1.0s, rispettato sempre; su 429 abort run pulito (`rate_limited=True`), entità restanti ritentate a ciclo successivo
-2. Budget bruciato su entità generiche → `GENERIC_ENTITY_STOPLIST` (~112 nomi), ritirate senza lookup + strip QID legacy errati (`PRESIDENT`→Q30461, `SCHOOL`→Q3914 trovati in DB reale)
+Run `pathos extract` produceva 40 errori 429 su 50 lookups Wikidata (10 QIDs). Due cause, fixate in `pathosphere/semantic/extract.py` (`link_wikidata`):
 
-423 test verdi. Run reale post-fix: PAKISTAN→Q843, UKRAINE→Q212, RUSSIA→Q159; 429 residuo dopo 10 lookups (probabile penalità IP dal run storm mattutino — se persiste, alzare delay o onorare `Retry-After`).
+1. **Sleep saltato su errore**: `continue` su exception bypassava `time.sleep(delay_s)` → dopo primo 429 richieste a raffica senza pausa (~8 req/s), 429 auto-amplificato. Ora delay a inizio iterazione, rispettato sempre. `WIKIDATA_DELAY_S` 0.2→1.0 (limite anonimo Wikimedia ~1 req/s).
+2. **Budget bruciato su entità spazzatura**: top-mentioned erano nomi generici ALL CAPS (`CRIMINAL`, `MILITARY`, `MALE`…) → link inutili o sbagliati (`MALE`→Malé). Nuova `GENERIC_ENTITY_STOPLIST` (~110 nomi comuni/ruoli/demonimi, match case-insensitive): marcati `wikidata_checked=1` senza lookup a inizio run, contati in `WikidataResult.stoplisted`. La stessa UPDATE azzera QID sbagliati assegnati pre-fix (es. `PRESIDENT`→Q30461 trovato nel DB reale).
 
-**BLOCCO: `gh` non autenticato** → PR non creata. Fare `gh auth login`, poi PR da `fix/wikidata-linking` (titolo/body pronti nei commit). NB: quel branch aggiorna anche HANDOFF/LOOP_STATE/CRITICAL_POINTS (CP-012) — al merge riconciliare con questo file.
+In più: su 429 il run si interrompe subito (`WikidataResult.rate_limited=True`), entità restanti restano `wikidata_checked=0` → ritentate ciclo successivo. Errori non-429 continuano come prima. Output CLI e orchestrator mostrano stoplisted + flag rate limited. +4 test (stoplist, strip QID legacy, abort su 429, errore non-429 continua). 423 test verdi.
+
+Smoke test reale (subagent, DB di produzione): 146 generici ritirati, 3 lookups a ~1 req/s, ISRAEL→Q801, US→Q30, `rate_limited=False`.
+
+Run `pathos extract` completo post-fix: 9 QIDs validi (PAKISTAN→Q843, UKRAINE→Q212, RUSSIA→Q159…), poi 429 dopo 10 lookups anche a 1 req/s → abort pulito (1 warning vs 40 pre-fix), 40 entità rimandate. Probabile penalità residua IP dal run storm mattutino; se 429 persiste a IP pulito nei cicli successivi, alzare `WIKIDATA_DELAY_S` o onorare `Retry-After`. `SCHOOL`→Q3914 sfuggito → aggiunto a stoplist (QID verrà azzerato automaticamente al prossimo run dallo strip legacy).
+
+**`gh` non autenticato → merge fatto in locale** (main + fix/ioda-endpoint-chunking + fix/wikidata-linking), niente PR GitHub. Utente deve rilanciare `uv run pathos extract` per ripulire QID legacy ed entità generiche esistenti nel DB reale prima che i notebook studio-qualità le documentino come "attuali" (vedi vincolo network-call sotto).
 
 ---
 
@@ -58,8 +63,8 @@ In più: risposta non-JSON ora → `RuntimeError` pulito in `IODAResult.errors` 
 
 ## Stato al momento del handoff
 
-**Branch:** main (predictions v2 mergiato)
-**Test:** 419 verdi (80 in test_predictions.py)
+**Branch:** fix/wikidata-linking (da pushare + PR)
+**Test:** 423 verdi (22 in test_extract.py)
 **Docs:** complete e allineate (wiki §8.6, schema.md, roadmap.md, overview_per_amico.md)
 
 ---
