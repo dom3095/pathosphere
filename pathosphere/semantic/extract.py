@@ -59,6 +59,7 @@ GENERIC_ENTITY_STOPLIST = frozenset({
     "parliament", "party", "patient", "police", "politician", "president",
     "prime minister", "prisoner", "professor", "prosecutor", "protester",
     "protesters", "rebel", "refugee", "researcher", "resident", "residents",
+    "school", "scientist",
     "secretary", "security", "senate", "senator", "soldier", "spokesman",
     "spokesperson", "student", "supreme", "teacher", "terrorist", "tourist",
     "union", "university", "victim", "villager", "voter", "voters", "witness",
