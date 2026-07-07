@@ -1,34 +1,52 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-07, sessione fix Wikidata + avvio studio qualità (branch docs/quality-study-notebooks)*
+*Aggiornato: 2026-07-07, sessione studio qualità + diagnosi causa radice (branch docs/quality-study-notebooks)*
 
-## ⏭ PROSSIMA AZIONE — Studio qualità output embed/extract/graph (IN CORSO, notebook non ancora creati)
+## ⏭ PROSSIMA AZIONE — Split pipeline GDELT-numerico/prosa-NLP (branch nuovo da aprire) → poi Fase 4 Dashboard
 
-**Richiesta utente**: valutare la bontà di quanto prodotto da `pathos embed`, `pathos extract`, `pathos graph` sul DB reale. Deliverable: **notebook di studio** in `notebooks/`, con esempi concreti a supporto delle interpretazioni, atteggiamento agnostico, caccia alle criticità.
+**Per il collega che riprende**: questa sessione ha prodotto 3 notebook di studio qualità (as-is, nessun fix) e una diagnosi di causa radice discussa con l'utente. La diagnosi è il lavoro prioritario da trasformare in codice — leggi tutto prima di aprire la Fase 4 Dashboard, altrimenti costruisci sopra dati inaffidabili.
 
-**Vincoli espliciti dell'utente** (non negoziabili):
-1. **Analisi as-is**: non creare nulla che non esista già — niente fix, niente feature. Obiettivo: evidenziare apporti mancanti / criticità di ciò che c'è.
-2. **Tutto dentro i notebook**: utente ha rifiutato query sqlite via terminale. Le esplorazioni vanno nei notebook stessi, eseguiti con output visibili.
+### Diagnosi — perché la qualità semantica sembra debole
 
-**Stato**: branch `docs/quality-study-notebooks` creato (da main). Solo ricognizione fatta; **zero notebook scritti**. Nessuna modifica a codice.
+L'utente ha notato: entità poche/generiche, tassonomia troppo piatta, grafo senza componenti sensate, cluster che non sembrano separare storie diverse. **Causa unica, confermata coi dati reali** (non 4 problemi scollegati):
 
-**Fatti utili già raccolti (risparmiano ricognizione):**
-- DB reale: `data/db/pathosphere.db` (NON `data/pathosphere.db`)
-- ~130k `raw_documents`, ~11.5k+ entities, ~4.9k events, 311k+ mentions (numeri da run extract 2026-07-07)
-- `vec_documents` è tabella virtuale sqlite-vec → connessione via `pathosphere.db.schema.get_connection(path)` (carica estensione), path assoluto (cwd notebook ≠ repo root)
-- Cluster (`semantic/cluster.py`): union-find greedy, similarity 0.85 (commento in codice: 0.75 collassava tutto in mega-catena), finestra 72h su `COALESCE(published_at, fetched_at)`, KNN 20, `max_cluster_size=30`
+`pathos ingest gdelt` costruisce documenti sintetici da metadata strutturato CAMEO, non da prosa — `title = f"GDELT: {Actor1Name} → {Actor2Name} [{EventCode}]"` (`ingest/gdelt.py:284`). Quando GDELT non identifica un attore specifico, `Actor1Name`/`Actor2Name` sono **codici di ruolo generici** (`PRESIDENT`, `POLICE`, `MILITARY`...), non nomi propri. Composizione reale del corpus (`raw_documents` per origin): **gdelt 174.286 (98.8%), rss 1.939 (1.1%), comtrade 252 (0.1%)**. La pipeline NLP (`embed`→`extract`→`cluster`→`graph`) tratta tutte le origin allo stesso modo, come se fossero prosa.
+
+Questo spiega, in un colpo solo:
+- Entità dominate da ruoli generici e dalla parola letterale `GDELT` stessa (leak del prefisso titolo nel NER — CP-014, 128.082 documenti coinvolti, 73.5% dei doc gdelt)
+- Tassonomia piatta: `LABEL_MAP` (`extract.py`) mappa solo su person/company/location/other; `country`/`commodity`/`infrastructure` previsti dallo schema DB ma mai implementati — nessuna logica dedicata li popola
+- Grafo hairball: 94.8% dei nodi collegati sta in un'unica componente connessa. Non solo colpa di `GDELT` come nodo — ogni evento GDELT porta 2-3 entità generiche che co-occorrono ovunque (`min_cooccurrences=1`, nessun decadimento)
+- Cluster senza vera separazione narrativa: i cluster più grandi raggruppano ricorrenze di ruoli generici (es. evento con 155 doc, titoli tutti `GDELT: CREDIT UNION → `, `GDELT: JUDGE → `...), non storie reali. Non abbiamo verificato visivamente (UMAP/PCA scatterplot dell'embedding space) — da fare se serve conferma ulteriore.
+
+**Il valore reale di GDELT è inutilizzato**: `gdelt_events` ha campi numerici (`goldstein`, `avg_tone`, `quad_class`, `num_mentions`, `num_sources`) — grep conferma: usati SOLO come filtro a monte in ingest (`--max-goldstein`), mai aggregati/analizzati a valle. Il segnale quantitativo di intensità conflitto/cooperazione (la vera ragione per cui un progetto OSINT usa GDELT) è scritto e mai letto.
+
+Dettagli completi, numeri, query e riferimenti: **CP-011...CP-017 in `CRITICAL_POINTS.md`** (CP-016 = causa radice, CP-017 = gap copertura prosa).
+
+### Fix proposto (non applicato in questa sessione — solo diagnosi + notebook as-is)
+
+**1. Escludere GDELT/Comtrade dalla pipeline NLP.** WHERE clause su `origin` nelle query candidate di `semantic/embedder.py`, `semantic/extract.py` (NER), `semantic/cluster.py`, `semantic/graph.py` — pipeline NLP ristretta a prosa reale (`origin='rss'` e simili).
+
+**2. Dare a GDELT un percorso numerico proprio**, riusando `pathosphere/ingest/anomaly.py::find_anomalies` (trailing-baseline, no-lookahead — stesso modulo già usato da PortWatch/FIRMS/IODA). Template concreto: `ingest/portwatch.py:175-214` (`_detect_and_promote`) — query serie storica ordinata per data, `find_anomalies(points, value_key=..., baseline_days=..., z_threshold=..., direction="both")`, poi INSERT su `events` con dedup by title. Applicare lo stesso schema a `gdelt_events` aggregato per giorno+paese+quad_class su goldstein/avg_tone, promuovendo anomalie direttamente a `events` (origin='gdelt') **senza** passare da NER/embed/cluster.
+
+**3. Copertura prosa (RSS) — il collo di bottiglia è la cadenza, non il catalogo.** 48 feed già configurati (`ingest/sources_seed.py`), copertura quasi completa della wishlist CLAUDE.md. `pathos ingest rss` è già nel ciclo notturno (`cycle/orchestrator.py:120`) ma finora lanciato solo a mano — 1.939 doc RSS in un mese riflette esecuzioni sporadiche, non scarsità di fonti (ogni run cattura solo le ultime 48h; il volume si accumula solo con run regolari). Priorità: **schedulare `pathos cycle run`** (cron/launchd). Secondario: ribilanciare blocchi deboli (latam=1, india=3 su 48 totali) con candidati verificati — MercoPress/teleSUR English/Buenos Aires Times (latam), The Wire (india). Verificare vivacità feed prima di aggiungere (precedente: Xinhua abbandonato, feed RSS congelati al 2018).
+
+**Branch consigliato**: `fix/gdelt-numeric-split` (o `refactor/gdelt-pipeline`) — non ancora creato. Root cause architetturale, non un bug isolato: prevedere più di una sessione.
+
+### Notebook di studio qualità (deliverable di questa sessione)
+
+3 notebook in `notebooks/`, eseguiti con output reali sul DB di produzione (`data/db/pathosphere.db`, 176.477 `raw_documents`). Analisi **as-is**, nessun fix di codice durante lo studio (i fix Wikidata/IODA sono stati mergiati PRIMA come prerequisito dati puliti — vedi sezione sotto). Per rilanciarli: `uv run --with jupyter,nbconvert,ipykernel,pandas,numpy,matplotlib jupyter nbconvert --to notebook --execute --inplace <nb>`.
+
+- `study_01_embed.ipynb` — copertura embedding/dedup/cluster, coerenza titoli, sensori fisici mescolati. Nota: copertura clustering 99.6% (ipotesi iniziale di bassa copertura per finestra 72h **smentita** dai dati — il backfill ha girato incrementalmente più volte). 77.4% dei cluster è singleton.
+- `study_02_extract.ipynb` — entità/NER, copertura Wikidata QID (0.3% delle 11.467 entità ha un QID — collo di bottiglia rate limit, non risolvibile in una sessione), geocoding, CP-014/CP-015 scoperti qui.
+- `study_03_graph.ipynb` — grado nodi, hairball (94.8% componente gigante), caso d'uso "se chiude Hormuz chi soffre?" (entità presente nel grafo, ma affogata nel rumore generico).
+
+**Fatti utili tecnici (per chi rilancia i notebook o riprende il lavoro):**
+- DB reale: `data/db/pathosphere.db` (NON `data/pathosphere.db` — file stray in root, non toccato)
+- `vec_documents` è tabella virtuale sqlite-vec → connessione via `pathosphere.db.schema.get_connection(path)` (carica estensione), path assoluto (cwd notebook ≠ repo root, i notebook gestiscono questo con `REPO_ROOT` auto-detect)
+- Cluster (`semantic/cluster.py`): union-find greedy, similarity 0.85, finestra 72h su `COALESCE(published_at, fetched_at)` calcolata al momento del run (non relativa ai dati), KNN 20, `max_cluster_size=30`
 - Graph (`semantic/graph.py::build_entity_links`): SOLO co-occorrenza entità in eventi condivisi, `relation_type='co-occurs'`, `strength=min(1, cooc/10)`, `min_cooccurrences=1`, DELETE+rebuild a ogni run. Le relazioni tipate dello schema (`depends_on`, `supplies`…) NON sono mai popolate
-- Dedup: soglia 0.92 (`semantic/dedup.py`), flag `is_duplicate`/`duplicate_of`/`dedup_checked` su raw_documents
-- Jupyter NON in dipendenze → eseguire con `uv run --with jupyter,nbconvert,ipykernel,pandas jupyter nbconvert --to notebook --execute --inplace <nb>`
-
-**Piste di criticità già emerse (da verificare nei notebook con esempi):**
-- Entità generiche ALL CAPS (`CRIMINAL`, `MILITARY`…) dominano le classifiche mentions → inquinano graph (co-occorrenza con tutto) e budget Wikidata. Fix stoplist mergiato (vedi sotto) blocca nuovi lookup e azzera QID legacy sbagliati, ma NON rimuove le righe entità generiche già esistenti — resta criticità da documentare nei notebook
-- 731 eventi non geocodabili (miss cachati) — quota alta su ~4.9k
-- `min_cooccurrences=1` + entità generiche → rischio hairball nel grafo; strength satura a 10 co-occorrenze
-- Eventi da sensori fisici (USGS/FIRMS/PortWatch/IODA) entrano in `events` direttamente senza clustering — mischiati ai cluster articoli
-- Qualità NER `xx_ent_wiki_sm` su testo GDELT ALL CAPS mai misurata
-
-**Struttura proposta** (3 notebook, da validare col collega): `notebooks/study_01_embed.ipynb` (coverage embedding, qualità dedup con coppie esempio, distribuzione dimensioni cluster + coerenza titoli), `study_02_extract.ipynb` (distribuzione tipi entità, rapporto segnale/rumore, copertura QID e link errati, copertura geocoding), `study_03_graph.ipynb` (grado nodi, hairball check, top archi sensati vs spazzatura, test caso d'uso "se chiude Hormuz chi soffre?").
+- Jupyter NON in dipendenze del progetto → sempre `uv run --with jupyter,nbconvert,ipykernel,pandas,numpy,matplotlib jupyter nbconvert ...`
+- Geocode cache in questo run: 28 query totali cachate, 4 mai risolte (miss permanenti, nessuna scadenza) — il numero "731 eventi non geocodabili" di handoff precedenti si riferiva a `events.location_name`/`lat`, non alla cache raw; da riconciliare se serve un numero preciso aggiornato
 
 ---
 

@@ -142,3 +142,56 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 **Workaround:** controllare log `Wikidata linking` a inizio run; se compaiono nomi generici, aggiungerli alla stoplist. Entità già linkate male: azzerare `wikidata_qid`/`canonical_name` a mano nel DB.
 
 **Impatto:** basso — 50 lookups/notte, qualche lookup sprecato al peggio. Fix futuro: euristica strutturale (es. skip mono-parola ALL CAPS con match in wordlist inglese) invece di lista enumerata.
+
+---
+
+## CP-014: entità "GDELT" — leak del prefisso titolo sintetico nel NER
+
+**Contesto:** i titoli sintetici GDELT hanno formato `"GDELT: ACTOR → ACTOR2"` (`ingest/gdelt.py`). `_build_text` (`semantic/extract.py`) concatena title+body senza rimuovere il prefisso → il NER tagga la parola letterale `GDELT` come entità ORG/company su quasi ogni documento origin=gdelt. Scoperto in `notebooks/study_02_extract.ipynb`: **entità col maggior numero di mention in assoluto** — 128.082 documenti (73.5% dei doc origin=gdelt).
+
+**Impatto sul grafo:** in `notebooks/study_03_graph.ipynb`, il nodo `GDELT` ha grado 3.962/89.838 archi (4.4%) — hub artificiale, causa diretta più probabile della componente connessa gigante osservata (9.666/10.192 nodi, 94.8%). Inquina anche budget Wikidata (voce già stoplistata come "generica" solo se aggiunta a mano — non matcha `GENERIC_ENTITY_STOPLIST` attuale).
+
+**Workaround:** nessuno applicato (analisi as-is, nessun fix in questa sessione). Aggiungere `GDELT` a `GENERIC_ENTITY_STOPLIST` è un cerotto sul sintomo Wikidata, non risolve l'inquinamento di `document_entities`/`entity_links`.
+
+**Impatto:** alto — singolo artefatto che spiega la maggior parte dell'hairball nel grafo entità. Fix futuro: strip del prefisso `"GDELT: "` in `_build_text` prima del NER, oppure NER solo sul body per documenti origin=gdelt.
+
+---
+
+## CP-015: frammenti HTML taggati come entità — body non ripulito da markup prima del NER
+
+**Contesto:** scoperto in `notebooks/study_02_extract.ipynb`: entità con `<`/`>` nel nome (es. `span><strong`, `said.</p`) presenti nel DB, generate dal NER su body RSS non sanitizzato. Compaiono anche tra i nodi ad alto grado nel grafo (`notebooks/study_03_graph.ipynb`).
+
+**Workaround:** nessuno applicato (analisi as-is). Filtro manuale possibile lato query (`WHERE name NOT LIKE '%<%'`) ma non risolve alla fonte.
+
+**Impatto:** medio — rumore silenzioso in `entities`/`entity_links`, non blocca nulla ma inquina classifiche e grafo. Fix futuro: strip HTML/markup dal body (es. con `bleach` o regex) prima di `_build_text` in `semantic/extract.py`, idealmente già a monte in ingest RSS.
+
+---
+
+## CP-016: causa radice — pipeline NLP prosa applicata a documenti sintetici GDELT (98.8% del corpus)
+
+**Contesto:** `pathos ingest gdelt` costruisce documenti sintetici da metadata strutturato CAMEO, non da prosa: `title = f"GDELT: {Actor1Name} → {Actor2Name} [{EventCode}]"` (`ingest/gdelt.py:284`), body analogo (righe 330-332). Quando GDELT non identifica un attore specifico, `Actor1Name`/`Actor2Name` sono **codici di ruolo generici** (`PRESIDENT`, `POLICE`, `MILITARY`, `SCHOOL`…), non nomi propri. Il DB reale conferma lo squilibrio: `raw_documents` per origin — gdelt 174.286 (98.8%), rss 1.939 (1.1%), comtrade 252 (0.1%). Pipeline semantica (`embed`→`extract`→`cluster`→`graph`) tratta tutte le origin allo stesso modo, come se fossero prosa.
+
+**Diagnosi (sessione 2026-07-07, studio qualità in `notebooks/`):** questa è la causa unica che spiega CP-014, CP-015, l'hairball nel grafo (94.8% nodi in 1 componente), la tassonomia entità povera (solo person/company/location/other popolati, mai country/commodity/infrastructure nonostante lo schema li preveda), e cluster di eventi che raggruppano ricorrenze di ruoli generici (es. "Evento 1191", 155 doc, titoli tutti tipo `GDELT: CREDIT UNION → ` `GDELT: JUDGE → `) invece di storie reali. **Non sono bug indipendenti**: sono sintomi dello stesso disallineamento architetturale.
+
+**Il segnale numerico reale di GDELT è inutilizzato:** `gdelt_events` ha campi quantitativi (`goldstein`, `avg_tone`, `quad_class`, `num_mentions`, `num_sources`) — verificato via grep: usati SOLO come filtro a monte in ingest (`--max-goldstein`, `cli.py:177`), mai aggregati/analizzati a valle. Il valore vero di GDELT (intensità conflitto/cooperazione nel tempo/spazio) è scritto e mai letto.
+
+**Fix proposto (non applicato in questa sessione — analisi as-is):**
+1. Escludere `origin='gdelt'` (e `'comtrade'`) dalle query candidate in `semantic/embedder.py`, `semantic/extract.py` (NER), `semantic/cluster.py`, `semantic/graph.py` (via `document_entities`) — pipeline NLP ristretta a prosa reale.
+2. Riusare `pathosphere/ingest/anomaly.py::find_anomalies` (stesso modulo già usato da PortWatch/FIRMS/IODA, pattern trailing-baseline no-lookahead) per promuovere direttamente `gdelt_events` anomali (goldstein/tone aggregati per giorno+paese+quad_class) a `events`, saltando NER/embed/cluster. Template di riferimento: `ingest/portwatch.py` righe 175-214 (`_detect_and_promote` — query serie storica, `find_anomalies(...)`, poi INSERT su `events` con dedup by title).
+
+**Impatto:** alto — root cause architetturale, non un bug isolato. Branch dedicato consigliato: `fix/gdelt-numeric-split` (o `refactor/gdelt-pipeline`).
+
+---
+
+## CP-017: copertura fonti prosa (RSS) — collo di bottiglia è la cadenza, non il catalogo
+
+**Contesto:** `pathosphere/ingest/sources_seed.py` ha già 48 feed RSS attivi, copertura quasi completa della wishlist CLAUDE.md (Global Times, TASS, Al Jazeera, Press TV, Anadolu, The Hindu, Folha presenti; Xinhua deliberatamente escluso — commento nel codice: feed RSS congelati al 2018, verificato e abbandonato). Distribuzione per blocco sbilanciata: western 19/48 (40%), china 5, russia 4, arab 4, india 3, africa 7, latam 1, other 5.
+
+`pathos ingest rss` (`max_age_days=2`, no backfill storico per i feed) è già nel ciclo notturno (`cycle/orchestrator.py:120`), ma il ciclo è stato finora lanciato solo a mano, non schedulato. Risultato: 1.939 documenti RSS totali in circa un mese — non per scarsità di fonti ma per esecuzioni sporadiche (ogni run cattura solo le ultime 48h; il volume si accumula solo con run regolari e ripetuti nel tempo).
+
+**Candidati per riequilibrare i blocchi deboli (verificare vivacità feed prima di aggiungere, vedi precedente Xinhua):**
+- LatAm (oggi solo Folha): MercoPress, teleSUR English, Buenos Aires Times
+- India (3, tutti mainstream): The Wire (indipendente)
+- Africa (7, già ok): Mail & Guardian (SA), The East African
+
+**Impatto:** medio — priorità 1 è schedulare `pathos cycle run` (cron/launchd) per accumulo regolare; ampliare/ribilanciare il catalogo è secondario e va ripetuto nel tempo (i feed RSS gratuiti muoiono senza preavviso).

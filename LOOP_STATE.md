@@ -12,9 +12,9 @@
 ## Fase successiva: 4 — Dashboard Streamlit
 
 ## Ultima azione completata
-Fix Wikidata linking + fix IODA mergiati in locale su main (2026-07-07, gh non autenticato → niente PR GitHub): rate limit rispettato, abort su 429, stoplist generici + strip QID legacy. 423 test verdi. Merge riportato anche su branch docs/quality-study-notebooks. Avviato studio qualità embed/extract/graph — solo ricognizione, notebook non ancora creati. Dettagli e vincoli utente in HANDOFF.md (sezione PROSSIMA AZIONE).
+Fix Wikidata linking + fix IODA mergiati in locale su main (gh non autenticato → niente PR GitHub), riportati su branch docs/quality-study-notebooks. Creati ed eseguiti 3 notebook studio qualità (`notebooks/study_01_embed.ipynb`, `study_02_extract.ipynb`, `study_03_graph.ipynb`) sul DB reale (176k raw_documents), zero errori. Discussione con utente → diagnosi causa radice: 98.8% del corpus (`origin=gdelt`) sono documenti sintetici da metadata CAMEO (non prosa), spinti nella stessa pipeline NLP della prosa reale (1.1% del corpus) → spiega entità povere/generiche, tassonomia piatta, grafo hairball (94.8% in 1 componente), cluster senza separazione narrativa. CP-014...CP-017 aggiunti a CRITICAL_POINTS.md, CP-016 = causa radice con fix proposto, CP-017 = gap cadenza ingest RSS (non gap catalogo — 48 feed già configurati). Handoff completo scritto per il collega in HANDOFF.md.
 
-## Prossima azione: utente rilancia `pathos extract` per ripulire QID legacy/entità generiche col fix mergiato → poi notebook studio qualità (HANDOFF.md § PROSSIMA AZIONE) → Fase 4 Dashboard
+## Prossima azione: colleague apre branch `fix/gdelt-numeric-split` (o simile) — split pipeline NLP (solo prosa) vs percorso numerico GDELT (riuso `ingest/anomaly.py`, template `ingest/portwatch.py:175-214`) — poi schedulare `pathos cycle run` per volume RSS, poi Fase 4 Dashboard Streamlit
 
 ### Note tecniche
 - Test suite: `uv run pytest tests/ -q` (423 verdi)
