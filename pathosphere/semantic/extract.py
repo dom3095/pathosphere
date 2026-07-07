@@ -19,6 +19,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+import bleach
 import httpx
 from loguru import logger
 
@@ -157,7 +158,12 @@ def _build_text(title: str | None, body: str | None) -> str | None:
     if title:
         parts.append(title.strip())
     if body:
-        parts.append(body.strip())
+        # Strip HTML tags from body before NER (common in RSS feeds).
+        # bleach.clean with tags=[] removes all markup. Collapse internal
+        # whitespace (including newlines from block tags) to single spaces.
+        clean_body = bleach.clean(body, tags=[], strip=True)
+        clean_body = " ".join(clean_body.split())
+        parts.append(clean_body)
     if not parts:
         return None
     return " ".join(parts)[:MAX_NER_CHARS]

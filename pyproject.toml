@@ -21,6 +21,7 @@ dependencies = [
     "spacy>=3.7",
     "xx-ent-wiki-sm",
     "yfinance>=1.4.1",
+    "bleach>=6.0",
 ]
 
 [project.scripts]

@@ -608,3 +608,32 @@ def test_wikidata_marks_duplicate_as_alias(tmp_db):
     ).fetchone()
     assert row["canonical_entity_id"] == trump1
     assert row["wikidata_checked"] == 1
+
+
+def test_extract_strips_html_from_body(tmp_db):
+    """NER input should have HTML tags stripped before processing."""
+    doc_id = _insert_doc(
+        tmp_db,
+        url="https://example.com/article",
+        title="Article Title",
+        body="<p>Reuters reported <strong>bold</strong> text.</p><br/><p>Second paragraph.</p>",
+        embedded=1,
+    )
+
+    model = MockNer(
+        {
+            "Article Title Reuters reported bold text. Second paragraph.": [
+                ("Reuters", "ORG"),
+                ("bold text", "MISC"),
+            ],
+        }
+    )
+
+    result = extract_entities(tmp_db, model=model)
+
+    assert result.docs_processed == 1
+    assert result.entities_created == 2  # Reuters + "bold text"
+    rows = tmp_db.execute("SELECT name FROM entities ORDER BY name").fetchall()
+    assert len(rows) == 2
+    assert rows[0]["name"] == "Reuters"
+    assert rows[1]["name"] == "bold text"
