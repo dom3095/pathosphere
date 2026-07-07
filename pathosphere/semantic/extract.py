@@ -22,6 +22,8 @@ from typing import Protocol, runtime_checkable
 import httpx
 from loguru import logger
 
+from pathosphere.semantic.embedder import NON_PROSE_ORIGINS
+
 NER_MODEL_NAME = "xx_ent_wiki_sm"
 MAX_NER_CHARS = 2000  # title + body head; bounds CPU per doc
 
@@ -166,14 +168,19 @@ def extract_entities(
 
     result = ExtractResult()
 
-    sql = """
+    # origin exclusion mirrors semantic/embedder.py::NON_PROSE_ORIGINS — needed
+    # here too because raw_documents already embedded=1 from before that fix
+    # (e.g. legacy GDELT backfills) would otherwise still reach NER (CP-016).
+    placeholders = ", ".join("?" for _ in NON_PROSE_ORIGINS)
+    sql = f"""
         SELECT id, title, body FROM raw_documents
         WHERE embedded = 1 AND is_duplicate = 0 AND ner_done = 0
+          AND (origin IS NULL OR origin NOT IN ({placeholders}))
         ORDER BY id
     """
     if limit is not None:
         sql += f" LIMIT {int(limit)}"
-    rows = conn.execute(sql).fetchall()
+    rows = conn.execute(sql, NON_PROSE_ORIGINS).fetchall()
     if not rows:
         return result
 

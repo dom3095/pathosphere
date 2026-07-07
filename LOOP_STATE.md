@@ -13,9 +13,12 @@
 | Docs (wiki §5.1/§6.3, schema.md, roadmap.md, CRITICAL_POINTS CP-016) | ✅ DONE |
 | `backfill_action_geo_country` + `--backfill-country` (bug trovato nel backfill reale) | ✅ DONE |
 | Verificato su DB reale: 583 eventi `gdelt_anomaly` creati | ✅ DONE |
+| Notebook verifica post-fix (`study_04_post_fix_verification.ipynb`) | ✅ DONE |
+| `extract.py` — stesso filtro origin di embedder.py (gap trovato dal notebook) | ✅ DONE |
+| Rilanciare `pathos extract` sul DB reale con la query corretta | ⬜ da fare (utente, da terminale) |
 | Cleanup DB reale (174k doc gdelt già embedded/estratti pre-fix) | ⬜ NON FATTO — scelta esplicita utente, solo codice questa sessione |
-| Commit fix codice | ✅ DONE (push su refactor/gdelt-numeric-split) |
-| Commit backfill-country + PR | ⬜ da fare |
+| Commit fix codice (embedder+anomaly+backfill) | ✅ DONE (push su refactor/gdelt-numeric-split) |
+| Commit fix extract.py + PR | ⬜ da fare |
 
 ## Fase successiva: Fase 4 — Dashboard Streamlit (dopo commit/PR di questo fix)
 
@@ -32,10 +35,12 @@ Dettagli completi in CRITICAL_POINTS.md (CP-016, ora marcato ✅ risolto) e HAND
 
 **Scope deciso con l'utente**: solo codice, NO cleanup del DB reale in questa sessione (i 174k doc gdelt già `embedded=1`/`ner_done=1` da run precedenti al fix, e le entità/eventi/cluster derivati, restano contaminati finché non si lancia un reset manuale — non ancora scritto).
 
-## Prossima azione: commit del backfill-country fix + PR di tutto su `refactor/gdelt-numeric-split` → poi CP-017 (schedulare `pathos cycle run`) → poi Fase 4 Dashboard Streamlit. Se si vuole ripulire il DB reale, scrivere prima uno script/comando di reset (vedi CRITICAL_POINTS CP-016, sezione "non incluso").
+**Quarto giro (notebook + secondo gap)**: notebook `study_04_post_fix_verification.ipynb` (nuovo, non sovrascrive i 3 esistenti) ha verificato il fix sui dati reali e trovato che `extract.py` non aveva lo stesso filtro `origin` di `embedder.py` — 46.196 doc gdelt legacy erano `embedded=1 AND ner_done=0`, contaminazione ATTIVA non solo storica (ogni `extract` futuro ne avrebbe processati). Fixato: `extract.py` ora importa `NON_PROSE_ORIGINS` da `embedder.py`. 437 test verdi. Utente deve rilanciare `pathos extract` per smaltire la coda con la query corretta.
+
+## Prossima azione: utente rilancia `pathos extract` sul DB reale (da terminale) → poi commit fix extract.py + PR di tutto su `refactor/gdelt-numeric-split` → poi CP-017 (schedulare `pathos cycle run`) → poi Fase 4 Dashboard Streamlit. Se si vuole ripulire il DB reale (128k doc gdelt storici già contaminati con ner_done=1), scrivere prima uno script/comando di reset (vedi CRITICAL_POINTS CP-016, sezione "non incluso").
 
 ### Note tecniche
-- Test suite: `uv run pytest tests/ -q` (436 verdi)
+- Test suite: `uv run pytest tests/ -q` (437 verdi)
 - **Dopo pull con modifiche schema: `uv run pathos db init`** (CP-010)
 - `pathos ingest gdelt-anomalies [--full] [--baseline-days N] [--z-threshold N] [--min-events-per-day N] [--backfill-country]`
 - **`gdelt-history` su range già ingerito NON aggiorna colonne nuove su righe esistenti** (`INSERT OR IGNORE` su `global_event_id`) — ogni nuova colonna su `gdelt_events` va backfillata a mano se serve sullo storico

@@ -1,8 +1,24 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-07 (terzo aggiornamento), sessione fix CP-016 — split GDELT numerico/prosa-NLP implementato + backfill reale verificato (branch refactor/gdelt-numeric-split)*
+*Aggiornato: 2026-07-07 (quarto aggiornamento), sessione fix CP-016 — notebook di verifica ha scoperto un secondo gap (extract.py), fixato (branch refactor/gdelt-numeric-split)*
 
-## ⏭ PROSSIMA AZIONE — PR di questo fix, poi CP-017 (schedulare cycle run), poi Fase 4 Dashboard
+## ⏭ PROSSIMA AZIONE — Lanciare `pathos extract` sul DB reale (utente, da terminale), poi PR di tutto, poi CP-017, poi Fase 4 Dashboard
+
+### Quarto giro: notebook `study_04_post_fix_verification.ipynb` + fix `extract.py`
+
+Creato notebook nuovo (non sovrascrive study_01/02/03) che verifica il fix CP-016 sui dati reali dopo che l'utente ha lanciato `gdelt-history` + `gdelt-anomalies --backfill-country --full` + `rss` + `embed` + `extract` + `graph`. Ha trovato un gap non previsto dal fix originale: **`semantic/extract.py` non filtrava per `origin`**, solo `embedded=1 AND ner_done=0` — quindi 46.196 documenti `origin='gdelt'` già `embedded=1` da prima del fix embedder.py restavano candidati NER validi, e ogni `pathos extract` futuro avrebbe continuato a iniettare entità generiche (`GDELT`, `POLICE`, `PRESIDENT`...). Non era contaminazione solo storica/congelata, era attiva.
+
+Verificato quantitativamente: entità da doc `origin='rss'` pulite (19/20 nomi propri sensati), entità da doc `origin='gdelt'` ancora rumore (19/20 ALL CAPS generico). Hairball grafo isolando solo rss: 92-93% vs 94.8% baseline — miglioramento marginale perché la contaminazione attiva compensava il beneficio dell'isolamento.
+
+**Fix**: `extract.py::extract_entities` importa `NON_PROSE_ORIGINS` da `embedder.py`, stesso filtro applicato alla query NER. 1 nuovo test. 437 test verdi. Non lanciato io `pathos extract` sul DB reale (convenzione: operazioni pesanti da terminale utente) — **da fare**: rilanciare `pathos extract` per smaltire i 46.196 doc `ner_done=0` con la query ora corretta (li salterà, non li processerà — la coda "in attesa" da extract calerà mostrando solo i doc rss/legacy-NULL residui).
+
+**Nota di processo**: durante la creazione del notebook, 3-4 tentativi di delega a subagent sembravano fallire rapidamente (notifiche con testo placeholder tipo "sto aspettando..."), inducendo a rilanciarli inutilmente in parallelo. In realtà almeno 2 di quei lanci stavano lavorando per davvero in background e hanno completato con successo dopo diversi minuti — le notifiche brevi erano checkpoint intermedi, non fallimenti. Risultato: 2 notebook duplicati/vuoti (`study_05`, `study_06`, mai eseguiti) creati per errore e poi cancellati. Nessun danno permanente, ma da tenere a mente: non interpretare notifiche rapide con risultato generico come fallimento se il task è lungo — aspettare la notifica di completamento reale prima di rilanciare.
+
+---
+
+*Sezione precedente (stesso giorno, terzo aggiornamento):*
+
+## ⏭ Fix CP-016 codice + backfill reale (terzo aggiornamento)
 
 Sessione precedente (stesso giorno) aveva prodotto solo diagnosi + notebook (vedi sezione sotto). Poi implementato il fix in codice (secondo aggiornamento) e committato. **Questo terzo aggiornamento** documenta un bug trovato lanciando il backfill storico reale (`gdelt-history` + `gdelt-anomalies --full`), fixato e verificato: ora **583 eventi anomalia** nel DB reale. Scope concordato con l'utente resta: **solo codice, niente cleanup del DB reale** (i 174k documenti `origin=gdelt` già `embedded=1` da run precedenti al fix restano contaminati — vedi "Cosa NON è stato fatto" sotto).
 

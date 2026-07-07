@@ -56,12 +56,13 @@ def _insert_doc(
     body: str = "Body",
     embedded: int = 1,
     is_duplicate: int = 0,
+    origin: str | None = None,
 ) -> int:
     h = hashlib.sha256((url + body).encode()).hexdigest()
     cur = conn.execute(
-        "INSERT INTO raw_documents (url, title, body, content_hash, embedded, is_duplicate) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (url, title, body, h, embedded, is_duplicate),
+        "INSERT INTO raw_documents (url, title, body, content_hash, embedded, is_duplicate, origin) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (url, title, body, h, embedded, is_duplicate, origin),
     )
     conn.commit()
     return cur.lastrowid
@@ -141,6 +142,28 @@ def test_ner_skips_duplicates_and_unembedded(tmp_db):
 
     assert result.docs_processed == 0
     assert ner.calls == []
+
+
+def test_ner_excludes_gdelt_and_comtrade_origin_even_if_already_embedded(tmp_db):
+    """CP-016 follow-up: extract.py must skip gdelt/comtrade docs that were
+    already embedded=1 before the embedder.py fix existed — otherwise NER
+    keeps ingesting synthetic CAMEO metadata as if it were prose."""
+    _insert_doc(tmp_db, url="https://x.com/1", origin="gdelt")
+    _insert_doc(tmp_db, url="https://x.com/2", origin="comtrade")
+    _insert_doc(tmp_db, url="https://x.com/3", origin="rss")
+    _insert_doc(tmp_db, url="https://x.com/4", origin=None)
+    ner = MockNer()
+
+    result = extract_entities(tmp_db, model=ner)
+
+    assert result.docs_processed == 2  # rss + legacy NULL origin only
+    still_pending = {
+        r["url"]
+        for r in tmp_db.execute(
+            "SELECT url FROM raw_documents WHERE ner_done = 0"
+        ).fetchall()
+    }
+    assert still_pending == {"https://x.com/1", "https://x.com/2"}
 
 
 def test_ner_marks_done_and_is_resumable(tmp_db):
