@@ -1,6 +1,6 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-07, sessione studio qualità + diagnosi causa radice (branch docs/quality-study-notebooks)*
+*Aggiornato: 2026-07-07, sessione studio qualità + diagnosi causa radice (branch refactor/gdelt-numeric-split, ex docs/quality-study-notebooks)*
 
 ## ⏭ PROSSIMA AZIONE — Split pipeline GDELT-numerico/prosa-NLP (branch nuovo da aprire) → poi Fase 4 Dashboard
 
