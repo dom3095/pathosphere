@@ -1,6 +1,34 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-09 — reset GDELT reale + backfill demonimi eseguiti su main, sincronizzazione dopo lavoro parallelo tra due sessioni*
+*Aggiornato: 2026-07-10 — re-ingest GDELT pulito in background, prossimi step documentati*
+
+## Re-ingest GDELT da zero, pipeline pulita (2026-07-10 — in corso)
+
+**Stato**: `pathos ingest gdelt-history --start 2025-07-10` lanciato in background (PID ~46142, 2026-07-10 00:29 UTC) con `caffeinate` (non spegne il Mac durante le ~12h). Log monitora via:
+```bash
+tail -f data/logs/gdelt_history_2025-07-10.log
+```
+
+**Timeline atteso**:
+- **~12h da 00:29 UTC** (fine history): 2026-07-10 ~12:30 UTC
+- **Poi, in sequenza** (nessuna pausa tra):
+  1. `uv run pathos ingest gdelt-anomalies --backfill-country --full` (~5 min)
+  2. `uv run pathos embed` (~20 min)
+  3. `uv run pathos extract` (~1 ora)
+  4. `uv run pathos cluster` (~5 min)
+  5. `uv run pathos graph` (~10 min)
+
+**Monitorare il progresso**: nel corso della history, il log cresce; quando finisce, avremo GDELT con:
+- ✅ CP-016 fix: `origin='gdelt'` già escluso da embed/extract/cluster
+- ✅ CP-015 fix: HTML strippato dal body prima di NER
+- ✅ Canonicalizzazione: entità collegate a Wikidata QID via `canonical_entity_id`
+- ✅ Demonimi: Israeli/Russian/Chinese reclassificati a location
+
+**Dopo il completamento**: nuovo notebook (study_08 o simile) che replichi la metodologia di study_04-07 per quantificare il miglioramento — hairball grafo, contaminazione entità, topic-drift clustering — tutto su GDELT pulito da zero, niente legacy.
+
+**Nota**: se il re-ingest fallisce a metà (crash, rete), non c'è problema — `gdelt-history` è resumable: il prossimo run riprenderà da dove si era fermato (verifica di quale file era stato già fatto è interna).
+
+---
 
 ## Reset GDELT + backfill demonimi su DB reale (2026-07-09)
 

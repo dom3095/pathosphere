@@ -15,11 +15,19 @@
 | Backfill demonimi sul DB reale (`pathos extract --backfill-demonyms`) | ✅ ESEGUITO 2026-07-09 — 49 entità riclassificate a location |
 | Notebook verifica post-fix (`study_04`-`07`) | ✅ DONE (in main) |
 | Artifact visivo (grafo entità + cluster + mappa segnali fisici) | ✅ DONE — snapshot dati pre-reset, valido come storico |
-| Re-ingest GDELT da zero (`gdelt-history` + `gdelt-anomalies`) | ⬜ da fare (utente, da terminale — DB ora vuoto per origin=gdelt) |
+| Re-ingest GDELT da zero (`gdelt-history` + `gdelt-anomalies`) | 🔄 IN PROGRESS (2026-07-10, background PID ~46142) |
+| Finire pipeline pulita: `embed` + `extract` + `cluster` + `graph` | ⬜ da fare dopo gdelt-history |
+| Notebook verifica post-re-ingest (pulizia confermata) | ⬜ da fare dopo pipeline completa |
 
 ## Fase successiva: Fase 4 — Dashboard Streamlit
 
 ## Ultima azione completata
+
+Sessione 2026-07-10 (in corso): 
+- Lanciato `pathos ingest gdelt-history --start 2025-07-10` in background con `caffeinate` (previene Mac sleep durante le ~12h di scaricamento). Log: `data/logs/gdelt_history_2025-07-10.log`. Monitorare con `tail -f data/logs/gdelt_history_2025-07-10.log`.
+- DB attualmente contiene solo RSS/Comtrade/PortWatch/USGS/FIRMS/IODA (no GDELT). Quando history finisce, verrà lanciata la pipeline completa: anomalie Goldstein, embed, extract, cluster, graph — tutto con il fix CP-016/CP-015/canonicalizzazione già attivo dal primo documento, niente retroattivo.
+
+Precedente (2026-07-09):
 
 Sessione 2026-07-09: risolta ambiguità di stato tra due branch paralleli (vedi nota sopra), poi su `main`:
 1. Eseguito `pathos ingest gdelt-reset --yes` sul DB reale (494MB) — cancellati 177.281 `raw_documents`, 234.502 `gdelt_events`, 118.166 `events`, 168.544 `vec_documents`, 295.356 `document_entities`, 3.908 entità orfane, 27.734 `entity_links`, 4.836 righe `gdelt_file_log`. RSS/Comtrade/PortWatch/USGS/FIRMS/IODA intatti (verificato).
@@ -29,7 +37,17 @@ Sessione 2026-07-09: risolta ambiguità di stato tra due branch paralleli (vedi 
 
 444 test verdi su `main`.
 
-## Prossima azione: utente rilancia (da terminale) `pathos ingest gdelt-history --start <data>` per ripopolare GDELT da zero con la pipeline pulita, poi `pathos ingest gdelt-anomalies --backfill-country --full` per il segnale numerico. Poi CP-017 (schedulare `pathos cycle run`), poi Fase 4 Dashboard Streamlit.
+## Prossima azione (quando gdelt-history finisce — ~12h da 2026-07-10 00:29 UTC)
+
+1. **Verifica completamento history**: `tail -f data/logs/gdelt_history_2025-07-10.log` finché non vedi "GDELT ingest complete" o simile
+2. **Anomalie Goldstein** (segnale numerico GDELT): `uv run pathos ingest gdelt-anomalies --backfill-country --full` (~5 min)
+3. **Pipeline semantica pulita** (in sequenza):
+   - `uv run pathos embed` (~20 min per tutti i doc RSS+GDELT)
+   - `uv run pathos extract` (~1 ora con NER spacy multilingua)
+   - `uv run pathos cluster` (~5 min)
+   - `uv run pathos graph` (~10 min)
+4. **Verifica finale**: notebook nuovo (study_08 o simile) con stessa metodologia di study_04-07, ma su dati GDELT puliti da zero — confrontare se canonicalizzazione+CP-015 riducono davvero il rumore vs snapshot pre-reset
+5. **Poi CP-017**: orchestrazione loop (farsi aiutare da un collega agent B, restando su questo branch)
 
 ### Note tecniche
 - Test suite: `uv run pytest tests/ -q` (444 verdi su main)
