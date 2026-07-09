@@ -158,6 +158,23 @@ uv run pathos thesis approve <id> # auto-crea economic prediction
 
 ---
 
+## Setup automazione (launchd)
+
+```bash
+# Una volta sola: installa daemon che lancia loop ogni 12h
+./scripts/setup_launchd.sh
+# Opzioni:
+#   --interval SECONDS    (default 43200 = 12h)
+#   --uninstall           (disattiva e rimuovi)
+
+# Monitor il daemon
+tail -f data/logs/launchd.log
+launchctl list | grep pathosphere
+
+# Disattiva
+./scripts/setup_launchd.sh --uninstall
+```
+
 ## Comandi utili
 
 ```bash
@@ -166,7 +183,7 @@ uv run pytest tests/ -q                    # 452 verdi
 uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
 uv run pathos db info                      # Row counts per tabella
 
-# Loop autonomo (CP-017) — corre il ciclo notturno forever con stato persistente
+# Loop autonomo manuale (CP-017) — corre il ciclo notturno forever con stato persistente
 # Interruzione sicura: Ctrl+C salva state + esci
 caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
 # Monitor:
@@ -178,11 +195,16 @@ uv run pathos cycle
 uv run pathos cycle --from-phase embed       # Resume da EMBED
 uv run pathos cycle --dry-run                # Simula solo
 
-# Ingest singoli (già dentro il ciclo)
+# Fasi singole (tutte standalone ora)
 uv run pathos ingest gdelt --max-goldstein 5
 uv run pathos ingest gdelt-anomalies --backfill-country --full
 uv run pathos ingest rss
 uv run pathos ingest portwatch
+uv run pathos embed
+uv run pathos cluster
+uv run pathos extract
+uv run pathos graph
+uv run pathos brief
 # etc.
 
 # Predictions v2

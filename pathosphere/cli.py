@@ -879,6 +879,32 @@ def embed(batch_size: int, skip_dedup: bool, skip_cluster: bool) -> None:
     conn.close()
 
 
+# ─── cluster ──────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option(
+    "--time-window-hours",
+    default=72,
+    show_default=True,
+    help="Cluster only docs published within N hours of each other.",
+)
+def cluster(time_window_hours: int) -> None:
+    """Group deduped docs into events by semantic similarity."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.cluster import cluster_documents
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    result = cluster_documents(conn, time_window_hours=time_window_hours)
+    click.echo(
+        f"Cluster: {result.events_created} events created | "
+        f"{result.docs_assigned} docs assigned"
+    )
+    conn.close()
+
+
 # ─── extract ──────────────────────────────────────────────────────────────────
 
 @cli.command()

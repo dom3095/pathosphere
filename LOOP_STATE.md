@@ -1,6 +1,6 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-017 orchestration loop — COMPLETO
+## Fase corrente: CP-017 orchestration loop + launchd automation — COMPLETO
 
 **CP-017 — Orchestration loop (2026-07-10)**:
 - Nuovo modulo `pathosphere/cycle/loop.py` — `LoopState` per persistenza stato, `run_autonomous_loop` core loop
@@ -10,13 +10,25 @@
 - Resumable da crash — rilancia dal `next_phase_after(last_completed)`
 - Cicli completi: riparte da INGEST dopo BRIEF, sleep configurable tra cicli (default 1h)
 - Graceful shutdown: Ctrl+C salva stato + esci
+- Nuovo comando CLI standalone: `pathos cluster` (prima era solo dentro `pathos embed`)
+- Script setup launchd: `scripts/setup_launchd.sh` — installa daemon che lancia loop ogni 12h automatico
+  - `./scripts/setup_launchd.sh` (installa, default 12h)
+  - `./scripts/setup_launchd.sh --interval 21600` (6h)
+  - `./scripts/setup_launchd.sh --uninstall` (rimuovi)
 - 8 test nuovi + 452 verdi totali
 
-**Uso:**
+**Uso manuale:**
 ```bash
 caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
 # Runs forever, state saved at data/cycle_state.json
 # Monitor: tail -f data/logs/*.log
+```
+
+**Uso automatico (launchd):**
+```bash
+./scripts/setup_launchd.sh  # Installa una volta sola
+tail -f data/logs/launchd.log  # Monitor
+./scripts/setup_launchd.sh --uninstall  # Disattiva
 ```
 
 Da qui — prossimi step prima di Fase 4:
