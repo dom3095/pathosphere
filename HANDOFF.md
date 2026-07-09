@@ -1,6 +1,6 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-10 — re-ingest GDELT pulito in background, prossimi step documentati*
+*Aggiornato: 2026-07-10 — CP-017 loop autonomo implementato, pronto per il ciclo notturno persistente*
 
 ## Re-ingest GDELT da zero, pipeline pulita (2026-07-10 — in corso)
 
@@ -161,9 +161,29 @@ uv run pathos thesis approve <id> # auto-crea economic prediction
 ## Comandi utili
 
 ```bash
-# Stato
-uv run pytest tests/ -q                    # 419 verdi
+# Stato / DB
+uv run pytest tests/ -q                    # 452 verdi
 uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
+uv run pathos db info                      # Row counts per tabella
+
+# Loop autonomo (CP-017) — corre il ciclo notturno forever con stato persistente
+# Interruzione sicura: Ctrl+C salva state + esci
+caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
+# Monitor:
+tail -f data/logs/*.log
+tail -f data/cycle_state.json  # Stato ultimo ciclo + error log (ultimi 100)
+
+# Ciclo una volta (per debug/test)
+uv run pathos cycle
+uv run pathos cycle --from-phase embed       # Resume da EMBED
+uv run pathos cycle --dry-run                # Simula solo
+
+# Ingest singoli (già dentro il ciclo)
+uv run pathos ingest gdelt --max-goldstein 5
+uv run pathos ingest gdelt-anomalies --backfill-country --full
+uv run pathos ingest rss
+uv run pathos ingest portwatch
+# etc.
 
 # Predictions v2
 uv run pathos predict add "Desc" --macro-area world --prediction-type geopolitical \

@@ -99,6 +99,49 @@ def cycle(from_phase: str | None, dry_run: bool) -> None:
         click.echo(f"\nCycle complete. Phases: {[p.name for p in state.completed]}")
 
 
+@cli.command()
+@click.option(
+    "--max-retries",
+    type=int,
+    default=3,
+    help="Max retry attempts per phase before pausing.",
+)
+@click.option(
+    "--sleep-hours",
+    type=float,
+    default=1.0,
+    help="Hours to sleep between complete cycles.",
+)
+@click.option(
+    "--state-file",
+    type=click.Path(),
+    default=None,
+    help="Path to cycle state JSON (default: data/cycle_state.json).",
+)
+def loop(max_retries: int, sleep_hours: float, state_file: str | None) -> None:
+    """Run autonomous nightly loop forever (resumable on failure).
+
+    State persisted to JSON. Run with:
+      caffeinate -i pathos loop
+
+    Interrupt: Ctrl+C saves state and exits cleanly.
+    """
+    from pathosphere.cycle.loop import run_autonomous_loop
+
+    state_path = Path(state_file) if state_file else None
+    sleep_seconds = int(sleep_hours * 3600)
+
+    try:
+        run_autonomous_loop(
+            max_retries=max_retries,
+            sleep_between_cycles=sleep_seconds,
+            state_file=state_path,
+        )
+    except KeyboardInterrupt:
+        logger.info("Loop stopped by user.")
+        click.echo("State saved. Resume with: pathos loop")
+
+
 # ─── config ───────────────────────────────────────────────────────────────────
 
 @cli.command()

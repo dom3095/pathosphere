@@ -1,29 +1,43 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-016 chiuso, DB reale ripulito e verificato — MERGIATO su main
+## Fase corrente: CP-017 orchestration loop — COMPLETO
 
-**Nota di sincronizzazione (2026-07-08/09)**: due sessioni Claude hanno lavorato in parallelo su questa fase. Una (branch `refactor/gdelt-numeric-split`, poi eliminato) ha diagnosticato e fixato CP-016 (split GDELT numerico/prosa-NLP). L'altra ha ramificato da quel branch e aggiunto canonicalizzazione entità via Wikidata QID + fix CP-015 (strip HTML pre-NER) + reset GDELT proprio, mergiando tutto su `main` con squash (PR #8 wikidata, #9 ioda, #10 entity-canonicalization). Il branch `refactor/gdelt-numeric-split` è stato verificato ridondante (tutto il suo contenuto già in `main`) ed eliminato locale+remoto. Da qui in avanti `main` è l'unica fonte di verità.
+**CP-017 — Orchestration loop (2026-07-10)**:
+- Nuovo modulo `pathosphere/cycle/loop.py` — `LoopState` per persistenza stato, `run_autonomous_loop` core loop
+- CLI: `pathos loop [--max-retries N] [--sleep-hours H] [--state-file PATH]`
+- Stato salvato in `data/cycle_state.json`: fase completata, timestamp, ultimi 100 errori
+- Retry con backoff esponenziale (5s, 10s, 20s prima di pausa 5min)
+- Resumable da crash — rilancia dal `next_phase_after(last_completed)`
+- Cicli completi: riparte da INGEST dopo BRIEF, sleep configurable tra cicli (default 1h)
+- Graceful shutdown: Ctrl+C salva stato + esci
+- 8 test nuovi + 452 verdi totali
+
+**Uso:**
+```bash
+caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
+# Runs forever, state saved at data/cycle_state.json
+# Monitor: tail -f data/logs/*.log
+```
+
+Da qui — prossimi step prima di Fase 4:
 
 | Subtask | Stato |
 |---|---|
-| CP-016 — split embed/extract GDELT vs prosa NLP | ✅ DONE (in main) |
-| CP-015 — strip HTML dal body pre-NER | ✅ DONE (in main, altra sessione) |
-| Canonicalizzazione entità via Wikidata QID (`canonical_entity_id`) | ✅ DONE (in main, altra sessione) |
-| `ingest/gdelt_anomaly.py` — anomalie Goldstein → events | ✅ DONE (in main) |
-| Demonimi (Israeli/Russian/Chinese→location) — codice | ✅ DONE (in main) |
-| Reset completo GDELT sul DB reale (`pathos ingest gdelt-reset --yes`) | ✅ ESEGUITO 2026-07-09 — 0 righe `origin=gdelt` residue, RSS/entità condivise intatte |
-| Backfill demonimi sul DB reale (`pathos extract --backfill-demonyms`) | ✅ ESEGUITO 2026-07-09 — 49 entità riclassificate a location |
-| Notebook verifica post-fix (`study_04`-`07`) | ✅ DONE (in main) |
-| Artifact visivo (grafo entità + cluster + mappa segnali fisici) | ✅ DONE — snapshot dati pre-reset, valido come storico |
-| Re-ingest GDELT da zero (`gdelt-history` + `gdelt-anomalies`) | 🔄 IN PROGRESS (2026-07-10, background PID ~46142) |
-| Finire pipeline pulita: `embed` + `extract` + `cluster` + `graph` | ⬜ da fare dopo gdelt-history |
-| Notebook verifica post-re-ingest (pulizia confermata) | ⬜ da fare dopo pipeline completa |
+| CP-016/CP-015 — split GDELT + HTML strip | ✅ DONE (in main) |
+| Canonicalizzazione entità via Wikidata QID | ✅ DONE (in main) |
+| Demonimi (Israeli/Russian/Chinese→location) | ✅ DONE (in main) |
+| Reset completo GDELT sul DB reale | ✅ ESEGUITO 2026-07-09 |
+| Backfill demonimi su DB reale | ✅ ESEGUITO 2026-07-09 |
+| Re-ingest GDELT da zero + pipeline pulita | 🔄 IN PROGRESS (background) |
+| Notebook verifica post-re-ingest | ⬜ da fare dopo pipeline |
+| **CP-017 — Loop resiliente** | ✅ **DONE 2026-07-10** |
+| Fase 4 — Dashboard Streamlit | ⬜ PROSSIMO |
 
 ## Fase successiva: Fase 4 — Dashboard Streamlit
 
 ## Ultima azione completata
 
-Sessione 2026-07-10 (in corso): 
+Sessione 2026-07-10 (ciclo 2 — loop): 
 - Lanciato `pathos ingest gdelt-history --start 2025-07-10` in background con `caffeinate` (previene Mac sleep durante le ~12h di scaricamento). Log: `data/logs/gdelt_history_2025-07-10.log`. Monitorare con `tail -f data/logs/gdelt_history_2025-07-10.log`.
 - DB attualmente contiene solo RSS/Comtrade/PortWatch/USGS/FIRMS/IODA (no GDELT). Quando history finisce, verrà lanciata la pipeline completa: anomalie Goldstein, embed, extract, cluster, graph — tutto con il fix CP-016/CP-015/canonicalizzazione già attivo dal primo documento, niente retroattivo.
 
