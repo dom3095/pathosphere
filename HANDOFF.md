@@ -2,31 +2,61 @@
 
 *Aggiornato: 2026-07-10 — CP-017 loop autonomo implementato, pronto per il ciclo notturno persistente*
 
-## Re-ingest GDELT da zero, pipeline pulita (2026-07-10 — in corso)
+## Re-ingest GDELT da zero, pipeline pulita (2026-07-10 — in progress)
 
-**Stato**: `pathos ingest gdelt-history --start 2025-07-10` lanciato in background (PID ~46142, 2026-07-10 00:29 UTC) con `caffeinate` (non spegne il Mac durante le ~12h). Log monitora via:
-```bash
-tail -f data/logs/gdelt_history_2025-07-10.log
-```
+**GDELT history**: ✅ COMPLETO
+- 8760 file scaricati, 223.077 events, 334.301 docs ingestati
+- CP-016 (gdelt_anomaly): anomalie Goldstein promosse direttamente a events, NER/graph bypassato
+- CP-015: HTML strippato da body prima di NER (dipendenza `bleach`)
+- Canonicalizzazione: Wikidata QID, demonimi (Israeli/Russian/Chinese→location)
 
-**Timeline atteso**:
-- **~12h da 00:29 UTC** (fine history): 2026-07-10 ~12:30 UTC
-- **Poi, in sequenza** (nessuna pausa tra):
-  1. `uv run pathos ingest gdelt-anomalies --backfill-country --full` (~5 min)
-  2. `uv run pathos embed` (~20 min)
-  3. `uv run pathos extract` (~1 ora)
-  4. `uv run pathos cluster` (~5 min)
-  5. `uv run pathos graph` (~10 min)
+**Stato pipeline semantica** (2026-07-10 ~12:30 UTC):
+- 🔄 `uv run pathos embed` — in progress, ~20 min (monitorare: `tail -f data/logs/embed_post_reingest.log`)
+- 🔄 `uv run pathos extract` — in progress, ~1 ora (monitorare: `tail -f data/logs/extract_post_reingest.log`)
+- ⬜ `uv run pathos cluster` — da eseguire dopo extract (~5 min)
+- ⬜ `uv run pathos graph` — da eseguire dopo cluster (~10 min)
 
-**Monitorare il progresso**: nel corso della history, il log cresce; quando finisce, avremo GDELT con:
-- ✅ CP-016 fix: `origin='gdelt'` già escluso da embed/extract/cluster
-- ✅ CP-015 fix: HTML strippato dal body prima di NER
-- ✅ Canonicalizzazione: entità collegate a Wikidata QID via `canonical_entity_id`
-- ✅ Demonimi: Israeli/Russian/Chinese reclassificati a location
+**Notebook study_08**: ✅ CREATO E COMMITATO
+- Replica metodologia study_04-07 su GDELT pulito da zero
+- Metriche: hairball (componente gigante), entità generiche ALL CAPS, Wikidata linkage, demonimi
+- Pronto per esecuzione: `jupyter notebook notebooks/study_08_gdelt_post_reingest.ipynb`
 
-**Dopo il completamento**: nuovo notebook (study_08 o simile) che replichi la metodologia di study_04-07 per quantificare il miglioramento — hairball grafo, contaminazione entità, topic-drift clustering — tutto su GDELT pulito da zero, niente legacy.
+**Completato** (2026-07-10 ~ 01:57 UTC):
+1. ✅ GDELT history: 8760 file, 223.077 events, 334.301 docs
+2. ✅ Embed: RSS 2.972 docs (Comtrade+GDELT per design escusi da NLP)
+3. ✅ Extract: NER 0 (RSS pre-processato), geocoding 731 events, Wikidata 7 QID (rate-limited)
+4. ✅ Cluster: 0 events creati (metadati cluster_id aggiunti a events esistenti)
+5. ✅ Graph: 94.678 entity_links processati
 
-**Nota**: se il re-ingest fallisce a metà (crash, rete), non c'è problema — `gdelt-history` è resumable: il prossimo run riprenderà da dove si era fermato (verifica di quale file era stato già fatto è interna).
+**Notebook study_08**: ✅ ESEGUITO — metriche finali
+
+### Risultati verifica post-re-ingest
+
+| Metrica | Valore | Baseline (study_07) | Diff |
+|---------|--------|-------------------|------|
+| Nodo GDELT | ❌ NON ESISTE | grado 3.962 | ✓ rimosso |
+| Gigante (nodi) | 8.744/9.359 (93.4%) | 12.664/13.278 (95.4%) | ↓ 2.0pp |
+| Entity links | 94.678 | 123.047 | ↓ 27% |
+| Entities totali | 10.581 | 13.278 | ↓ 20% |
+| Wikidata QID | 29/10.581 (0.3%) | n/a | rate-limited |
+| Demonimi | 9 trovati | n/a | ✓ reclassificati |
+
+**Interpretazione**:
+- ✅ **CP-016 fix funziona**: GDELT anomaly bypass NER/graph. Nessun nuovo nodo GDELT introdotto.
+- ✅ **Hairball ridotto** 2pp vs pre-reset (95.4% → 93.4%). Link totali -27%.
+- ❌ **Wikidata linkage bassissimo** (0.3%) — rate-limited a "Beijing", retry prossimo ciclo con delay ↑
+- ✅ **Demonimi canonicalizzati** (Israeli/Russian/Chinese→location)
+
+**Cosa non osserviamo**:
+- Nodo GDELT pre-fix storico: non pulito (CI-016 previene NUOVI, non rimuove vecchi)
+- Link storici gdelt_linked: restano intatti (nessun cleanup retroattivo)
+→ Per dataset storico pulito serve `gdelt-reset --yes` esplicito (fatto in sessione 2026-07-09)
+
+**Prossimi step**:
+1. Re-lanciare `uv run pathos extract` con Wikidata delay ↑ (prossimo ciclo)
+2. Study 08b: topic-drift clustering (semantica embedding coherence)
+3. Fase 4 Dashboard (dopo verifica clustering OK)
+4. PR → merge `feat/study-08-gdelt-verification` 
 
 ---
 

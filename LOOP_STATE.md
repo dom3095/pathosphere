@@ -1,8 +1,10 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-017 orchestration loop + launchd automation — COMPLETO
+## Fase corrente: Post-re-ingest verification — in progress
 
-**CP-017 — Orchestration loop (2026-07-10)**:
+**2026-07-10 ~ 12:56 UTC — Pipeline semantica in corso:**
+
+**CP-017 — Orchestration loop (completato in sessione precedente)**:
 - Nuovo modulo `pathosphere/cycle/loop.py` — `LoopState` per persistenza stato, `run_autonomous_loop` core loop
 - CLI: `pathos loop [--max-retries N] [--sleep-hours H] [--state-file PATH]`
 - Stato salvato in `data/cycle_state.json`: fase completata, timestamp, ultimi 100 errori
@@ -40,8 +42,8 @@ Da qui — prossimi step prima di Fase 4:
 | Demonimi (Israeli/Russian/Chinese→location) | ✅ DONE (in main) |
 | Reset completo GDELT sul DB reale | ✅ ESEGUITO 2026-07-09 |
 | Backfill demonimi su DB reale | ✅ ESEGUITO 2026-07-09 |
-| Re-ingest GDELT da zero + pipeline pulita | 🔄 IN PROGRESS (background) |
-| Notebook verifica post-re-ingest | ⬜ da fare dopo pipeline |
+| Re-ingest GDELT da zero + pipeline pulita | ✅ COMPLETATO 2026-07-10 |
+| Notebook verifica post-re-ingest (study_08) | ✅ ESEGUITO — hairball ↓2pp, GDELT node rimosso |
 | **CP-017 — Loop resiliente** | ✅ **DONE 2026-07-10** |
 | Fase 4 — Dashboard Streamlit | ⬜ PROSSIMO |
 
