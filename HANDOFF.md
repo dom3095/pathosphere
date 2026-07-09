@@ -1,6 +1,53 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-07, fix Wikidata linking (branch fix/wikidata-linking)*
+*Aggiornato: 2026-07-10 — CP-017 loop autonomo implementato, pronto per il ciclo notturno persistente*
+
+## Re-ingest GDELT da zero, pipeline pulita (2026-07-10 — in corso)
+
+**Stato**: `pathos ingest gdelt-history --start 2025-07-10` lanciato in background (PID ~46142, 2026-07-10 00:29 UTC) con `caffeinate` (non spegne il Mac durante le ~12h). Log monitora via:
+```bash
+tail -f data/logs/gdelt_history_2025-07-10.log
+```
+
+**Timeline atteso**:
+- **~12h da 00:29 UTC** (fine history): 2026-07-10 ~12:30 UTC
+- **Poi, in sequenza** (nessuna pausa tra):
+  1. `uv run pathos ingest gdelt-anomalies --backfill-country --full` (~5 min)
+  2. `uv run pathos embed` (~20 min)
+  3. `uv run pathos extract` (~1 ora)
+  4. `uv run pathos cluster` (~5 min)
+  5. `uv run pathos graph` (~10 min)
+
+**Monitorare il progresso**: nel corso della history, il log cresce; quando finisce, avremo GDELT con:
+- ✅ CP-016 fix: `origin='gdelt'` già escluso da embed/extract/cluster
+- ✅ CP-015 fix: HTML strippato dal body prima di NER
+- ✅ Canonicalizzazione: entità collegate a Wikidata QID via `canonical_entity_id`
+- ✅ Demonimi: Israeli/Russian/Chinese reclassificati a location
+
+**Dopo il completamento**: nuovo notebook (study_08 o simile) che replichi la metodologia di study_04-07 per quantificare il miglioramento — hairball grafo, contaminazione entità, topic-drift clustering — tutto su GDELT pulito da zero, niente legacy.
+
+**Nota**: se il re-ingest fallisce a metà (crash, rete), non c'è problema — `gdelt-history` è resumable: il prossimo run riprenderà da dove si era fermato (verifica di quale file era stato già fatto è interna).
+
+---
+
+## Reset GDELT + backfill demonimi su DB reale (2026-07-09)
+
+**Contesto**: sessione precedente (branch `refactor/gdelt-numeric-split`, ora eliminato) aveva diagnosticato CP-016 (documenti sintetici GDELT trattati come prosa dalla pipeline NLP) e scritto il fix. In parallelo, un'altra sessione ha ramificato da quel branch aggiungendo canonicalizzazione entità via Wikidata QID (nuova colonna `entities.canonical_entity_id`) + fix CP-015 (strip HTML dal body prima del NER, dipendenza `bleach`) + una propria implementazione di reset GDELT in `cli.py`, mergiando tutto su `main` con squash (PR #8, #9, #10). Il branch originale è risultato ridondante (contenuto già in `main`) ed è stato eliminato.
+
+**Azioni eseguite in questa sessione su `main`**:
+1. `pathos ingest gdelt-reset --yes` sul DB reale (`data/db/pathosphere.db`, 494MB) — cancellati 177.281 `raw_documents` origin=gdelt, 234.502 `gdelt_events`, 118.166 `events` origin=gdelt, 168.544 `vec_documents`, 295.356 `document_entities`, 3.908 entità rimaste orfane (usate solo da doc gdelt), 27.734 `entity_links` coinvolti, 4.836 righe `gdelt_file_log` (per permettere ri-scaricamento pulito). RSS/Comtrade/PortWatch/USGS/FIRMS/IODA verificati intatti. Operazione confermata con l'utente via preview prima dell'esecuzione (comando supporta dry-run di default, `--yes` per eseguire davvero).
+2. `pathos extract --backfill-demonyms --limit 0 --skip-geocode --skip-wikidata` — 49 entità (Israeli, Russian, Chinese, American, Ukrainian…) riclassificate da `entity_type='other'` a `location` con `canonical_name` = nome paese.
+3. Costruito un artifact visivo (HTML standalone, canvas force-directed graph + card cluster + mappa) usando dati catturati PRIMA del reset — quindi rappresenta lo stato GDELT-contaminato "as-is", utile come confronto storico. Include un esempio onesto di topic-drift nel clustering (evento 122013 "Armenia's top court…" i cui documenti sono in realtà quasi tutti su Netanyahu/Israele — sintomo di chain-collapse, non ancora fixato).
+
+**Stato DB reale dopo questa sessione**: `origin=gdelt` completamente vuoto (0 righe in tutte le tabelle derivate). Prossimo passo per chi riprende: rilanciare `pathos ingest gdelt-history --start <data>` per ripopolare da zero con la pipeline già pulita (CP-016+CP-015+canonicalizzazione tutti attivi dal primo giorno, niente contaminazione da smaltire questa volta), poi `pathos ingest gdelt-anomalies --backfill-country --full`.
+
+**Punti di attenzione per la prossima sessione**:
+- Se lavori in parallelo con un'altra sessione Claude sullo stesso repo, **verifica sempre `git log main` e `git branch -a` prima di assumere che il tuo branch sia l'unica fonte di verità** — in questa sessione un reset/backfill è stato lanciato mentre in background un `git checkout` cambiava branch, e serviva ricostruire la sequenza da `git reflog` per capire cosa fosse successo. Nessun danno (i processi in esecuzione non sono affetti da checkout successivi, il DB è file-based non branch-based), ma ha richiesto un giro di verifica non banale.
+- File innocuo da ignorare se lo vedi in `git status`: `pathosphere.db` (0 byte, root del repo) — scarto di un comando lanciato dalla cwd sbagliata in una sessione precedente, non il DB vero (`data/db/pathosphere.db`).
+
+Dettagli completi CP-016/CP-015/canonicalizzazione: vedi commit `3566dbc` e PR #8/#9/#10 su GitHub, più `CRITICAL_POINTS.md`.
+
+---
 
 ## Fix Wikidata linking (2026-07-07)
 
@@ -111,12 +158,54 @@ uv run pathos thesis approve <id> # auto-crea economic prediction
 
 ---
 
+## Setup automazione (launchd)
+
+```bash
+# Una volta sola: installa daemon che lancia loop ogni 12h
+./scripts/setup_launchd.sh
+# Opzioni:
+#   --interval SECONDS    (default 43200 = 12h)
+#   --uninstall           (disattiva e rimuovi)
+
+# Monitor il daemon
+tail -f data/logs/launchd.log
+launchctl list | grep pathosphere
+
+# Disattiva
+./scripts/setup_launchd.sh --uninstall
+```
+
 ## Comandi utili
 
 ```bash
-# Stato
-uv run pytest tests/ -q                    # 419 verdi
+# Stato / DB
+uv run pytest tests/ -q                    # 452 verdi
 uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
+uv run pathos db info                      # Row counts per tabella
+
+# Loop autonomo manuale (CP-017) — corre il ciclo notturno forever con stato persistente
+# Interruzione sicura: Ctrl+C salva state + esci
+caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
+# Monitor:
+tail -f data/logs/*.log
+tail -f data/cycle_state.json  # Stato ultimo ciclo + error log (ultimi 100)
+
+# Ciclo una volta (per debug/test)
+uv run pathos cycle
+uv run pathos cycle --from-phase embed       # Resume da EMBED
+uv run pathos cycle --dry-run                # Simula solo
+
+# Fasi singole (tutte standalone ora)
+uv run pathos ingest gdelt --max-goldstein 5
+uv run pathos ingest gdelt-anomalies --backfill-country --full
+uv run pathos ingest rss
+uv run pathos ingest portwatch
+uv run pathos embed
+uv run pathos cluster
+uv run pathos extract
+uv run pathos graph
+uv run pathos brief
+# etc.
 
 # Predictions v2
 uv run pathos predict add "Desc" --macro-area world --prediction-type geopolitical \

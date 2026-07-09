@@ -159,13 +159,13 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
-## CP-015: frammenti HTML taggati come entità — body non ripulito da markup prima del NER
+## CP-015: frammenti HTML taggati come entità — body non ripulito da markup prima del NER — ✅ RISOLTO (main, PR entity-canonicalization)
 
 **Contesto:** scoperto in `notebooks/study_02_extract.ipynb`: entità con `<`/`>` nel nome (es. `span><strong`, `said.</p`) presenti nel DB, generate dal NER su body RSS non sanitizzato. Compaiono anche tra i nodi ad alto grado nel grafo (`notebooks/study_03_graph.ipynb`).
 
-**Workaround:** nessuno applicato (analisi as-is). Filtro manuale possibile lato query (`WHERE name NOT LIKE '%<%'`) ma non risolve alla fonte.
+**Fix (sessione parallela, mergiato su `main`):** `semantic/extract.py::_build_text` ora passa il body da `bleach.clean(body, tags=[], strip=True)` prima della NER — markup rimosso alla fonte. Nuova dipendenza `bleach`.
 
-**Impatto:** medio — rumore silenzioso in `entities`/`entity_links`, non blocca nulla ma inquina classifiche e grafo. Fix futuro: strip HTML/markup dal body (es. con `bleach` o regex) prima di `_build_text` in `semantic/extract.py`, idealmente già a monte in ingest RSS.
+**Non incluso:** entità già inquinate nel DB reale prima del fix (es. quelle viste nel grafo dell'artifact di verifica di questa sessione, catturate PRIMA di questo fix) restano finché non si rilancia NER sui doc coinvolti o si fa cleanup mirato.
 
 ---
 
@@ -197,6 +197,8 @@ Verifica quantitativa: top-20 entità collegate a doc `origin='rss'` → 19/20 n
 **Fix**: stesso pattern di `embedder.py` — `extract.py::extract_entities` ora importa `NON_PROSE_ORIGINS` da `embedder.py` e lo applica alla query candidati NER (`AND (origin IS NULL OR origin NOT IN (...))`). 1 nuovo test (`test_extract.py::test_ner_excludes_gdelt_and_comtrade_origin_even_if_already_embedded`). Non tocca i 128.090 doc gdelt con `ner_done=1` già processati (storico, resta contaminato per la stessa scelta di scope — no cleanup DB reale). Ferma però la crescita: i 46.196 doc `ner_done=0` non verranno più processati da NER futuri.
 
 **Impatto:** alto — senza questo secondo fix, il primo fix (embedder.py) dava una falsa sensazione di sicurezza: i dati NUOVI erano puliti ma la pipeline continuava comunque a inquinare entità ad ogni `extract` per via del backlog storico già `embedded=1`. 437 test verdi totali dopo questo fix.
+
+**Terzo follow-up — cleanup DB reale eseguito (2026-07-09), dopo sincronizzazione con lavoro parallelo (canonicalizzazione entità + CP-015, altra sessione, mergiati su `main`):** `pathos ingest gdelt-reset --yes` lanciato sul DB reale — cancellati tutti i 177.281 `raw_documents` origin=gdelt, 234.502 `gdelt_events`, 118.166 `events` origin=gdelt, 168.544 `vec_documents`, 295.356 `document_entities`, 3.908 entità rimaste orfane, 27.734 `entity_links` coinvolti, 4.836 righe `gdelt_file_log`. Verificato: RSS/Comtrade/PortWatch/USGS/FIRMS/IODA intatti, entità condivise (es. "Iran" citata sia da doc gdelt che rss) sopravvivono con solo la parte gdelt rimossa. `origin=gdelt` ora completamente vuoto in tutte le tabelle derivate — il "NON incluso" della diagnosi originale è ora risolto. Prossimo passo: rilanciare `gdelt-history` da zero con la pipeline pulita (CP-016+CP-015+canonicalizzazione tutti già attivi, niente da smaltire questa volta).
 
 ---
 

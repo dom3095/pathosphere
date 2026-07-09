@@ -57,17 +57,30 @@ uv run pathos ingest usgs --start 2018-01-01         # backfill storico terremot
 uv run pathos ingest firms                           # incendi FIRMS (riprende da ultimo per area; richiede FIRMS_MAP_KEY)
 uv run pathos ingest firms --start 2018-01-01        # backfill storico (auto source VIIRS_NOAA20_SP, finestre 5gg)
 
-# Pipeline semantica (Fase 2)
-uv run pathos embed                                 # embed + dedup semantica + clustering → eventi
-uv run pathos extract                                # NER + geocoding + Wikidata entity linking
-uv run pathos graph                                 # grafo co-occorrenze + divergenza narrativa
+# Pipeline semantica (Fase 2) — completa
+chmod +x scripts/run_pipeline.sh
+./scripts/run_pipeline.sh                           # anomalie → embed → extract → cluster → graph (~1.5h, caffeinate)
+
+# Pipeline semantica — step singoli
+uv run pathos ingest gdelt-anomalies --backfill-country --full    # anomalie Goldstein → eventi
+uv run pathos embed                                 # embed + dedup semantica
+uv run pathos cluster                               # clustering → eventi (Union-find)
+uv run pathos extract                               # NER + geocoding + Wikidata entity linking
+uv run pathos graph                                 # grafo co-occurrenze + divergenza narrativa
 uv run pathos embed --skip-dedup                    # solo embedding
+uv run pathos embed --skip-cluster                  # embed + dedup, no clustering
 
 # Ciclo notturno
-uv run pathos cycle
+uv run pathos cycle                                 # ciclo completo una volta
 uv run pathos cycle --dry-run
 uv run pathos cycle --from-phase embed
 uv run pathos cycle --from-phase graph              # riprendi da GRAPH
+
+# Loop autonomo (CP-017)
+chmod +x scripts/setup_launchd.sh
+./scripts/setup_launchd.sh                          # installa daemon 12h (una volta)
+./scripts/setup_launchd.sh --uninstall              # disattiva daemon
+caffeinate -i uv run pathos loop --sleep-hours 1.0  # loop manuale con caffeinate
 
 # Export
 uv run pathos export parquet                       # backup Parquet partizionato → data/parquet/

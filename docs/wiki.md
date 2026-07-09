@@ -706,35 +706,89 @@ uv run python -m spacy download xx_ent_wiki_sm
 
 ---
 
-## 7. Ciclo notturno
+## 7. Ciclo notturno e automazione
 
-**File:** `pathosphere/cycle/orchestrator.py`
+**File:** `pathosphere/cycle/orchestrator.py`, `pathosphere/cycle/loop.py`, `scripts/setup_launchd.sh`
 
-Sei fasi sequenziali, riprendibili da qualsiasi punto. Ogni fase è atomica: se fallisce, il ciclo si ferma e salva l'errore in `CycleState`.
+Sei fasi sequenziali, riprendibili da qualsiasi punto. Ogni fase è atomica e standalone: se fallisce, il ciclo si ferma e salva l'errore in `CycleState` (JSON persistente).
 
 ```
 INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF
-  ✅       ✅        ✅         ✅        ✅       ⬜
+  ✅       ✅        ✅         ✅        ✅       ✅
 ```
 
-| Fase | Funzione | Stato | Descrizione |
+| Fase | Funzione | CLI | Descrizione |
 |---|---|---|---|
-| `INGEST` | `_phase_ingest` | ✅ | Scarica GDELT (+ anomalie Goldstein CP-016) + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS |
-| `EMBED` | `_phase_embed` | ✅ | Embedding e5-small + dedup semantica KNN |
-| `EXTRACT` | `_phase_extract` | ✅ | NER (spaCy) + geocoding Nominatim + Wikidata QID |
-| `CLUSTER` | `_phase_cluster` | ✅ | Union-find clustering → eventi |
-| `GRAPH` | `_phase_graph` | ✅ | Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences |
-| `BRIEF` | `_phase_brief` | ⬜ stub | Genera brief + tesi (Claude SDK) — Fase 3 |
+| `INGEST` | `_phase_ingest` | `pathos ingest gdelt/rss/…` | Scarica GDELT (+ anomalie Goldstein CP-016) + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS/IODA |
+| `EMBED` | `_phase_embed` | `pathos embed` | Embedding e5-small + dedup semantica KNN |
+| `EXTRACT` | `_phase_extract` | `pathos extract` | NER (spaCy) + geocoding Nominatim + Wikidata QID |
+| `CLUSTER` | `_phase_cluster` | `pathos cluster` | Union-find clustering → eventi |
+| `GRAPH` | `_phase_graph` | `pathos graph` | Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences |
+| `BRIEF` | `_phase_brief` | `pathos brief` | Genera brief mattutino + tesi (Claude SDK) |
 
-**Comandi:**
+### Comandi ciclo (manuale)
 
+**Pipeline completa (4 fasi semantiche):**
 ```bash
-uv run pathos cycle                         # ciclo completo
+chmod +x scripts/run_pipeline.sh
+./scripts/run_pipeline.sh                   # anomalie → embed → extract → cluster → graph (~1.5h, caffeinate)
+```
+
+**Step singoli:**
+```bash
+uv run pathos ingest gdelt-anomalies --backfill-country --full    # anomalie Goldstein
+uv run pathos embed                         # embedding + dedup
+uv run pathos cluster                       # clustering → eventi
+uv run pathos extract                       # NER + geocoding + Wikidata
+uv run pathos graph                         # grafo entità + divergenza narrativa
+```
+
+**Ciclo completo notturno (6 fasi):**
+```bash
+uv run pathos cycle                         # ciclo completo una volta
 uv run pathos cycle --dry-run               # simula senza I/O
 uv run pathos cycle --from-phase embed      # riprendi da EMBED (salta INGEST)
 uv run pathos cycle --from-phase cluster    # riprendi da CLUSTER
 uv run pathos cycle --from-phase graph      # solo graph + brief
 uv run pathos cycle --from-phase brief      # solo brief mattutino
+```
+
+### Loop autonomo (CP-017)
+
+**Loop permanente** (`pathosphere/cycle/loop.py`):
+- Legge/scrive stato persistente: `data/cycle_state.json`
+- Rilancia il ciclo completo ogni N ore (default 1h tra cicli)
+- Retry automatico con backoff esponenziale (max 3 tentativi per fase, poi pausa 5min)
+- Resumable da crash: legge `last_phase` dal JSON, riparte da `next_phase_after`
+- Graceful shutdown: Ctrl+C salva stato e esci
+
+**Setup launchd (macOS daemon — una volta sola):**
+```bash
+chmod +x scripts/setup_launchd.sh
+./scripts/setup_launchd.sh
+# Opzioni:
+#   --interval SECONDS    (default 43200 = 12 ore)
+#   --uninstall           (disattiva e rimuovi)
+# Monitor: tail -f data/logs/launchd.log
+```
+
+**Loop manuale (debug/test):**
+```bash
+chmod +x scripts/run_pipeline.sh
+caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
+# Monitor: tail -f data/cycle_state.json
+```
+
+**Stato persistente** (`data/cycle_state.json`):
+```json
+{
+  "last_phase": "EXTRACT",
+  "last_completion": "2026-07-10T15:32:00",
+  "error_log": [
+    {"timestamp": "2026-07-10T14:00:00", "phase": "EMBED", "error": "OOM", "attempts": 3},
+    ...
+  ]
+}
 ```
 
 ---
@@ -920,15 +974,18 @@ pathos
 │   └── parquet         Export tabelle principali → Parquet partizionato
 │       ├── --tables        Subset (es. raw_documents,events) [default: tutte]
 │       └── --out-dir       Directory output [default: data/parquet]
-├── embed               Embedding + dedup semantica + clustering → eventi
+├── embed               Embedding + dedup semantica → eventi
 │   ├── --batch-size    Doc per chiamata encode() [default: 32]
 │   ├── --skip-dedup    Solo embedding, no dedup
-│   └── --skip-cluster  Embedding + dedup, no clustering
+│   └── --skip-cluster  Embedding + dedup, no clustering (usa pathos cluster separato)
+├── cluster             Raggruppa doc deduplicati in eventi (Union-find)
+│   └── --time-window-hours  Finestra temporale clustering [default: 72]
 ├── extract             NER + geocoding + Wikidata entity linking
 │   ├── --limit         Max doc su cui girare NER
 │   ├── --max-lookups   Budget lookup geocoding + Wikidata [default: 50]
 │   ├── --skip-geocode  Salta Nominatim
-│   └── --skip-wikidata Salta Wikidata
+│   ├── --skip-wikidata Salta Wikidata
+│   └── --backfill-demonyms  Reclassifica demoniaci (Israeli→Israel) da other a location (CP-016)
 ├── graph               Grafo co-occorrenze + divergenza narrativa per blocco
 │   ├── --skip-links        Salta build_entity_links
 │   ├── --skip-divergence   Salta compute_narrative_divergences
@@ -936,6 +993,10 @@ pathos
 ├── cycle               Esegui ciclo notturno (INGEST→EMBED→EXTRACT→CLUSTER→GRAPH→BRIEF)
 │   ├── --dry-run       Simula tutte le fasi senza I/O
 │   └── --from-phase    Riprendi da fase specifica (ingest|embed|extract|cluster|graph|brief)
+├── loop                Ciclo autonomo permanente (CP-017) con stato persistente
+│   ├── --max-retries         Tentativi per fase [default: 3]
+│   ├── --sleep-hours         Ore tra cicli completi [default: 1.0]
+│   └── --state-file          Path JSON stato [default: data/cycle_state.json]
 ├── brief               Genera brief mattutino intelligenza (Claude SDK)
 │   ├── --date          Data ISO brief [default: oggi UTC]
 │   ├── --lookback-days Giorni back per divergenze e anomalie [default: 7]
