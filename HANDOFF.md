@@ -1,6 +1,25 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-07, fix Wikidata linking (branch fix/wikidata-linking)*
+*Aggiornato: 2026-07-09 — reset GDELT reale + backfill demonimi eseguiti su main, sincronizzazione dopo lavoro parallelo tra due sessioni*
+
+## Reset GDELT + backfill demonimi su DB reale (2026-07-09)
+
+**Contesto**: sessione precedente (branch `refactor/gdelt-numeric-split`, ora eliminato) aveva diagnosticato CP-016 (documenti sintetici GDELT trattati come prosa dalla pipeline NLP) e scritto il fix. In parallelo, un'altra sessione ha ramificato da quel branch aggiungendo canonicalizzazione entità via Wikidata QID (nuova colonna `entities.canonical_entity_id`) + fix CP-015 (strip HTML dal body prima del NER, dipendenza `bleach`) + una propria implementazione di reset GDELT in `cli.py`, mergiando tutto su `main` con squash (PR #8, #9, #10). Il branch originale è risultato ridondante (contenuto già in `main`) ed è stato eliminato.
+
+**Azioni eseguite in questa sessione su `main`**:
+1. `pathos ingest gdelt-reset --yes` sul DB reale (`data/db/pathosphere.db`, 494MB) — cancellati 177.281 `raw_documents` origin=gdelt, 234.502 `gdelt_events`, 118.166 `events` origin=gdelt, 168.544 `vec_documents`, 295.356 `document_entities`, 3.908 entità rimaste orfane (usate solo da doc gdelt), 27.734 `entity_links` coinvolti, 4.836 righe `gdelt_file_log` (per permettere ri-scaricamento pulito). RSS/Comtrade/PortWatch/USGS/FIRMS/IODA verificati intatti. Operazione confermata con l'utente via preview prima dell'esecuzione (comando supporta dry-run di default, `--yes` per eseguire davvero).
+2. `pathos extract --backfill-demonyms --limit 0 --skip-geocode --skip-wikidata` — 49 entità (Israeli, Russian, Chinese, American, Ukrainian…) riclassificate da `entity_type='other'` a `location` con `canonical_name` = nome paese.
+3. Costruito un artifact visivo (HTML standalone, canvas force-directed graph + card cluster + mappa) usando dati catturati PRIMA del reset — quindi rappresenta lo stato GDELT-contaminato "as-is", utile come confronto storico. Include un esempio onesto di topic-drift nel clustering (evento 122013 "Armenia's top court…" i cui documenti sono in realtà quasi tutti su Netanyahu/Israele — sintomo di chain-collapse, non ancora fixato).
+
+**Stato DB reale dopo questa sessione**: `origin=gdelt` completamente vuoto (0 righe in tutte le tabelle derivate). Prossimo passo per chi riprende: rilanciare `pathos ingest gdelt-history --start <data>` per ripopolare da zero con la pipeline già pulita (CP-016+CP-015+canonicalizzazione tutti attivi dal primo giorno, niente contaminazione da smaltire questa volta), poi `pathos ingest gdelt-anomalies --backfill-country --full`.
+
+**Punti di attenzione per la prossima sessione**:
+- Se lavori in parallelo con un'altra sessione Claude sullo stesso repo, **verifica sempre `git log main` e `git branch -a` prima di assumere che il tuo branch sia l'unica fonte di verità** — in questa sessione un reset/backfill è stato lanciato mentre in background un `git checkout` cambiava branch, e serviva ricostruire la sequenza da `git reflog` per capire cosa fosse successo. Nessun danno (i processi in esecuzione non sono affetti da checkout successivi, il DB è file-based non branch-based), ma ha richiesto un giro di verifica non banale.
+- File innocuo da ignorare se lo vedi in `git status`: `pathosphere.db` (0 byte, root del repo) — scarto di un comando lanciato dalla cwd sbagliata in una sessione precedente, non il DB vero (`data/db/pathosphere.db`).
+
+Dettagli completi CP-016/CP-015/canonicalizzazione: vedi commit `3566dbc` e PR #8/#9/#10 su GitHub, più `CRITICAL_POINTS.md`.
+
+---
 
 ## Fix Wikidata linking (2026-07-07)
 
