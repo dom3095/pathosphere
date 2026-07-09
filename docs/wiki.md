@@ -728,6 +728,22 @@ INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF
 
 ### Comandi ciclo (manuale)
 
+**Pipeline completa (4 fasi semantiche):**
+```bash
+chmod +x scripts/run_pipeline.sh
+./scripts/run_pipeline.sh                   # anomalie → embed → extract → cluster → graph (~1.5h, caffeinate)
+```
+
+**Step singoli:**
+```bash
+uv run pathos ingest gdelt-anomalies --backfill-country --full    # anomalie Goldstein
+uv run pathos embed                         # embedding + dedup
+uv run pathos cluster                       # clustering → eventi
+uv run pathos extract                       # NER + geocoding + Wikidata
+uv run pathos graph                         # grafo entità + divergenza narrativa
+```
+
+**Ciclo completo notturno (6 fasi):**
 ```bash
 uv run pathos cycle                         # ciclo completo una volta
 uv run pathos cycle --dry-run               # simula senza I/O
@@ -746,17 +762,21 @@ uv run pathos cycle --from-phase brief      # solo brief mattutino
 - Resumable da crash: legge `last_phase` dal JSON, riparte da `next_phase_after`
 - Graceful shutdown: Ctrl+C salva stato e esci
 
+**Setup launchd (macOS daemon — una volta sola):**
 ```bash
-# Manuale (debug/test)
-caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
-# Monitor: tail -f data/cycle_state.json
-
-# Automatico (macOS launchd) — installa una volta sola
+chmod +x scripts/setup_launchd.sh
 ./scripts/setup_launchd.sh
 # Opzioni:
 #   --interval SECONDS    (default 43200 = 12 ore)
 #   --uninstall           (disattiva e rimuovi)
 # Monitor: tail -f data/logs/launchd.log
+```
+
+**Loop manuale (debug/test):**
+```bash
+chmod +x scripts/run_pipeline.sh
+caffeinate -i uv run pathos loop --sleep-hours 1.0 --max-retries 3
+# Monitor: tail -f data/cycle_state.json
 ```
 
 **Stato persistente** (`data/cycle_state.json`):
