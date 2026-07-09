@@ -49,9 +49,21 @@ Da qui — prossimi step prima di Fase 4:
 
 ## Ultima azione completata
 
-Sessione 2026-07-10 (ciclo 2 — loop): 
-- Lanciato `pathos ingest gdelt-history --start 2025-07-10` in background con `caffeinate` (previene Mac sleep durante le ~12h di scaricamento). Log: `data/logs/gdelt_history_2025-07-10.log`. Monitorare con `tail -f data/logs/gdelt_history_2025-07-10.log`.
-- DB attualmente contiene solo RSS/Comtrade/PortWatch/USGS/FIRMS/IODA (no GDELT). Quando history finisce, verrà lanciata la pipeline completa: anomalie Goldstein, embed, extract, cluster, graph — tutto con il fix CP-016/CP-015/canonicalizzazione già attivo dal primo documento, niente retroattivo.
+Sessione 2026-07-10 (ciclo 2 — loop + launchd + tests): 
+- ✅ CP-017 loop autonomo: `pathosphere/cycle/loop.py` + `pathos loop` comando + state persistence JSON
+- ✅ Launchd automation: `scripts/setup_launchd.sh` setup script (genera plist, installa, supports --uninstall)
+- ✅ `pathos cluster` comando standalone (prima solo via `pathos embed`)
+- ✅ Wiki aggiornata (sezione 7 ciclo notturno + CLI reference)
+- ✅ HANDOFF/LOOP_STATE aggiornati
+- ✅ 6 test nuovi launchd setup validation → 458 totali verdi
+- 🔄 GDELT re-ingest in background (PID ~46142, log: data/logs/gdelt_history_2025-07-10.log, ETA ~12:30 UTC 2026-07-10)
+
+**Prossima sessione (quando history finisce):**
+1. Pipeline semantica: `gdelt-anomalies --backfill-country --full` → `embed` → `extract` → `cluster` → `graph` (~1.5h)
+2. Notebook verifica (study_08): hairball/contaminazione/topic-drift su GDELT pulito
+3. **TEST grafo + clustering** (verifica entità RSS sensate, cluster topic-coherent)
+4. **TEST tesi + predizioni** (causal chain valid, scoring calibrato, paper trading agent vs random)
+5. Fase 4 Dashboard (dopo verifica 3-4)
 
 Precedente (2026-07-09):
 
