@@ -24,6 +24,7 @@ dependencies = [
     "bleach>=6.0",
     "pandas>=2.0",
     "matplotlib>=3.8",
+    "seaborn>=0.13",
     "jupyter>=1.0",
 ]
 
@@ -43,6 +44,7 @@ packages = ["pathosphere"]
 
 [dependency-groups]
 dev = [
+    "diptest>=0.11.0",
     "pytest>=9.0.3",
 ]
 
