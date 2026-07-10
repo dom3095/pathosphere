@@ -1,33 +1,38 @@
 """
 Event clustering — Phase 2.
 
-Groups non-duplicate embedded docs into events via greedy union-find:
+Groups non-duplicate embedded docs into events via greedy average-linkage union-find:
   1. Load candidates (embedded, non-duplicate, not yet in an event, within time window)
   2. For each candidate, find similar neighbours via sqlite-vec KNN
-  3. Union-find to merge connected components
-  4. Each component → one event row + event_documents entries
+  3. Complete-linkage coherence check: candidate must be within threshold of cluster centroid
+  4. Union-find to merge connected components
+  5. Each component → one event row + event_documents entries
 
-Similarity threshold 0.75 (lower than dedup 0.92) to group loosely related
-articles about the same story.
+Similarity threshold 0.85 (prevents single-linkage chain-collapse). Average-linkage
+check ensures docs in a cluster stay topically coherent: when merging doc D into
+cluster C, verify distance(D, centroid(C)) <= threshold, not just distance(D, nearest).
 """
 
 import math
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 from loguru import logger
 
 DEFAULT_TIME_WINDOW_H = 72
-DEFAULT_SIMILARITY = 0.85  # 0.75 caused full-chain collapse; 0.85 separates stories
+DEFAULT_SIMILARITY = 0.85  # single-linkage threshold (between neighbors in KNN)
+DEFAULT_COHERENCE_SIMILARITY = 0.88  # average-linkage check: all members within this of centroid
 DEFAULT_KNN = 20
-DEFAULT_MAX_CLUSTER_SIZE = 30  # cap to prevent runaway single-linkage chaining
+DEFAULT_MAX_CLUSTER_SIZE = 30  # cap to prevent runaway clusters
 
 
 @dataclass
 class ClusterResult:
     events_created: int = 0
     docs_assigned: int = 0
+    coherence_rejections: int = 0  # docs rejected due to poor fit to cluster centroid
 
 
 def _l2_threshold(cosine_similarity: float) -> float:
@@ -41,16 +46,34 @@ def _find(parent: dict, x: int) -> int:
     return x
 
 
-def _union(parent: dict, size: dict, x: int, y: int, max_size: int) -> None:
+def _union(
+    parent: dict,
+    size: dict,
+    x: int,
+    y: int,
+    max_size: int,
+    cluster_members: dict[int, set[int]],
+    centroids: dict[int, np.ndarray],
+) -> bool:
+    """Union two clusters if coherent, return True if merged."""
     px, py = _find(parent, x), _find(parent, y)
     if px == py:
-        return
+        return False
     if size[px] + size[py] > max_size:
-        return
+        return False
+
+    # Merge smaller into larger
     if size[px] < size[py]:
         px, py = py, px
+
     parent[py] = px
     size[px] += size[py]
+    cluster_members[px] = cluster_members[px] | cluster_members[py]
+    centroids[px] = (centroids[px] * (size[px] - size[py]) + centroids[py] * size[py]) / size[px]
+
+    del cluster_members[py]
+    del centroids[py]
+    return True
 
 
 def cluster_documents(
@@ -61,9 +84,10 @@ def cluster_documents(
     knn: int = DEFAULT_KNN,
     max_cluster_size: int = DEFAULT_MAX_CLUSTER_SIZE,
 ) -> ClusterResult:
-    """Group recent non-duplicate docs into event records."""
+    """Group recent non-duplicate docs into events via average-linkage clustering."""
     result = ClusterResult()
     l2_thresh = _l2_threshold(similarity)
+    l2_thresh_coherence = _l2_threshold(DEFAULT_COHERENCE_SIMILARITY)
     cutoff = (
         datetime.now(tz=timezone.utc) - timedelta(hours=time_window_hours)
     ).strftime("%Y-%m-%dT%H:%M:%S")
@@ -89,15 +113,29 @@ def cluster_documents(
     parent = {d: d for d in doc_ids}
     size = {d: 1 for d in doc_ids}
     id_to_row = {r["id"]: r for r in candidates}
+    cluster_members: dict[int, set[int]] = {d: {d} for d in doc_ids}
+    centroids: dict[int, np.ndarray] = {}
 
-    logger.info(f"Clustering {len(doc_ids)} candidate docs")
+    # Load all embeddings into memory for centroid computation
+    embeddings: dict[int, np.ndarray] = {}
+    for row in candidates:
+        vec_row = conn.execute(
+            "SELECT embedding FROM vec_documents WHERE document_id = ?", (row["id"],)
+        ).fetchone()
+        if vec_row:
+            emb_bytes = vec_row["embedding"]
+            # sqlite-vec stores embeddings as 4-byte float vectors; deserialize
+            emb = np.frombuffer(emb_bytes, dtype=np.float32).copy()
+            embeddings[row["id"]] = emb
+            centroids[row["id"]] = emb.copy()
+
+    logger.info(
+        f"Clustering {len(doc_ids)} candidate docs with average-linkage coherence check"
+    )
 
     for row in candidates:
         doc_id = row["id"]
-        vec_row = conn.execute(
-            "SELECT embedding FROM vec_documents WHERE document_id = ?", (doc_id,)
-        ).fetchone()
-        if not vec_row:
+        if doc_id not in embeddings:
             continue
 
         try:
@@ -108,7 +146,7 @@ def cluster_documents(
                 WHERE embedding MATCH ? AND k = ?
                 ORDER BY distance
                 """,
-                (vec_row["embedding"], knn),
+                (embeddings[doc_id].tobytes(), knn),
             ).fetchall()
         except Exception as exc:
             logger.warning(f"KNN failed for doc {doc_id}: {exc}")
@@ -120,8 +158,29 @@ def cluster_documents(
                 continue
             if nb["distance"] > l2_thresh:
                 break
-            if nb_id in id_set:
-                _union(parent, size, doc_id, nb_id, max_cluster_size)
+            if nb_id not in id_set:
+                continue
+
+            # Average-linkage coherence check: doc must be close to cluster centroid
+            nb_root = _find(parent, nb_id)
+            doc_root = _find(parent, doc_id)
+            if nb_root == doc_root:
+                continue  # Already same cluster
+
+            # Compute distance to centroid of nb's cluster
+            centroid = centroids[nb_root]
+            dist_to_centroid = np.linalg.norm(embeddings[doc_id] - centroid)
+
+            # Stricter coherence threshold (0.90 similarity) vs KNN threshold (0.85)
+            if dist_to_centroid > l2_thresh_coherence:
+                result.coherence_rejections += 1
+                continue
+
+            # Merge
+            merged = _union(parent, size, doc_id, nb_id, max_cluster_size,
+                          cluster_members, centroids)
+            if not merged:
+                continue
 
     # Build components
     components: dict[int, list[int]] = {}
@@ -159,6 +218,7 @@ def cluster_documents(
             result.docs_assigned += len(cluster_ids)
 
     logger.info(
-        f"Cluster complete: {result.events_created} events, {result.docs_assigned} docs"
+        f"Cluster complete: {result.events_created} events, {result.docs_assigned} docs, "
+        f"{result.coherence_rejections} rejected (poor centroid fit)"
     )
     return result

@@ -22,6 +22,9 @@ dependencies = [
     "xx-ent-wiki-sm",
     "yfinance>=1.4.1",
     "bleach>=6.0",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "jupyter>=1.0",
 ]
 
 [project.scripts]
