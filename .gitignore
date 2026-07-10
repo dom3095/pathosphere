@@ -24,6 +24,12 @@ data/logs/
 .pytest_cache/
 .mypy_cache/
 
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Notebook-generated plots (regenerate by re-running notebooks)
+study_*.png
+
 # Claude Code project settings (locale, non versionare)
 .claude/
 data/skills/*
