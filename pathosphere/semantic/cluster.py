@@ -98,6 +98,7 @@ def cluster_documents(
         FROM raw_documents r
         WHERE r.embedded = 1
           AND r.is_duplicate = 0
+          AND (r.origin IS NULL OR r.origin != 'gdelt')
           AND COALESCE(r.published_at, r.fetched_at) >= ?
           AND r.id NOT IN (SELECT document_id FROM event_documents)
         ORDER BY pub_at ASC
