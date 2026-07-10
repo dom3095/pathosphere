@@ -52,11 +52,24 @@
 - Link storici gdelt_linked: restano intatti (nessun cleanup retroattivo)
 → Per dataset storico pulito serve `gdelt-reset --yes` esplicito (fatto in sessione 2026-07-09)
 
+**Study 08b** ✅ — Event aggregation coherent (20/20 top eventi ≥3 docs, 231K eventi totali)
+
+**Extract Wikidata Retry** ✅ — Delay ↑ (1.0 → 2.0 sec)
+- 15 QID linkati (2x baseline 7)
+- 20 entities checked (2x baseline 10)
+- Rate-limited dopo "America"
+- Progresso significativo nonostante rate limiting
+
+**Stato finale**:
+- ✓ GDELT re-ingest: 8.760 file, 223K eventi, 334K docs
+- ✓ Pipeline semantica: embed/extract/cluster/graph completi
+- ✓ Study 08 + 08b: hairball ↓2pp, event coherence OK
+- ✓ Wikidata: 15 QID (2x improvement after retry)
+- ✓ Branch `feat/study-08-gdelt-verification`: 2 commits, 458 test verdi
+
 **Prossimi step**:
-1. Re-lanciare `uv run pathos extract` con Wikidata delay ↑ (prossimo ciclo)
-2. Study 08b: topic-drift clustering (semantica embedding coherence)
-3. Fase 4 Dashboard (dopo verifica clustering OK)
-4. PR → merge `feat/study-08-gdelt-verification` 
+1. Merge PR `feat/study-08-gdelt-verification` → main
+2. Fase 4 Dashboard Streamlit 
 
 ---
 
