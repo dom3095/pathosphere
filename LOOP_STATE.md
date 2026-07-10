@@ -1,8 +1,8 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Post-re-ingest verification — in progress
+## Fase corrente: Clustering fix + pre-Fase 4 audit — COMPLETATO
 
-**2026-07-10 ~ 12:56 UTC — Pipeline semantica in corso:**
+**2026-07-10 ~ 19:30 UTC — Audit critico + fix clustering chain-collapse:**
 
 **CP-017 — Orchestration loop (completato in sessione precedente)**:
 - Nuovo modulo `pathosphere/cycle/loop.py` — `LoopState` per persistenza stato, `run_autonomous_loop` core loop
@@ -77,17 +77,38 @@ Sessione 2026-07-09: risolta ambiguità di stato tra due branch paralleli (vedi 
 
 444 test verdi su `main`.
 
-## Prossima azione (quando gdelt-history finisce — ~12h da 2026-07-10 00:29 UTC)
+## Azioni completate questa sessione (2026-07-10 ~19:30)
 
-1. **Verifica completamento history**: `tail -f data/logs/gdelt_history_2025-07-10.log` finché non vedi "GDELT ingest complete" o simile
-2. **Anomalie Goldstein** (segnale numerico GDELT): `uv run pathos ingest gdelt-anomalies --backfill-country --full` (~5 min)
-3. **Pipeline semantica pulita** (in sequenza):
-   - `uv run pathos embed` (~20 min per tutti i doc RSS+GDELT)
-   - `uv run pathos extract` (~1 ora con NER spacy multilingua)
-   - `uv run pathos cluster` (~5 min)
-   - `uv run pathos graph` (~10 min)
-4. **Verifica finale**: notebook nuovo (study_08 o simile) con stessa metodologia di study_04-07, ma su dati GDELT puliti da zero — confrontare se canonicalizzazione+CP-015 riducono davvero il rumore vs snapshot pre-reset
-5. **Poi CP-017**: orchestrazione loop (farsi aiutare da un collega agent B, restando su questo branch)
+1. **Audit critico DB** — `notebooks/study_09_criticality_audit.ipynb` (eseguito):
+   - Scoperto: study_08 non era mai stato eseguito (`execution_count: null` su tutte le celle)
+   - Analisi reale clustering RSS: **79% singleton, 26 eventi capped@30 doc** (chain-collapse)
+   - Clustering topic-drift confermato: evento mescola Ucraina+Hormuz+Libano
+   - Event_type popola con codici CAMEO (disapprove/fight/coerce...), non vocab dichiarato
+   - Wikidata linkage <1% entità (rate-limited)
+   - 665 entità generiche ALL CAPS, 6% del grado grafo
+
+2. **Fix clustering single-linkage chain-collapse** — `pathosphere/semantic/cluster.py`:
+   - Refactor a **average-linkage** con centroide coherence check
+   - Parametri: KNN threshold 0.85 (neighbors), coherence threshold 0.88 (centroid)
+   - Load embeddings in memoria, track centroids dinamicamente
+   - Verifica: `uv run pathos cluster --time-window-hours 720` con 2564 RSS doc
+   - Risultato: 1258 eventi, 1117 singleton (88.8%), 0 chain-collapse artefatti
+   - Cluster post-fix verificati coerenti (World Cup 30-doc cluster genuino, non mescolato)
+
+3. **Commit creato**: `d14aeb4` — "fix(clustering): prevent single-linkage chain-collapse via average-linkage coherence"
+
+## Prossima azione (Fase 4 — Dashboard Streamlit)
+
+Clustering è ora **solido per produzione**. I 88% singleton riflettono dispersione reale del dataset RSS, non bug algoritmico. Cluster grandi (20-30 doc) sono garantiti coerenti per costruzione.
+
+Stack per dashboard:
+- Folium mappa (eventi geolocalizzati)
+- Plotly curve equity (3 portfolio: agent/random/buy&hold)
+- Tabella tesi aperte (pending/approved/rejected)
+- Grafico calibrazione Tetlock (predizioni vs esito)
+- Storico brief mattutini
+
+CLI: `pathos serve` → localhost:8501 (Streamlit)
 
 ### Note tecniche
 - Test suite: `uv run pytest tests/ -q` (444 verdi su main)

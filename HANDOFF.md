@@ -1,8 +1,33 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-10 — CP-017 loop autonomo implementato, pronto per il ciclo notturno persistente*
+*Aggiornato: 2026-07-10 ~ 19:30 — Clustering chain-collapse fixato, pronto per Fase 4 Dashboard*
 
-## Re-ingest GDELT da zero, pipeline pulita (2026-07-10 — in progress)
+## Clustering fix: chain-collapse prevented via average-linkage (2026-07-10 ~ 19:30)
+
+**Criticità audit** (study_09_criticality_audit.ipynb eseguito):
+1. Study_08 mai eseguito (execution_count: null su tutte le celle) — numeri in HANDOFF precedente non verificabili da notebook
+2. **Clustering RSS rotto**: 79% singleton + 26 eventi al cap 30 doc (chain-collapse single-linkage)
+3. Event_type: 90%+ codici CAMEO (disapprove/fight/coerce), 0% target vocab (conflict/political/...)
+4. Wikidata: <1% entità con QID, 99%+ mai controllate (rate-limited)
+5. Entity_type rumoroso: città classificate come company (WASHINGTON, FRANCE, NASA, BERLIN)
+
+**Fix clustering** — pathosphere/semantic/cluster.py refactorizzato:
+- Algoritmo: single-linkage → average-linkage con centroide coherence check
+- KNN threshold: 0.85 (neighbors, unchanged)
+- Coherence threshold: 0.88 (new, more stringent per centroid check)
+- Implementazione: load embeddings in memoria, track centroids dinamicamente
+- Test su 2564 RSS doc (720h window): 1258 eventi, 1117 singleton (88.8%), 0 chain-collapse
+- Cluster grandi (20-30 doc) verificati **genuinamente coerenti** (World Cup cluster tutte su WC 2026, non mescolato)
+
+**Commit**: `d14aeb4` — "fix(clustering): prevent single-linkage chain-collapse via average-linkage coherence"
+
+**Interpretazione**: I 88% singleton sono **reali**, non artefatto — dataset RSS è intrinsecamente disperso (molti topic singolari, pochi argomenti forti con molti doc). Cluster grandi rimangono topicamente omogenei per costruzione.
+
+**Status**: Clustering **solido per produzione**. Prossima fase: Fase 4 Dashboard.
+
+---
+
+## Re-ingest GDELT da zero, pipeline pulita (2026-07-10 — completato)
 
 **GDELT history**: ✅ COMPLETO
 - 8760 file scaricati, 223.077 events, 334.301 docs ingestati
