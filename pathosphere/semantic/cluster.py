@@ -1,16 +1,22 @@
 """
 Event clustering — Phase 2.
 
-Groups non-duplicate embedded docs into events via greedy average-linkage union-find:
+Groups non-duplicate embedded docs into events via greedy complete-linkage union-find:
   1. Load candidates (embedded, non-duplicate, not yet in an event, within time window)
   2. For each candidate, find similar neighbours via sqlite-vec KNN
-  3. Complete-linkage coherence check: candidate must be within threshold of cluster centroid
-  4. Union-find to merge connected components
-  5. Each component → one event row + event_documents entries
+  3. Cheap centroid pre-filter (loose threshold) skips obviously-unrelated clusters
+  4. True complete-linkage check: merging cluster A into cluster B requires EVERY
+     member of A within threshold of EVERY member of B (not just the bridging doc)
+  5. Union-find to merge connected components
+  6. Each component → one event row + event_documents entries
 
-Similarity threshold 0.85 (prevents single-linkage chain-collapse). Average-linkage
-check ensures docs in a cluster stay topically coherent: when merging doc D into
-cluster C, verify distance(D, centroid(C)) <= threshold, not just distance(D, nearest).
+Similarity threshold 0.85 (KNN neighbor search). Complete-linkage coherence (0.88)
+prevents a single "bridging" document from welding two unrelated clusters together:
+average-linkage (checking only the new doc against the target centroid) allows doc D
+to pass against both cluster A's centroid and cluster B's centroid independently, then
+silently merge A and B wholesale even though A's and B's other members were never
+checked against each other. Complete-linkage closes this by checking the full
+cross-product of both clusters' members before any merge.
 """
 
 import math
@@ -22,17 +28,18 @@ import numpy as np
 from loguru import logger
 
 DEFAULT_TIME_WINDOW_H = 72
-DEFAULT_SIMILARITY = 0.85  # single-linkage threshold (between neighbors in KNN)
-DEFAULT_COHERENCE_SIMILARITY = 0.88  # average-linkage check: all members within this of centroid
+DEFAULT_SIMILARITY = 0.85  # KNN neighbor threshold
+DEFAULT_COHERENCE_SIMILARITY = 0.88  # complete-linkage gate: max pairwise dist across both clusters
+DEFAULT_PREFILTER_SIMILARITY = 0.75  # cheap centroid pre-filter, looser than the real gate
 DEFAULT_KNN = 20
-DEFAULT_MAX_CLUSTER_SIZE = 30  # cap to prevent runaway clusters
+DEFAULT_MAX_CLUSTER_SIZE = 30  # cap to prevent runaway clusters (kept as defense-in-depth)
 
 
 @dataclass
 class ClusterResult:
     events_created: int = 0
     docs_assigned: int = 0
-    coherence_rejections: int = 0  # docs rejected due to poor fit to cluster centroid
+    coherence_rejections: int = 0  # cluster-pairs rejected by the complete-linkage gate
 
 
 def _l2_threshold(cosine_similarity: float) -> float:
@@ -44,6 +51,22 @@ def _find(parent: dict, x: int) -> int:
         parent[x] = parent[parent[x]]
         x = parent[x]
     return x
+
+
+def _complete_linkage_max_dist(
+    embeddings: dict[int, np.ndarray],
+    members_a: set[int],
+    members_b: set[int],
+) -> float:
+    """Max pairwise L2 distance across two clusters' full membership (complete-linkage)."""
+    max_dist = 0.0
+    for a in members_a:
+        emb_a = embeddings[a]
+        for b in members_b:
+            dist = np.linalg.norm(emb_a - embeddings[b])
+            if dist > max_dist:
+                max_dist = dist
+    return max_dist
 
 
 def _union(
@@ -84,10 +107,11 @@ def cluster_documents(
     knn: int = DEFAULT_KNN,
     max_cluster_size: int = DEFAULT_MAX_CLUSTER_SIZE,
 ) -> ClusterResult:
-    """Group recent non-duplicate docs into events via average-linkage clustering."""
+    """Group recent non-duplicate docs into events via complete-linkage clustering."""
     result = ClusterResult()
     l2_thresh = _l2_threshold(similarity)
     l2_thresh_coherence = _l2_threshold(DEFAULT_COHERENCE_SIMILARITY)
+    l2_thresh_prefilter = _l2_threshold(DEFAULT_PREFILTER_SIMILARITY)
     cutoff = (
         datetime.now(tz=timezone.utc) - timedelta(hours=time_window_hours)
     ).strftime("%Y-%m-%dT%H:%M:%S")
@@ -131,7 +155,7 @@ def cluster_documents(
             centroids[row["id"]] = emb.copy()
 
     logger.info(
-        f"Clustering {len(doc_ids)} candidate docs with average-linkage coherence check"
+        f"Clustering {len(doc_ids)} candidate docs with complete-linkage coherence check"
     )
 
     for row in candidates:
@@ -162,18 +186,27 @@ def cluster_documents(
             if nb_id not in id_set:
                 continue
 
-            # Average-linkage coherence check: doc must be close to cluster centroid
             nb_root = _find(parent, nb_id)
             doc_root = _find(parent, doc_id)
             if nb_root == doc_root:
                 continue  # Already same cluster
 
-            # Compute distance to centroid of nb's cluster
+            # Cheap pre-filter: doc vs nb's cluster centroid, loose threshold.
+            # Purely a performance shortcut to skip obviously-unrelated clusters
+            # before paying the O(|A|*|B|) exact check below — not the real gate.
             centroid = centroids[nb_root]
             dist_to_centroid = np.linalg.norm(embeddings[doc_id] - centroid)
+            if dist_to_centroid > l2_thresh_prefilter:
+                continue
 
-            # Stricter coherence threshold (0.90 similarity) vs KNN threshold (0.85)
-            if dist_to_centroid > l2_thresh_coherence:
+            # Complete-linkage gate: every member of doc's cluster must be within
+            # threshold of every member of nb's cluster. Prevents a single bridging
+            # doc from welding two unrelated clusters together (average-linkage's
+            # blind spot: checking only doc-vs-centroid on each side independently).
+            max_dist = _complete_linkage_max_dist(
+                embeddings, cluster_members[doc_root], cluster_members[nb_root]
+            )
+            if max_dist > l2_thresh_coherence:
                 result.coherence_rejections += 1
                 continue
 
@@ -220,6 +253,6 @@ def cluster_documents(
 
     logger.info(
         f"Cluster complete: {result.events_created} events, {result.docs_assigned} docs, "
-        f"{result.coherence_rejections} rejected (poor centroid fit)"
+        f"{result.coherence_rejections} rejected (complete-linkage gate failed)"
     )
     return result

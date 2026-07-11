@@ -324,3 +324,53 @@ def test_cluster_skips_already_in_event(tmp_db):
     # Still only 1 event (the pre-existing one)
     count = tmp_db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert count == 1
+
+
+def test_cluster_rejects_bridging_doc_welding_unrelated_clusters(tmp_db):
+    """
+    Complete-linkage regression test: a doc D close to both A and B individually
+    (average-linkage's blind spot) must NOT weld A and B together if A and B
+    themselves are far apart. This is the exact bug found in study_10/13 audits
+    (a "regional register" doc bridging unrelated stories, e.g. HK/China mix).
+
+    Constructed geometry: cos(D,A) = cos(D,B) = 0.90 (both pass 0.88 threshold
+    individually), but cos(A,B) = 0.62 (fails). Old average-linkage (doc-vs-
+    centroid only) would merge A-D then D-B, wholesale welding A and B. New
+    complete-linkage checks the full A-vs-B cross product and rejects it.
+    """
+    vec_a = [0.0] * DIM
+    vec_a[0] = 1.0
+
+    vec_b = [0.0] * DIM
+    vec_b[0] = 0.62
+    vec_b[1] = 0.7846  # sqrt(1 - 0.62^2), so |vec_b| == 1
+
+    vec_d = [0.0] * DIM
+    vec_d[0] = 0.90
+    vec_d[1] = 0.4359  # sqrt(1 - 0.9^2), so |vec_d| == 1
+
+    id_a = _insert_doc(tmp_db, url="http://a.com", title="Story A", published_at="2026-06-01T00:00:00")
+    id_d = _insert_doc(tmp_db, url="http://d.com", title="Bridging doc", published_at="2026-06-01T01:00:00")
+    id_b = _insert_doc(tmp_db, url="http://b.com", title="Story B", published_at="2026-06-01T02:00:00")
+    _insert_vec(tmp_db, id_a, vec_a)
+    _insert_vec(tmp_db, id_d, vec_d)
+    _insert_vec(tmp_db, id_b, vec_b)
+
+    tmp_db.execute(
+        "UPDATE raw_documents SET dedup_checked = 1 WHERE id IN (?, ?, ?)", (id_a, id_d, id_b)
+    )
+    tmp_db.commit()
+
+    result = cluster_documents(tmp_db, time_window_hours=9999)
+
+    # A+D merge (both pass 0.88 threshold), but B must stay separate
+    # since complete-linkage checks A-vs-B directly (cos=0.62, fails).
+    assert result.events_created == 2
+    events = tmp_db.execute(
+        "SELECT event_id, document_id FROM event_documents ORDER BY event_id"
+    ).fetchall()
+    event_map: dict[int, set[int]] = {}
+    for row in events:
+        event_map.setdefault(row["event_id"], set()).add(row["document_id"])
+    cluster_sizes = sorted(len(members) for members in event_map.values())
+    assert cluster_sizes == [1, 2]  # B alone, {A, D} together
