@@ -12,7 +12,7 @@ import sqlite3
 import numpy as np
 import pytest
 
-from pathosphere.semantic.embedder import EmbedResult, embed_documents, serialize
+from pathosphere.semantic.embedder import EmbedResult, _build_text, embed_documents, serialize
 from pathosphere.semantic.dedup import DedupResult, dedup_documents
 from pathosphere.semantic.cluster import ClusterResult, cluster_documents
 
@@ -149,6 +149,33 @@ def test_embed_excludes_gdelt_and_comtrade_origin(tmp_db):
         ).fetchall()
     }
     assert still_unembedded == {"http://gdelt.com", "http://comtrade.com"}
+
+
+def test_build_text_strips_html_boilerplate():
+    """
+    RSS feed bodies often carry HTML links, including a repeated boilerplate
+    footer (e.g. Folha's "<a href=.../redir/.../rss091/...>Leia mais</a>").
+    Unstripped, the shared URL substrings dominate short articles' embedding
+    signal, causing same-source docs to cluster regardless of topic (found
+    in study_14 residual audit). _build_text must strip all markup so only
+    the anchor text (not the href URLs) survives.
+    """
+    body = (
+        'Manifestantes incendiaram um veículo Tesla em protestos na '
+        '<a href="https://www1.folha.uol.com.br/folha-topicos/suica/">Suíça</a>.\n'
+        '<a href="https://redir.folha.com.br/redir/online/mundo/rss091/*https://'
+        'www1.folha.uol.com.br/mundo/2026/06/manifestantes.shtml">Leia mais</a> '
+        '(06/14/2026 - 16h10)'
+    )
+
+    text = _build_text("Manifestantes incendeiam Tesla", body)
+
+    assert text is not None
+    assert "<a href" not in text
+    assert "folha.uol.com.br" not in text
+    assert "redir.folha.com.br" not in text
+    assert "Suíça" in text  # anchor text content preserved
+    assert "Leia mais" in text  # trailing anchor text preserved
 
 
 def test_embed_skips_doc_without_text(tmp_db):
