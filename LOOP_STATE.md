@@ -1,6 +1,56 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Clustering fix + pre-Fase 4 audit — COMPLETATO
+## Fase corrente: Clustering complete-linkage fix — COMPLETATO
+
+**2026-07-11 ~ 14:30 UTC — Fix strutturale chain-collapse (complete-linkage):**
+
+**Root cause trovato**: average-linkage (fix precedente) controllava solo il doc-ponte
+contro il centroide di ogni cluster target, singolarmente. Un doc D coerente sia col
+centroide di A sia con quello di B salda A e B interamente, senza mai verificare che i
+membri di A siano coerenti con quelli di B.
+
+**Fix**: `pathosphere/semantic/cluster.py` — vero complete-linkage:
+- Pre-filtro economico (centroide, soglia larga 0.75) — scarta subito candidati lontani, O(1)
+- Gate vero: prima di fondere due cluster, verifica **distanza massima tra ogni coppia
+  di membri** A×B (non solo doc-ponte vs centroide) — O(|A|×|B|), trascurabile con cap 30
+- Cap 30 resta come rete di sicurezza aggiuntiva (nessun costo osservato)
+
+**Test nuovo**: `test_cluster_rejects_bridging_doc_welding_unrelated_clusters` — embedding
+costruiti a mano (cos(D,A)=cos(D,B)=0.90, cos(A,B)=0.62), verifica che il vecchio bug
+avrebbe fuso A+B tramite D, il nuovo fix li mantiene separati. 459 test verdi.
+
+**Verifica empirica** (study_13 + study_14, scratch DB copy, mai sul DB reale):
+- study_13: dimostrato che il cap non frammenta eventi genuini — è rete di sicurezza
+  necessaria contro centroid-drift runaway (uncapped: un cluster arrivava a 1370 doc,
+  >50% del corpus, fondendo 25 storie diverse)
+- study_14: con complete-linkage, **cap ha zero effetto** (12/20/30/100/uncapped →
+  risultato identico, 1977 eventi, max 12 doc) — runaway strutturalmente fixato
+- Singleton rate migliora 88.8%→78.0% (controintuitivo: il gate più severo impedisce
+  merge sbagliati che "rubavano" doc a cluster piccoli corretti)
+- 9/10 top cluster genuinamente coerenti (funerale Khamenei, Argentina-Egitto World Cup,
+  chiamate Putin-Trump, summit NATO Ankara, piogge Mumbai)
+- 1 residuo: cluster Folha (12 doc, portoghese) mix di temi — bias fonte/lingua,
+  scala molto più piccola del bug originale (12 vs 1370)
+- Nota: stesso dominio ≠ automaticamente bug — cluster TASS/PressTV monodominio sono
+  coerenti (media di stato che copre la propria storia nazionale)
+
+**Commit**: `779363d` — "fix(clustering): true complete-linkage to close bridging-doc chain-collapse"
+
+---
+
+**2026-07-10 ~ 20:00 UTC — Fix GDELT titles in clustering + study notebooks:**
+
+**Critical bug fix** — clustering titoli sporchi:
+- Problem: Grandi cluster (69+ docs) avevano titoli GDELT grezzi `||11|20251021|US` (event ID numerici)
+- Root cause: clustering includeva doc origin='gdelt' che non hanno titoli umani
+- Fix: `(r.origin IS NULL OR r.origin != 'gdelt')` in clustering query
+- Test: 458 passed, titoli adesso puliti (World Cup, India/US, Iran, Russia/NATO)
+- Commit: `b4588a5` — "fix(clustering): exclude GDELT docs from RSS event clustering"
+
+**Study notebooks creati** (pre-Fase 4 audit):
+- `study_10_clustering_robustness.ipynb` — time-window stability, cluster coherence, top cluster inspection
+- `study_11_theses_predictions_quality.ipynb` — thesis approval rate, confidence distribution, calibration Tetlock
+- `study_12_trading_validation.ipynb` — paper trading equity curves, agent vs random t-test, Sharpe ratios
 
 **2026-07-10 ~ 19:30 UTC — Audit critico + fix clustering chain-collapse:**
 

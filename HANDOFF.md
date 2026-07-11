@@ -1,6 +1,66 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-10 ~ 19:30 — Clustering chain-collapse fixato, pronto per Fase 4 Dashboard*
+*Aggiornato: 2026-07-11 ~ 14:30 — Complete-linkage clustering fix, chain-collapse strutturalmente risolto*
+
+## Complete-linkage fix: chiude il bridging-doc chain-collapse (2026-07-11 ~ 14:30)
+
+**Domanda utente**: "è il caso che ci sia un cap ai cluster? se ci sono 120 articoli su Hormuz come vengono trattati?"
+
+**Test empirico (study_13)**: cap NON frammenta eventi genuini — è rete di sicurezza necessaria.
+Ogni valore di cap testato (30→uncapped) satura il proprio tetto: senza cap un cluster arriva a
+**1370 doc** (>50% del corpus), fondendo 25 storie diverse (Hormuz, Iran-USA, Israele-Libano, FIFA,
+G7, finanza giapponese) via centroid drift.
+
+**Root cause trovato**: il fix precedente (average-linkage, sessione 2026-07-10) controllava solo
+il doc-ponte contro il centroide di ogni cluster target, singolarmente. Un doc D coerente sia con
+A sia con B salda A e B interamente, senza mai verificare che i membri di A siano coerenti con
+quelli di B — stesso pattern di transitività del bug originale single-linkage, un livello più
+in profondità.
+
+**Fix** — `pathosphere/semantic/cluster.py`:
+- Pre-filtro economico (centroide, soglia 0.75) — scarta candidati lontani, O(1)
+- Gate vero: **complete-linkage cluster-vs-cluster** — prima di fondere due cluster, verifica
+  distanza massima tra ogni coppia di membri A×B, non solo doc-ponte vs centroide — O(|A|×|B|)
+- Cap 30 resta come rete di sicurezza aggiuntiva (zero costo osservato)
+
+**Test regressione**: `test_cluster_rejects_bridging_doc_welding_unrelated_clusters` — embedding
+costruiti a mano (cos(D,A)=cos(D,B)=0.90, cos(A,B)=0.62), verifica che vecchio bug avrebbe fuso
+A+B tramite D, nuovo fix li mantiene separati.
+
+**Verifica empirica (study_14)**:
+- Cap ha **zero effetto** ora (12/20/30/100/uncapped → risultato identico, 1977 eventi, max 12 doc)
+- Singleton 88.8%→78.0% (il gate severo impedisce merge sbagliati che rubavano doc a cluster corretti)
+- 9/10 top cluster genuinamente coerenti (Khamenei funeral, Argentina-Egitto World Cup, Putin-Trump,
+  NATO Ankara, piogge Mumbai)
+- 1 residuo: cluster Folha (12 doc, portoghese) mix temi — bias fonte/lingua, scala molto minore
+  (12 vs 1370 del bug originale)
+- Same-domain ≠ automaticamente bug: TASS/PressTV monodominio ma coerenti (media di stato)
+
+**Commit**: `779363d`. **Test**: 459 verdi.
+
+**Status**: clustering **strutturalmente solido**. Nessun tuning ulteriore cap necessario.
+
+---
+
+## Precedente: Fix GDELT titles in clustering (2026-07-10 ~ 20:05)
+
+**Problem discovered**: Grandi cluster (69+ docs) avevano titoli **grezzi GDELT** come `||11|20251021|US` (event ID numerici, non testo umano).
+
+**Root cause**: `cluster_documents()` includeva doc con `origin='gdelt'` che non hanno titoli leggibili.
+
+**Fix**: Filter `(r.origin IS NULL OR r.origin != 'gdelt')` in clustering query:
+- Esclude GDELT (che ha già gdelt_events nel DB)
+- Preserva test doc (origin=NULL) per unit test
+- RSS events adesso hanno titoli puliti da headline vere
+
+**Verification**:
+- Top 5 cluster titles: "Why the economics make this the craziest World Cup ever", "India summons US diplomat…", "No final agreement on deal with US – Iran", etc.
+- Zero titoli GDELT grezzi
+- 458 test passed
+
+**Commit**: `b4588a5` — "fix(clustering): exclude GDELT docs from RSS event clustering"
+
+---
 
 ## Clustering fix: chain-collapse prevented via average-linkage (2026-07-10 ~ 19:30)
 
