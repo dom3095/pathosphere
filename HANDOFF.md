@@ -1,8 +1,43 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-11 ~ 14:30 — Complete-linkage clustering fix, chain-collapse strutturalmente risolto*
+*Aggiornato: 2026-07-11 ~ 15:00 — Fix HTML boilerplate embedding, applicato al DB reale*
 
-## Complete-linkage fix: chiude il bridging-doc chain-collapse (2026-07-11 ~ 14:30)
+## Fix HTML boilerplate in embedding: risolto residuo bias fonte/lingua (2026-07-11 ~ 15:00)
+
+**Contesto**: study_14 (complete-linkage fix) trovò un residuo — cluster Folha (12 doc,
+portoghese) che mescolava temi slegati (G7, Tesla, Taliban, elezioni Peru, ponte Brooklyn)
+pur superando la soglia 0.88.
+
+**Root cause**: `raw_documents.body` conteneva HTML grezzo mai ripulito prima dell'embedding,
+incluso un footer boilerplate ripetuto (`<a href="...redir.folha.com.br/redir/.../rss091/...">
+Leia mais</a> (data)`). Per teaser brevi (366-1047 char), questo blocco condiviso può essere
+il 20-40% del testo — domina il segnale embedding più del contenuto reale. `extract.py` aveva
+già questo fix (CP-015, bleach prima del NER) ma **mai applicato a `embedder.py`** — stesso
+bug, due file diversi.
+
+**Fix** — `pathosphere/semantic/embedder.py::_build_text`: `bleach.clean(body, tags=[], strip=True)`
+prima di costruire il testo per l'embedding. Verificato: dopo pulizia, le 12 coppie Folha
+scendono da similarità ≥0.88 a max 0.855 — nessuna più supera la soglia.
+
+**Test nuovo**: `test_build_text_strips_html_boilerplate`.
+
+**Applicato al DB reale** (backup preventivo: `data/db/pathosphere_backup_20260711_144947.db`):
+- Reset embedded=0 + vec_documents cleared + eventi RSS/Comtrade cleared (2972 RSS doc,
+  Comtrade 252 doc esclusi per design, dati strutturati non prosa)
+- Ri-eseguito `pathos embed` + `pathos cluster --time-window-hours 2160`
+- Risultato: max cluster size 12→8, cluster Folha misto **sparito del tutto**. Tutti i 7
+  cluster ≥5 doc rimasti sono genuinamente coerenti (Iran-USA deal multi-dominio, NATO
+  Turchia, Argentina-Egitto World Cup; TASS/PressTV monodominio ma coerenti — media di stato
+  su storia nazionale, non bug).
+
+**Commit**: `6b90804`. **Test**: 460 verdi.
+
+**Status**: bias fonte/lingua residuo **chiuso**. Clustering pipeline (average-linkage→
+complete-linkage→HTML strip) ora solida end-to-end.
+
+---
+
+## Precedente: Complete-linkage fix (2026-07-11 ~ 14:30)
 
 **Domanda utente**: "è il caso che ci sia un cap ai cluster? se ci sono 120 articoli su Hormuz come vengono trattati?"
 

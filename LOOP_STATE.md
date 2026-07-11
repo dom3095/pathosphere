@@ -1,6 +1,21 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Clustering complete-linkage fix — COMPLETATO
+## Fase corrente: Clustering pipeline solida end-to-end — COMPLETATO
+
+**2026-07-11 ~ 15:00 UTC — Fix HTML boilerplate embedding, applicato su DB reale:**
+
+Residuo da study_14 (bias fonte/lingua, cluster Folha 12 doc misti) chiuso.
+Root cause: `embedder.py::_build_text` non stripava HTML (extract.py aveva già
+questo fix per NER, mai applicato a embedding — stesso bug, due file).
+Fix: `bleach.clean(body, tags=[], strip=True)`. Applicato al DB reale (backup
+`data/db/pathosphere_backup_20260711_144947.db`): re-embed 2972 RSS doc +
+re-cluster. Risultato: max size 12→8, cluster Folha sparito, 7/7 cluster
+grandi rimasti genuinamente coerenti. Commit `6b90804`. 460 test verdi.
+
+**Pipeline clustering ora solida in 3 layer**:
+1. Complete-linkage (chiude bridging-doc chain-collapse) — commit `779363d`
+2. HTML strip pre-embedding (chiude bias fonte/lingua) — commit `6b90804`
+3. Cap=30 come pura difesa aggiuntiva, zero costo osservato
 
 **2026-07-11 ~ 14:30 UTC — Fix strutturale chain-collapse (complete-linkage):**
 
