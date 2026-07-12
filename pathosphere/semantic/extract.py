@@ -348,6 +348,162 @@ def backfill_demonym_entities(conn: sqlite3.Connection) -> int:
     return updated
 
 
+# Honorifics/titles NER leaves attached to person names, causing the same
+# real person to surface as several distinct entity rows ("Khamenei",
+# "Ali Khamenei", "Ayatollah Ali Khamenei", "Ayatollah Khamenei"). Sorted
+# longest-first so multi-word titles are matched before their sub-strings
+# ("grand ayatollah" before "ayatollah").
+PERSON_HONORIFICS: list[str] = sorted(
+    {
+        "grand ayatollah", "ayatollah", "prime minister", "field marshal",
+        "grand mufti", "sheikh", "sheikha", "imam", "president", "general",
+        "governor", "chancellor", "cardinal", "archbishop", "bishop",
+        "colonel", "major", "captain", "admiral", "king", "queen", "prince",
+        "princess", "sultan", "emir", "senator", "pope", "dr.", "dr", "mr.",
+        "mr", "mrs.", "mrs", "ms.", "ms",
+    },
+    key=len,
+    reverse=True,
+)
+
+# Ambiguous bare-surname merges only proceed if the top mention-count
+# candidate beats the runner-up by at least this ratio (e.g. "Khamenei"
+# overwhelmingly means Ali Khamenei in the news, not his son Mojtaba) —
+# otherwise the merge is skipped as genuinely ambiguous.
+BARE_SURNAME_DOMINANCE_RATIO = 3.0
+
+
+def _strip_person_honorifics(name: str) -> str:
+    """Repeatedly strip leading honorifics/titles from a person name."""
+    working = name.strip()
+    changed = True
+    while changed:
+        changed = False
+        lower = working.lower()
+        for honorific in PERSON_HONORIFICS:
+            if lower.startswith(honorific + " "):
+                working = working[len(honorific):].strip()
+                changed = True
+                break
+    return working
+
+
+@dataclass
+class PersonCanonicalizeResult:
+    exact_groups_merged: int = 0     # multi-token honorific-stripped matches
+    bare_surname_merged: int = 0     # single-token surname, unambiguous or dominant
+    bare_surname_skipped: int = 0    # single-token surname, genuinely ambiguous
+
+
+def canonicalize_person_entities(conn: sqlite3.Connection) -> PersonCanonicalizeResult:
+    """Point duplicate person-entity name variants at one canonical row.
+
+    Non-destructive: sets canonical_entity_id (same pointer convention as
+    Wikidata-QID alias resolution, resolved via COALESCE in graph.py) rather
+    than deleting rows. Two passes:
+
+    1. Honorific-stripped exact match on multi-token names ("Ali Khamenei" ==
+       "Ayatollah Ali Khamenei" stripped == "Ayatollah Ali Khamenei" stripped)
+       — safe, no cross-person ambiguity possible.
+    2. Bare single-token surnames ("Khamenei" from "Ayatollah Khamenei") are
+       merged into a multi-token group sharing that surname only if there is
+       exactly one candidate, or one dominates the others by
+       BARE_SURNAME_DOMINANCE_RATIO in total mentions — otherwise left
+       unmerged (e.g. "Khamenei" alone is ambiguous between Ali Khamenei and
+       his son Mojtaba Khamenei; a wrong merge is worse than a missed one).
+    """
+    result = PersonCanonicalizeResult()
+
+    rows = conn.execute(
+        """SELECT e.id, e.name,
+                  COALESCE(SUM(de.mentions), 0) AS total_mentions
+           FROM entities e
+           LEFT JOIN document_entities de ON de.entity_id = e.id
+           WHERE e.entity_type = 'person' AND e.canonical_entity_id IS NULL
+           GROUP BY e.id"""
+    ).fetchall()
+    if not rows:
+        return result
+
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        stripped = _strip_person_honorifics(row["name"])
+        key = stripped.lower()
+        groups.setdefault(key, []).append(row)
+
+    # Pass 1: multi-token exact matches (unambiguous — different given names
+    # never collapse to the same stripped key).
+    multi_token_canonical: dict[str, int] = {}  # key -> canonical entity id
+    with conn:
+        for key, members in groups.items():
+            if len(key.split()) < 2 or len(members) < 2:
+                continue
+            canonical = max(members, key=lambda r: r["total_mentions"])
+            multi_token_canonical[key] = canonical["id"]
+            for m in members:
+                if m["id"] == canonical["id"]:
+                    continue
+                conn.execute(
+                    "UPDATE entities SET canonical_entity_id = ? WHERE id = ?",
+                    (canonical["id"], m["id"]),
+                )
+            result.exact_groups_merged += 1
+
+    # Also register single-member multi-token groups as merge targets for
+    # pass 2 (a lone "Ali Khamenei" with no variant is still a valid target
+    # for a bare "Khamenei" mention).
+    for key, members in groups.items():
+        if len(key.split()) >= 2 and key not in multi_token_canonical:
+            multi_token_canonical[key] = members[0]["id"]
+
+    # Pass 2: bare single-token surnames — merge only if unambiguous or the
+    # dominant candidate clears BARE_SURNAME_DOMINANCE_RATIO.
+    surname_candidates: dict[str, list[tuple[str, int]]] = {}  # surname -> [(key, canonical_id)]
+    for key, canonical_id in multi_token_canonical.items():
+        surname = key.split()[-1]
+        surname_candidates.setdefault(surname, []).append((key, canonical_id))
+
+    with conn:
+        for key, members in groups.items():
+            if len(key.split()) != 1:
+                continue
+            candidates = surname_candidates.get(key, [])
+            if not candidates:
+                continue
+
+            if len(candidates) == 1:
+                target_id = candidates[0][1]
+            else:
+                mentions_by_target = [
+                    (cid, conn.execute(
+                        "SELECT COALESCE(SUM(mentions),0) as m FROM document_entities WHERE entity_id = ?",
+                        (cid,),
+                    ).fetchone()["m"])
+                    for _, cid in candidates
+                ]
+                mentions_by_target.sort(key=lambda t: t[1], reverse=True)
+                top_id, top_m = mentions_by_target[0]
+                runner_m = mentions_by_target[1][1] if len(mentions_by_target) > 1 else 0
+                if runner_m > 0 and top_m < BARE_SURNAME_DOMINANCE_RATIO * runner_m:
+                    result.bare_surname_skipped += len(members)
+                    continue
+                target_id = top_id
+
+            for m in members:
+                conn.execute(
+                    "UPDATE entities SET canonical_entity_id = ? WHERE id = ?",
+                    (target_id, m["id"]),
+                )
+            result.bare_surname_merged += len(members)
+
+    logger.info(
+        f"Person canonicalization: {result.exact_groups_merged} exact groups, "
+        f"{result.bare_surname_merged} bare surnames merged, "
+        f"{result.bare_surname_skipped} bare surnames skipped (ambiguous)"
+    )
+    return result
+
+
 def _nominatim_lookup(
     client: httpx.Client, query: str, user_agent: str
 ) -> tuple[float, float, str] | None:

@@ -15,6 +15,7 @@ import pytest
 from pathosphere.semantic.extract import (
     _build_text,
     backfill_demonym_entities,
+    canonicalize_person_entities,
     extract_entities,
     geocode_events,
     link_wikidata,
@@ -222,6 +223,117 @@ def test_backfill_demonym_entities_merges_into_existing_location(tmp_db):
         )
     }
     assert mentions == {doc_a: 3, doc_b: 2}
+
+
+def _insert_person(conn, name, mentions=1, canonical_entity_id=None):
+    conn.execute(
+        "INSERT INTO entities (name, entity_type, canonical_entity_id) VALUES (?, 'person', ?)",
+        (name, canonical_entity_id),
+    )
+    eid = conn.execute(
+        "SELECT id FROM entities WHERE name=? AND entity_type='person'", (name,)
+    ).fetchone()["id"]
+    if mentions:
+        doc_id = _insert_doc(conn, url=f"https://x.com/{name}-{eid}")
+        conn.execute(
+            "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, ?)",
+            (doc_id, eid, mentions),
+        )
+    return eid
+
+
+def test_canonicalize_merges_honorific_variants(tmp_db):
+    """'Ali Khamenei' / 'Ayatollah Ali Khamenei' strip to the same 2-token key
+    ("ali khamenei") — exact-match merge, most-mentioned wins as canonical.
+    'Ayatollah Khamenei' strips to the bare 1-token surname "khamenei" and is
+    merged separately in pass 2 (unambiguous — only one 2-token candidate)."""
+    id_ali = _insert_person(tmp_db, "Ali Khamenei", mentions=8)
+    id_ayat_ali = _insert_person(tmp_db, "Ayatollah Ali Khamenei", mentions=9)
+    id_ayatollah = _insert_person(tmp_db, "Ayatollah Khamenei", mentions=15)
+    tmp_db.commit()
+
+    result = canonicalize_person_entities(tmp_db)
+
+    assert result.exact_groups_merged == 1
+    assert result.bare_surname_merged == 1
+    canon_ali = tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (id_ali,)
+    ).fetchone()["canonical_entity_id"]
+    canon_ayatollah = tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (id_ayatollah,)
+    ).fetchone()["canonical_entity_id"]
+    # "Ali Khamenei" (8) merges into "Ayatollah Ali Khamenei" (9, more mentions)
+    assert canon_ali == id_ayat_ali
+    # Bare "Ayatollah Khamenei" -> "Khamenei" attaches to the (only) 2-token group
+    assert canon_ayatollah == id_ayat_ali
+
+
+def test_canonicalize_does_not_merge_different_people_same_surname(tmp_db):
+    """'Mojtaba Khamenei' (the son) must NOT merge with 'Ali Khamenei' (the
+    father) — different given names never collapse to the same stripped key."""
+    id_ali = _insert_person(tmp_db, "Ali Khamenei", mentions=8)
+    id_mojtaba = _insert_person(tmp_db, "Mojtaba Khamenei", mentions=3)
+    tmp_db.commit()
+
+    result = canonicalize_person_entities(tmp_db)
+
+    assert result.exact_groups_merged == 0  # each key has only 1 member
+    assert tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (id_ali,)
+    ).fetchone()["canonical_entity_id"] is None
+    assert tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (id_mojtaba,)
+    ).fetchone()["canonical_entity_id"] is None
+
+
+def test_canonicalize_bare_surname_merges_when_dominant(tmp_db):
+    """Bare 'Khamenei' (honorific-stripped from some mention) merges into the
+    dominant full-name candidate when it clears the dominance ratio."""
+    id_ali = _insert_person(tmp_db, "Ali Khamenei", mentions=20)
+    id_mojtaba = _insert_person(tmp_db, "Mojtaba Khamenei", mentions=2)
+    id_bare = _insert_person(tmp_db, "Khamenei", mentions=5)
+    tmp_db.commit()
+
+    result = canonicalize_person_entities(tmp_db)
+
+    assert result.bare_surname_merged == 1
+    assert result.bare_surname_skipped == 0
+    canon_bare = tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (id_bare,)
+    ).fetchone()["canonical_entity_id"]
+    assert canon_bare == id_ali  # dominant candidate (20 vs 2 mentions)
+
+
+def test_canonicalize_bare_surname_skipped_when_ambiguous(tmp_db):
+    """Bare 'Khamenei' stays unmerged when no candidate dominates (mentions
+    too close to call) — a missed merge beats a wrong one."""
+    id_ali = _insert_person(tmp_db, "Ali Khamenei", mentions=10)
+    id_mojtaba = _insert_person(tmp_db, "Mojtaba Khamenei", mentions=9)
+    id_bare = _insert_person(tmp_db, "Khamenei", mentions=5)
+    tmp_db.commit()
+
+    result = canonicalize_person_entities(tmp_db)
+
+    assert result.bare_surname_merged == 0
+    assert result.bare_surname_skipped == 1
+    canon_bare = tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (id_bare,)
+    ).fetchone()["canonical_entity_id"]
+    assert canon_bare is None
+
+
+def test_canonicalize_is_idempotent(tmp_db):
+    _insert_person(tmp_db, "Ali Khamenei", mentions=8)
+    _insert_person(tmp_db, "Ayatollah Ali Khamenei", mentions=9)
+    tmp_db.commit()
+
+    first = canonicalize_person_entities(tmp_db)
+    second = canonicalize_person_entities(tmp_db)
+
+    assert first.exact_groups_merged == 1
+    assert second.exact_groups_merged == 0  # already canonical_entity_id set, excluded from re-scan
+    assert second.bare_surname_merged == 0
+    assert second.bare_surname_skipped == 0
 
 
 def test_ner_skips_duplicates_and_unembedded(tmp_db):

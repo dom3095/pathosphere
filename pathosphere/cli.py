@@ -924,6 +924,7 @@ def extract(
     from pathosphere.db.schema import get_connection
     from pathosphere.semantic.extract import (
         backfill_demonym_entities,
+        canonicalize_person_entities,
         extract_entities,
         geocode_events,
         link_wikidata,
@@ -941,6 +942,13 @@ def extract(
     click.echo(
         f"\nNER: {ner.docs_processed} docs | +{ner.entities_created} entities | "
         f"{ner.mentions_recorded} mentions | {ner.docs_skipped} skipped"
+    )
+
+    canon = canonicalize_person_entities(conn)
+    click.echo(
+        f"Person canonicalization: {canon.exact_groups_merged} exact groups | "
+        f"{canon.bare_surname_merged} bare surnames merged | "
+        f"{canon.bare_surname_skipped} ambiguous (skipped)"
     )
 
     if not skip_geocode:
