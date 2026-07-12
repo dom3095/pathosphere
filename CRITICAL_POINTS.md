@@ -214,3 +214,69 @@ Verifica quantitativa: top-20 entità collegate a doc `origin='rss'` → 19/20 n
 - Africa (7, già ok): Mail & Guardian (SA), The East African
 
 **Impatto:** medio — priorità 1 è schedulare `pathos cycle run` (cron/launchd) per accumulo regolare; ampliare/ribilanciare il catalogo è secondario e va ripetuto nel tempo (i feed RSS gratuiti muoiono senza preavviso).
+
+---
+
+## CP-018: canonicalizzazione entità — solo person, location/org restano frammentate — **RISOLTO 2026-07-12**
+
+**Contesto:** sessione 2026-07-12, ispezionando visivamente `study_15_visual_tour.ipynb` (grafo entità), l'utente ha trovato 4 problemi distinti nella qualità delle entità — nessuno coperto da `canonicalize_person_entities()` (che copre solo `entity_type='person'`, vedi commit `510aa1a`).
+
+**1. Tipo sbagliato vince nella risoluzione alias Wikidata — RISOLTO.** `link_wikidata()` risolveva conflitti QID assegnando `canonical_entity_id` a chiunque avesse ottenuto il QID per primo, senza controllare `entity_type`. Verificato: `FRANCE` (company) aveva ottenuto QID `Q142` prima di `France` (location, corretto), propagando il tipo sbagliato a valle. Fix: `link_wikidata` ora interroga Wikidata P31 (`_wikidata_instance_of_hint`, mappa `WIKIDATA_TYPE_HINTS`) quando i due tipi in conflitto divergono, e scambia il canonico verso la riga col tipo corretto invece di "chi arriva prima". Aggiunta `repair_wikidata_type_conflicts()` per correggere conflitti già mal risolti nel DB esistente (rete, opt-in via `pathos extract --repair-wikidata-types`). Verificato sul DB reale: `FRANCE` ora alias di `France` (location, QID Q142 corretto).
+
+**2. `LABEL_MAP` troppo stretto: ORG spaCy → sempre `company` — RISOLTO.** Aggiunto `INTERGOVERNMENTAL_ORGS` (EU, NATO, UN, WHO, IMF, World Bank, WTO, OPEC, G7, G20, ASEAN, African Union, Arab League, BRICS) → `entity_type='organization'` invece di `company`. `backfill_organization_entities()` riclassifica righe esistenti (idempotente, stesso pattern di `backfill_demonym_entities`). Verificato: `EU`/`NATO` ora `organization` con `canonical_name` corretto.
+
+**3. Location/demonimi non canonicalizzati cross-entità — RISOLTO.** Nuova `canonicalize_location_entities()` (stesso pattern non distruttivo di `canonicalize_person_entities`, chiave = `DEMONYM_TO_COUNTRY`/nuovo `LOCATION_ALIAS_TO_COUNTRY`). Verificato sul DB reale: `England`/`British`/`Britain` ora tutte alias di `UK`, `canonical_name="United Kingdom"` su tutte e 4.
+
+**4. Rumore NER puro — RISOLTO.** Nuovo `NOISE_ENTITY_STOPLIST` (video, watch, photo, gallery, live, breaking, update...) escluso **a livello di creazione** in `extract_entities` (non solo skip Wikidata come `GENERIC_ENTITY_STOPLIST`). `purge_noise_entities()` ripulisce righe legacy già in DB. Verificato: `VIDEO` (22 mention) eliminata.
+
+**Bonus — CP-019 trovato durante la verifica di questo fix, vedi sotto.**
+
+**Fix applicati e verificati empiricamente sul DB di produzione** (backup pre-fix: `data/db/pathosphere_backup_20260712_163720_pre_cp018.db`), poi `pathos graph` rieseguito (77516 link scritti, da 83808 pre-canonicalizzazione). 53 nuovi test in `test_extract.py`, 494 totali verdi, ruff pulito.
+
+---
+
+## CP-019: collisione Wikidata su nomi ambigui (acronimi/parole comuni) — **RISOLTO 2026-07-12** (trovato durante verifica CP-018)
+
+**Contesto:** l'utente ha segnalato che i 4 punti di CP-018 erano "esempi, non l'elenco completo" — verificando empiricamente prima di chiudere CP-018 (invece di fidarmi che i 4 punti coprissero tutto), ho trovato un quinto bug reale sul DB di produzione, di natura diversa dai 4 di CP-018.
+
+**Bug trovato:** entità `UK` (location, 58 mention) aveva `canonical_entity_id` che puntava a un'entità `Ukrainian` con `wikidata_qid='Q8798'` — che **non è l'Ucraina**, è la **lingua ucraina** (Wikidata: "Ukrainian", "East Slavic language", codice ISO 639 `uk`). `wbsearchentities("UK")` ha fatto match fuzzy su quel codice ISO, non sul paese Regno Unito. Bug generalizzabile: qualunque demonimo che è anche nome di lingua (french/russian/german/chinese/...) rischia la stessa collisione — non ipotetico, trovato su dati reali.
+
+**Fix (generale, non solo per UK):** nuovo `CURATED_ALIAS_TO_LABEL` (= `DEMONYM_TO_COUNTRY` ∪ `LOCATION_ALIAS_TO_COUNTRY` ∪ `INTERGOVERNMENTAL_ORGS`) — tutti i nomi in queste tabelle curate vengono **esclusi dalla ricerca Wikidata** (stesso meccanismo di `GENERIC_ENTITY_STOPLIST`, ma preservando il `canonical_name` corretto invece di azzerarlo a NULL, dato che qui il valore curato è affidabile). Ripara anche QID sbagliati già assegnati in passato.
+
+**Rischio residuo esplicitamente verificato e mitigato:** audit su parole-paese ambigue in inglese non ancora linkate (`Turkey`/uccello, `Georgia`/stato USA, `Jordan`/persona-fiume, `Chad`/nome proprio, `Guinea`/roditore, `Niger`, `Congo`, `Mali`, `Jersey`/abbigliamento) — nessuna ancora corrotta al momento dell'audit (tutte `wikidata_qid IS NULL`), ma prossime in coda. Aggiunta verifica proattiva (`AMBIGUOUS_ENTITY_NAMES`): per questi nomi, `link_wikidata` interroga P31 **prima di accettare** il match e scarta se il tipo non coincide con `entity_type`, invece di scoprirlo dopo il fatto.
+
+**Nota per il futuro:** questa non è garanzia di completezza — è una lista curata (9 nomi) di collisioni note, non un rilevatore generale. Altre incongruenze non ancora osservate sono probabili (l'utente lo ha esplicitamente segnalato); trattare i controlli odierni come *classi di difesa* generalizzate (stoplist curata, verifica P31 su conflitto, verifica P31 proattiva su ambigui noti), non come lista chiusa di 9+4 nomi risolti.
+
+---
+
+## CP-020: due classi sistemiche aggiuntive (asimmetria demonimo↔paese, aggettivi continentali) — **RISOLTO 2026-07-12**
+
+**Contesto:** dopo aver chiuso CP-018/CP-019, l'utente ha ispezionato di nuovo il grafo e corretto esplicitamente l'inquadramento: *"non sono segnalazioni puntuali, sono classi di errore"* — vedendo ancora `EU`/`European`/`Europe` (3 nodi) e `China`/`Chinese` (2 nodi) separati. Invece di patchare i singoli nomi, ho cercato la causa strutturale.
+
+**Classe A — asimmetria demonimo↔paese in `canonicalize_location_entities`.** `_location_country_key()` risolveva la chiave di gruppo per un'entità demonimo (es. "Chinese" → "China" via `DEMONYM_TO_COUNTRY`), ma **non riconosceva l'entità-paese stessa** ("China") come appartenente allo stesso gruppo, a meno che il suo `canonical_name` non corrispondesse esattamente al valore del dizionario — cosa che spesso non accade perché Wikidata usa il nome ufficiale completo (es. "People's Republic of China" invece di "China"). Risultato verificato: "China" e "Chinese" restavano due nodi separati nel grafo nonostante la mappa demonimo→paese esistesse già. Fix: `_location_country_key` ora riconosce anche il **nome letterale** dell'entità come chiave nota (`_KNOWN_PLACE_VALUES_LOWER`, i valori dei dizionari lowercased), indipendentemente da `canonical_name`. Generalizzabile a qualunque paese nei dizionari esistenti, non solo Cina.
+
+**Classe B — forme aggettivali continentali non coperte.** "European" (aggettivo) non era in nessuna tabella curata → restava `entity_type='other'`, invisibile a `canonicalize_location_entities` (che filtra solo `entity_type='location'`). "Europe" (il continente) aveva **un'altra istanza della stessa classe di bug di CP-019**: `wbsearchentities("Europe")` aveva fatto match fuzzy su "Europe PubMed Central" (un database di letteratura scientifica), non sul continente. Fix: aggiunte `europe`/`european`, `asia`/`asian`, `africa`/`african` a `LOCATION_ALIAS_TO_COUNTRY` (stesso dizionario usato per UK/Britain — nome generico ma meccanismo identico: alias → nome canonico location). Questo li rende automaticamente parte di `CURATED_ALIAS_TO_LABEL` (skip ricerca Wikidata, fix CP-019) **e** disponibili a `backfill_demonym_entities` (generalizzato per iterare anche `LOCATION_ALIAS_TO_COUNTRY`, non solo `DEMONYM_TO_COUNTRY`) per riclassificare righe esistenti mistipizzate.
+
+**Verificato sul DB reale**: `China`/`Chinese` uniti (China canonico, canonical_name corretto "China" non più "People's Republic of China" isolato); `Europe`/`European` uniti (Europe canonico, canonical_name fixato da "Europe PubMed Central" a "Europe"); `EU` resta distinta come `organization` — 3 nodi confusi → 2 nodi corretti e distinti (continente vs organizzazione). Bonus: `Asia`/`Asian` e `Africa`/`African` uniti allo stesso modo (nessuna corruzione Wikidata nota lì, ma stessa asimmetria di Classe A risolta preventivamente).
+
+**Nota per il futuro (ribadita):** l'utente ha ragione — questi sono pattern strutturali, non entità singole. Il fix di Classe A si applica a **tutti** i paesi già in `DEMONYM_TO_COUNTRY`/`LOCATION_ALIAS_TO_COUNTRY` (non solo Cina); il fix di Classe B copre solo 3 continenti curati (Europe/Asia/Africa), non Oceania/Antartide/Americhe (quest'ultima già occupata da "American"→United States, ambiguità pre-esistente non toccata). Restano probabili altre coppie non ancora osservate — stessa avvertenza di CP-019.
+
+---
+
+## CP-021: ordine greedy in story-linking blocca merge validi quando un'entità è quasi-hub — **RISOLTO 2026-07-12**
+
+**Contesto:** ispezionando `study_17` (sezione cluster), l'utente ha notato che il gruppo di cluster "5d" della top-10 include titoli palesemente della stessa macro-storia (trattativa Iran-USA: mediazione Qatar/Pakistan, riapertura Stretto di Hormuz, "sticking points", "deal quasi completo") — 4-5 micro-eventi distinti mai uniti da `pathos story`.
+
+**Verifica**: tutti condividono `Trump` come entità persona canonica. Eseguito `pathos story` di nuovo (27 nuove storie formate altrove, quindi l'algoritmo funziona) — ma il caso Iran-deal specifico (eventi 121960+122131) resta non unito nonostante superi **entrambi** i gate individualmente: similarità embedding diretta 0.847 (soglia 0.82), span temporale combinato 3 giorni (finestra 10). Causa: `Trump` compare in **149 eventi su ~2000** (quasi-hub, non hub totale come nel bug v1 originale già risolto). Il grafo di coppie-candidate diventa enorme (~13700 coppie totali che condividono almeno una persona) e l'algoritmo le processa greedy per gap temporale crescente — un merge con gap più piccolo ma sbagliato, elaborato prima, può allargare un gruppo abbastanza da far fallire il gate complete-linkage quando arriva il turno della coppia corretta. Union-find è irreversibile: un merge subottimale iniziale non si corregge più.
+
+**Scala misurata (con cautela)**: audit isolato (coppia-vs-coppia, non gruppo-vs-gruppo) trova 683 coppie evento che condividono una persona e superano entrambi i gate — di queste solo 298 sono finite nella stessa storia finale, 385 "mancate". **Ma questo numero è sovrastimato**: l'audit isolato replica esattamente il punto cieco (coppia-vs-coppia invece di gruppo-vs-gruppo) che `story.py` stesso è stato costruito per evitare — molte delle 385 sono probabilmente respinte **correttamente** dal vero algoritmo (che valuta l'intero gruppo, non la coppia isolata), verificato campionando: es. "Watch: Why is Trump not at the World Cup?" vs "What Even Is Trump's China Strategy?" condividono Trump e superano la soglia isolata ma sono chiaramene argomenti slegati. L'unico caso **confermato concretamente** come merge valido bloccato dall'ordine è la coppia Iran-deal (121960+122131).
+
+**Perché non bloccante (prima del fix)**: non era una regressione — `story.py` produceva risultati corretti nella stragrande maggioranza dei casi, nessun mega-blob. Una limitazione di qualità nota (sub-ottimalità dell'ordine greedy), non un bug di correttezza.
+
+**Fix applicato**: `sorted_pairs` in `link_related_events` ora ordina per `(gap temporale crescente, similarità decrescente)` invece di solo gap crescente — a parità di gap (frequentissimo con un'entità quasi-hub: centinaia di coppie a gap=0), la coppia con similarità embedding più alta viene processata per prima, invece di lasciare l'ordine a un dettaglio implementativo (ordine di iterazione di un `set` Python). Il resto dell'algoritmo (gate finestra temporale, gate complete-linkage gruppo-vs-gruppo) resta identico — nessuna modifica ai criteri di accettazione, solo all'ordine in cui le coppie candidate vengono provate.
+
+**Verificato empiricamente sul DB reale**: backup pre-fix (`pathosphere_backup_20260712_183828_pre_cp021_reorder.db`), reset completo di `events.story_id` e riesecuzione da zero di `pathos story`. Risultato: 125 storie formate (199 eventi collegati), distribuzione dimensioni sana (2→81 storie, 3→29, ..., max 8, media 2.6) — **nessun mega-blob**, stesso ordine di grandezza di prima del fix. Il caso specifico segnalato (evento 121960 "No final agreement on deal with US–Iran") ora include correttamente 122131 ("US-Iran deal could be sealed within 24 hours") + altri 2 eventi coerenti sulla stessa trattativa — merge che prima non avveniva. Ispezionate a campione altre 2 storie da 6 eventi (funerale Khamenei, dichiarazioni Cremlino su Ucraina) — entrambe internamente coerenti.
+
+**Non completamente risolto**: 122059 (Stretto di Hormuz) e 122072 ("sticking points") restano separati dal gruppo 121960 — non necessariamente un problema: potrebbero essere sotto-angolazioni che non superano la soglia di similarità 0.82 contro l'intero gruppo, comportamento plausibile e sicuro (evita di forzare angolazioni diverse in un blob artificiale, stesso principio conservativo di v3).
+
+**Test**: 1 nuovo (`test_ties_on_time_gap_prefer_higher_similarity_pair`, verifica che a parità di gap temporale vinca la coppia con similarità più alta), 498 totali verdi.

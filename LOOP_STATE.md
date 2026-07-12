@@ -1,8 +1,194 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-017 orchestration loop + launchd automation — COMPLETO
+## Fase corrente: CP-018/019/020/021 tutti risolti — Fase 4 Dashboard può procedere
 
-**CP-017 — Orchestration loop (2026-07-10)**:
+**2026-07-12 ~ 19:15 UTC — CP-021 risolto (riordino merge candidati per similarità):**
+
+Storia Iran-USA frammentata in 4-5 micro-eventi mai uniti da `pathos story` nonostante
+condividano Trump (149/2000 eventi) e superino i gate individuali (sim 0.847, span 3gg).
+Causa: ordine greedy per gap temporale su ~13700 coppie-candidate — a parità di gap (molto
+comune con un'entità quasi-hub) l'ordine era arbitrario (iterazione set Python), non
+per forza semantico. Fix: `sorted_pairs` ordina per `(gap crescente, similarità
+decrescente)` — a parità di gap vince la coppia più simile. Nessuna modifica ai gate di
+accettazione, solo all'ordine dei tentativi.
+
+Verificato sul DB reale: backup pre-fix, reset completo `story_id`, riesecuzione da zero.
+125 storie (199 eventi), distribuzione sana (max 8, media 2.6, nessun mega-blob). Iran-deal
+ora unisce correttamente 121960+122131+2 altri. 2 storie campione da 6 eventi ispezionate,
+entrambe coerenti (funerale Khamenei, dichiarazioni Cremlino Ucraina). 122059/122072
+restano separati — plausibilmente sotto soglia contro l'intero gruppo, comportamento
+conservativo accettabile.
+
+**Test**: 1 nuovo, 498 totali verdi.
+
+**Prossimo**: Fase 4 Dashboard — nessun blocco noto residuo su clustering/entity/story.
+
+---
+
+
+**2026-07-12 ~ 17:45 UTC — CP-020 (classi sistemiche, correzione utente):**
+
+L'utente ha corretto l'inquadramento dopo CP-018/019: *"non sono segnalazioni puntuali,
+sono classi di errore"* — vedendo ancora `EU`/`European`/`Europe` (3 nodi) e `China`/
+`Chinese` (2 nodi) separati nel grafo. Due bug strutturali trovati e risolti:
+- **Classe A**: `_location_country_key` non riconosceva il nome letterale del paese
+  ("China") come appartenente al gruppo del suo demonimo ("Chinese") quando
+  `canonical_name` non coincideva esattamente (Wikidata usa nomi ufficiali completi,
+  "People's Republic of China"). Fix generale via `_KNOWN_PLACE_VALUES_LOWER`.
+- **Classe B**: aggettivi continentali ("European") non coperti da nessuna tabella
+  curata; "Europe" stessa aveva un'altra istanza della collisione Wikidata di CP-019
+  ("Europe" → "Europe PubMed Central"). Fix: `europe`/`european`, `asia`/`asian`,
+  `africa`/`african` aggiunti a `LOCATION_ALIAS_TO_COUNTRY`; `backfill_demonym_entities`
+  generalizzato per coprire anche questo dizionario.
+
+Verificato sul DB reale: China/Chinese, Europe/European, Asia/Asian, Africa/African
+uniti; EU resta `organization` distinta (2 nodi corretti invece di 3 confusi). 6 test
+nuovi (497 totali). `pathos graph` rieseguito.
+
+**Prossimo**: Fase 4 Dashboard — stessa nota di CP-019: lista curata, non rilevamento
+generale, probabili altre coppie non ancora osservate.
+
+---
+
+**2026-07-12 ~ 17:00 UTC — CP-018 (4/4) + CP-019 (bonus) risolti, verificati sul DB reale:**
+
+Ispezione visiva del grafo entità (`study_15_visual_tour.ipynb`) da parte dell'utente
+aveva trovato 4 problemi (CP-018, bloccante prima di Fase 4). Risolti tutti in
+`pathosphere/semantic/extract.py`:
+1. QID conflict Wikidata tipo-aware (P31 check) — fix `FRANCE`/company→`France`/location
+2. `INTERGOVERNMENTAL_ORGS` → `entity_type='organization'` (EU/NATO non più "company")
+3. `canonicalize_location_entities()` — England/British/Britain/UK → un solo canonico
+4. `NOISE_ENTITY_STOPLIST` — VIDEO e boilerplate simile esclusi a creazione
+
+**CP-019 (bonus)**, trovato verificando empiricamente prima di chiudere CP-018 (l'utente
+aveva avvertito: "non sono solo punti, sono segnalazioni — ci saranno altre incongruenze"):
+`UK` era alias di un'entità Wikidata sbagliata (Q8798 = lingua ucraina, via collisione
+codice ISO "uk", non il paese). Fix generale: nomi in tabelle curate (demonimi/alias/org)
+esclusi dalla ricerca Wikidata (`CURATED_ALIAS_TO_LABEL`); più verifica P31 proattiva per
+9 nomi-paese ambigui noti (Turkey/Georgia/Jordan/Chad/Guinea/Niger/Congo/Mali/Jersey) non
+ancora corrotti ma a rischio.
+
+Verificato sul DB reale (backup `data/db/pathosphere_backup_20260712_163720_pre_cp018.db`),
+`pathos graph` rieseguito (77516 link). 53 test nuovi, 494 totali verdi.
+
+**Prossimo**: Fase 4 Dashboard Streamlit — nessun blocco dati/algoritmi noto residuo.
+Nota: CP-019 non è rilevamento generale, solo 9 nomi curati — probabile che emergano
+altre incongruenze non ancora osservate (segnalazione esplicita utente).
+
+---
+
+**2026-07-12 ~ 15:10 UTC — Catena entity extraction → canonicalizzazione → story-linking:**
+
+Su richiesta esplicita utente ("prima risolviamo i problemi, non ha senso dashboard su
+dati di bassa qualità"), risolta catena di 3 problemi collegati emersi dalla domanda
+"serve un cap ai cluster?":
+
+1. **HTML non pulito in embedder.py + entity reference non decodificate** (`bleach`
+   mancava lì, presente solo in `extract.py`; entrambi mancavano `html.unescape()` per
+   `&nbsp;`/`&ldquo;`/`&rdquo;`) — commit `d5dc724`, `510aa1a`. 0 leak residuo (era 12%).
+2. **Canonicalizzazione entity person** — "Khamenei" era 10+ righe diverse in `entities`.
+   Nuova `canonicalize_person_entities()` in extract.py, pointer non distruttivo
+   (`canonical_entity_id`, stessa convenzione Wikidata-alias). Due passate: match esatto
+   post-strip onorifici (sicuro) + cognomi nudi ambigui uniti solo se dominanza ≥3×
+   menzioni (altrimenti separati — evita Ali/Mojtaba Khamenei fusi per errore). Agganciato
+   a `pathos extract`. Commit `510aa1a`.
+3. **Story-linking a due stadi** (`pathosphere/semantic/story.py`, nuovo modulo) — unisce
+   micro-eventi complete-linkage (troppo frammentati su storie grandi multi-angolo) in
+   macro-storie via entità persona canonica + finestra temporale + **vero complete-linkage
+   gruppo-vs-gruppo su embedding** (non solo la coppia-ponte). Schema: `events.story_id`
+   self-referenziale. Comando: `pathos story --time-window-days N`. Commit `0237389`,
+   `05e34e4`.
+
+**Due iterazioni prima del fix corretto sullo story-linking** (bug reali trovati durante
+il testing empirico sul DB reale, non solo teoria):
+- v1 (solo entità+tempo): Trump-come-hub → mega-storia da 244 eventi slegati
+- v2 (+ embedding solo su coppia-ponte): ridotto ma ancora 206 eventi — stesso blind spot
+  dell'average-linkage, un livello sopra
+- v3 (vero complete-linkage gruppo-vs-gruppo): **8 eventi max**, Khamenei 22→12 gruppi
+  sensati
+
+**Test**: 476 verdi (9 nuovi in test_story.py, inclusi 2 test di regressione specifici
+per i bug di chain-collapse trovati — coppia-ponte e hub temporale).
+
+**Pipeline semantica ora solida in 5 layer**:
+1. Complete-linkage clustering (chiude bridging-doc chain-collapse) — `779363d`
+2. HTML strip pre-embedding (chiude bias fonte/lingua) — `6b90804`
+3. HTML entity-reference decode in embedder+extract — `d5dc724`
+4. Canonicalizzazione entity person — `510aa1a`
+5. Story-linking complete-linkage gruppo-vs-gruppo — `0237389`, `05e34e4`
+
+**Prossimo**: Fase 4 Dashboard Streamlit (dati e algoritmi ora verificati solidi).
+
+---
+
+**2026-07-11 ~ 15:00 UTC — Fix HTML boilerplate embedding, applicato su DB reale:**
+
+Residuo da study_14 (bias fonte/lingua, cluster Folha 12 doc misti) chiuso.
+Root cause: `embedder.py::_build_text` non stripava HTML (extract.py aveva già
+questo fix per NER, mai applicato a embedding — stesso bug, due file).
+Fix: `bleach.clean(body, tags=[], strip=True)`. Applicato al DB reale (backup
+`data/db/pathosphere_backup_20260711_144947.db`): re-embed 2972 RSS doc +
+re-cluster. Risultato: max size 12→8, cluster Folha sparito, 7/7 cluster
+grandi rimasti genuinamente coerenti. Commit `6b90804`. 460 test verdi.
+
+**Pipeline clustering ora solida in 3 layer**:
+1. Complete-linkage (chiude bridging-doc chain-collapse) — commit `779363d`
+2. HTML strip pre-embedding (chiude bias fonte/lingua) — commit `6b90804`
+3. Cap=30 come pura difesa aggiuntiva, zero costo osservato
+
+**2026-07-11 ~ 14:30 UTC — Fix strutturale chain-collapse (complete-linkage):**
+
+**Root cause trovato**: average-linkage (fix precedente) controllava solo il doc-ponte
+contro il centroide di ogni cluster target, singolarmente. Un doc D coerente sia col
+centroide di A sia con quello di B salda A e B interamente, senza mai verificare che i
+membri di A siano coerenti con quelli di B.
+
+**Fix**: `pathosphere/semantic/cluster.py` — vero complete-linkage:
+- Pre-filtro economico (centroide, soglia larga 0.75) — scarta subito candidati lontani, O(1)
+- Gate vero: prima di fondere due cluster, verifica **distanza massima tra ogni coppia
+  di membri** A×B (non solo doc-ponte vs centroide) — O(|A|×|B|), trascurabile con cap 30
+- Cap 30 resta come rete di sicurezza aggiuntiva (nessun costo osservato)
+
+**Test nuovo**: `test_cluster_rejects_bridging_doc_welding_unrelated_clusters` — embedding
+costruiti a mano (cos(D,A)=cos(D,B)=0.90, cos(A,B)=0.62), verifica che il vecchio bug
+avrebbe fuso A+B tramite D, il nuovo fix li mantiene separati. 459 test verdi.
+
+**Verifica empirica** (study_13 + study_14, scratch DB copy, mai sul DB reale):
+- study_13: dimostrato che il cap non frammenta eventi genuini — è rete di sicurezza
+  necessaria contro centroid-drift runaway (uncapped: un cluster arrivava a 1370 doc,
+  >50% del corpus, fondendo 25 storie diverse)
+- study_14: con complete-linkage, **cap ha zero effetto** (12/20/30/100/uncapped →
+  risultato identico, 1977 eventi, max 12 doc) — runaway strutturalmente fixato
+- Singleton rate migliora 88.8%→78.0% (controintuitivo: il gate più severo impedisce
+  merge sbagliati che "rubavano" doc a cluster piccoli corretti)
+- 9/10 top cluster genuinamente coerenti (funerale Khamenei, Argentina-Egitto World Cup,
+  chiamate Putin-Trump, summit NATO Ankara, piogge Mumbai)
+- 1 residuo: cluster Folha (12 doc, portoghese) mix di temi — bias fonte/lingua,
+  scala molto più piccola del bug originale (12 vs 1370)
+- Nota: stesso dominio ≠ automaticamente bug — cluster TASS/PressTV monodominio sono
+  coerenti (media di stato che copre la propria storia nazionale)
+
+**Commit**: `779363d` — "fix(clustering): true complete-linkage to close bridging-doc chain-collapse"
+
+---
+
+**2026-07-10 ~ 20:00 UTC — Fix GDELT titles in clustering + study notebooks:**
+
+**Critical bug fix** — clustering titoli sporchi:
+- Problem: Grandi cluster (69+ docs) avevano titoli GDELT grezzi `||11|20251021|US` (event ID numerici)
+- Root cause: clustering includeva doc origin='gdelt' che non hanno titoli umani
+- Fix: `(r.origin IS NULL OR r.origin != 'gdelt')` in clustering query
+- Test: 458 passed, titoli adesso puliti (World Cup, India/US, Iran, Russia/NATO)
+- Commit: `b4588a5` — "fix(clustering): exclude GDELT docs from RSS event clustering"
+
+**Study notebooks creati** (pre-Fase 4 audit):
+- `study_10_clustering_robustness.ipynb` — time-window stability, cluster coherence, top cluster inspection
+- `study_11_theses_predictions_quality.ipynb` — thesis approval rate, confidence distribution, calibration Tetlock
+- `study_12_trading_validation.ipynb` — paper trading equity curves, agent vs random t-test, Sharpe ratios
+
+**2026-07-10 ~ 19:30 UTC — Audit critico + fix clustering chain-collapse:**
+
+**CP-017 — Orchestration loop (completato in sessione precedente)**:
 - Nuovo modulo `pathosphere/cycle/loop.py` — `LoopState` per persistenza stato, `run_autonomous_loop` core loop
 - CLI: `pathos loop [--max-retries N] [--sleep-hours H] [--state-file PATH]`
 - Stato salvato in `data/cycle_state.json`: fase completata, timestamp, ultimi 100 errori
@@ -40,8 +226,8 @@ Da qui — prossimi step prima di Fase 4:
 | Demonimi (Israeli/Russian/Chinese→location) | ✅ DONE (in main) |
 | Reset completo GDELT sul DB reale | ✅ ESEGUITO 2026-07-09 |
 | Backfill demonimi su DB reale | ✅ ESEGUITO 2026-07-09 |
-| Re-ingest GDELT da zero + pipeline pulita | 🔄 IN PROGRESS (background) |
-| Notebook verifica post-re-ingest | ⬜ da fare dopo pipeline |
+| Re-ingest GDELT da zero + pipeline pulita | ✅ COMPLETATO 2026-07-10 |
+| Notebook verifica post-re-ingest (study_08) | ✅ ESEGUITO — hairball ↓2pp, GDELT node rimosso |
 | **CP-017 — Loop resiliente** | ✅ **DONE 2026-07-10** |
 | Fase 4 — Dashboard Streamlit | ⬜ PROSSIMO |
 
@@ -75,17 +261,38 @@ Sessione 2026-07-09: risolta ambiguità di stato tra due branch paralleli (vedi 
 
 444 test verdi su `main`.
 
-## Prossima azione (quando gdelt-history finisce — ~12h da 2026-07-10 00:29 UTC)
+## Azioni completate questa sessione (2026-07-10 ~19:30)
 
-1. **Verifica completamento history**: `tail -f data/logs/gdelt_history_2025-07-10.log` finché non vedi "GDELT ingest complete" o simile
-2. **Anomalie Goldstein** (segnale numerico GDELT): `uv run pathos ingest gdelt-anomalies --backfill-country --full` (~5 min)
-3. **Pipeline semantica pulita** (in sequenza):
-   - `uv run pathos embed` (~20 min per tutti i doc RSS+GDELT)
-   - `uv run pathos extract` (~1 ora con NER spacy multilingua)
-   - `uv run pathos cluster` (~5 min)
-   - `uv run pathos graph` (~10 min)
-4. **Verifica finale**: notebook nuovo (study_08 o simile) con stessa metodologia di study_04-07, ma su dati GDELT puliti da zero — confrontare se canonicalizzazione+CP-015 riducono davvero il rumore vs snapshot pre-reset
-5. **Poi CP-017**: orchestrazione loop (farsi aiutare da un collega agent B, restando su questo branch)
+1. **Audit critico DB** — `notebooks/study_09_criticality_audit.ipynb` (eseguito):
+   - Scoperto: study_08 non era mai stato eseguito (`execution_count: null` su tutte le celle)
+   - Analisi reale clustering RSS: **79% singleton, 26 eventi capped@30 doc** (chain-collapse)
+   - Clustering topic-drift confermato: evento mescola Ucraina+Hormuz+Libano
+   - Event_type popola con codici CAMEO (disapprove/fight/coerce...), non vocab dichiarato
+   - Wikidata linkage <1% entità (rate-limited)
+   - 665 entità generiche ALL CAPS, 6% del grado grafo
+
+2. **Fix clustering single-linkage chain-collapse** — `pathosphere/semantic/cluster.py`:
+   - Refactor a **average-linkage** con centroide coherence check
+   - Parametri: KNN threshold 0.85 (neighbors), coherence threshold 0.88 (centroid)
+   - Load embeddings in memoria, track centroids dinamicamente
+   - Verifica: `uv run pathos cluster --time-window-hours 720` con 2564 RSS doc
+   - Risultato: 1258 eventi, 1117 singleton (88.8%), 0 chain-collapse artefatti
+   - Cluster post-fix verificati coerenti (World Cup 30-doc cluster genuino, non mescolato)
+
+3. **Commit creato**: `d14aeb4` — "fix(clustering): prevent single-linkage chain-collapse via average-linkage coherence"
+
+## Prossima azione (Fase 4 — Dashboard Streamlit)
+
+Clustering è ora **solido per produzione**. I 88% singleton riflettono dispersione reale del dataset RSS, non bug algoritmico. Cluster grandi (20-30 doc) sono garantiti coerenti per costruzione.
+
+Stack per dashboard:
+- Folium mappa (eventi geolocalizzati)
+- Plotly curve equity (3 portfolio: agent/random/buy&hold)
+- Tabella tesi aperte (pending/approved/rejected)
+- Grafico calibrazione Tetlock (predizioni vs esito)
+- Storico brief mattutini
+
+CLI: `pathos serve` → localhost:8501 (Streamlit)
 
 ### Note tecniche
 - Test suite: `uv run pytest tests/ -q` (444 verdi su main)

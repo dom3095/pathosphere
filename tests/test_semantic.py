@@ -12,7 +12,7 @@ import sqlite3
 import numpy as np
 import pytest
 
-from pathosphere.semantic.embedder import EmbedResult, embed_documents, serialize
+from pathosphere.semantic.embedder import EmbedResult, _build_text, embed_documents, serialize
 from pathosphere.semantic.dedup import DedupResult, dedup_documents
 from pathosphere.semantic.cluster import ClusterResult, cluster_documents
 
@@ -149,6 +149,51 @@ def test_embed_excludes_gdelt_and_comtrade_origin(tmp_db):
         ).fetchall()
     }
     assert still_unembedded == {"http://gdelt.com", "http://comtrade.com"}
+
+
+def test_build_text_strips_html_boilerplate():
+    """
+    RSS feed bodies often carry HTML links, including a repeated boilerplate
+    footer (e.g. Folha's "<a href=.../redir/.../rss091/...>Leia mais</a>").
+    Unstripped, the shared URL substrings dominate short articles' embedding
+    signal, causing same-source docs to cluster regardless of topic (found
+    in study_14 residual audit). _build_text must strip all markup so only
+    the anchor text (not the href URLs) survives.
+    """
+    body = (
+        'Manifestantes incendiaram um veículo Tesla em protestos na '
+        '<a href="https://www1.folha.uol.com.br/folha-topicos/suica/">Suíça</a>.\n'
+        '<a href="https://redir.folha.com.br/redir/online/mundo/rss091/*https://'
+        'www1.folha.uol.com.br/mundo/2026/06/manifestantes.shtml">Leia mais</a> '
+        '(06/14/2026 - 16h10)'
+    )
+
+    text = _build_text("Manifestantes incendeiam Tesla", body)
+
+    assert text is not None
+    assert "<a href" not in text
+    assert "folha.uol.com.br" not in text
+    assert "redir.folha.com.br" not in text
+    assert "Suíça" in text  # anchor text content preserved
+    assert "Leia mais" in text  # trailing anchor text preserved
+
+
+def test_build_text_decodes_html_entities():
+    """
+    bleach.clean strips TAGS but leaves HTML entity references (&nbsp;,
+    &ldquo;, &rdquo;) literal — found leaking into extracted entity names
+    (e.g. 'stabbed&nbsp;in', 'represents&nbsp;"a') on freshly re-processed
+    text. _build_text must also html.unescape after stripping tags.
+    """
+    body = "Netanyahu said &ldquo;very bad&rdquo; things about the deal.&nbsp;Officials reacted."
+
+    text = _build_text("Title", body)
+
+    assert text is not None
+    assert "&ldquo;" not in text
+    assert "&rdquo;" not in text
+    assert "&nbsp;" not in text
+    assert "very bad" in text
 
 
 def test_embed_skips_doc_without_text(tmp_db):
@@ -324,3 +369,53 @@ def test_cluster_skips_already_in_event(tmp_db):
     # Still only 1 event (the pre-existing one)
     count = tmp_db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert count == 1
+
+
+def test_cluster_rejects_bridging_doc_welding_unrelated_clusters(tmp_db):
+    """
+    Complete-linkage regression test: a doc D close to both A and B individually
+    (average-linkage's blind spot) must NOT weld A and B together if A and B
+    themselves are far apart. This is the exact bug found in study_10/13 audits
+    (a "regional register" doc bridging unrelated stories, e.g. HK/China mix).
+
+    Constructed geometry: cos(D,A) = cos(D,B) = 0.90 (both pass 0.88 threshold
+    individually), but cos(A,B) = 0.62 (fails). Old average-linkage (doc-vs-
+    centroid only) would merge A-D then D-B, wholesale welding A and B. New
+    complete-linkage checks the full A-vs-B cross product and rejects it.
+    """
+    vec_a = [0.0] * DIM
+    vec_a[0] = 1.0
+
+    vec_b = [0.0] * DIM
+    vec_b[0] = 0.62
+    vec_b[1] = 0.7846  # sqrt(1 - 0.62^2), so |vec_b| == 1
+
+    vec_d = [0.0] * DIM
+    vec_d[0] = 0.90
+    vec_d[1] = 0.4359  # sqrt(1 - 0.9^2), so |vec_d| == 1
+
+    id_a = _insert_doc(tmp_db, url="http://a.com", title="Story A", published_at="2026-06-01T00:00:00")
+    id_d = _insert_doc(tmp_db, url="http://d.com", title="Bridging doc", published_at="2026-06-01T01:00:00")
+    id_b = _insert_doc(tmp_db, url="http://b.com", title="Story B", published_at="2026-06-01T02:00:00")
+    _insert_vec(tmp_db, id_a, vec_a)
+    _insert_vec(tmp_db, id_d, vec_d)
+    _insert_vec(tmp_db, id_b, vec_b)
+
+    tmp_db.execute(
+        "UPDATE raw_documents SET dedup_checked = 1 WHERE id IN (?, ?, ?)", (id_a, id_d, id_b)
+    )
+    tmp_db.commit()
+
+    result = cluster_documents(tmp_db, time_window_hours=9999)
+
+    # A+D merge (both pass 0.88 threshold), but B must stay separate
+    # since complete-linkage checks A-vs-B directly (cos=0.62, fails).
+    assert result.events_created == 2
+    events = tmp_db.execute(
+        "SELECT event_id, document_id FROM event_documents ORDER BY event_id"
+    ).fetchall()
+    event_map: dict[int, set[int]] = {}
+    for row in events:
+        event_map.setdefault(row["event_id"], set()).add(row["document_id"])
+    cluster_sizes = sorted(len(members) for members in event_map.values())
+    assert cluster_sizes == [1, 2]  # B alone, {A, D} together
