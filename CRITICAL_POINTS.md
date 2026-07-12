@@ -214,3 +214,25 @@ Verifica quantitativa: top-20 entità collegate a doc `origin='rss'` → 19/20 n
 - Africa (7, già ok): Mail & Guardian (SA), The East African
 
 **Impatto:** medio — priorità 1 è schedulare `pathos cycle run` (cron/launchd) per accumulo regolare; ampliare/ribilanciare il catalogo è secondario e va ripetuto nel tempo (i feed RSS gratuiti muoiono senza preavviso).
+
+---
+
+## CP-018: canonicalizzazione entità — solo person, location/org restano frammentate — **BLOCCANTE prima di Fase 4**
+
+**Contesto:** sessione 2026-07-12, ispezionando visivamente `study_15_visual_tour.ipynb` (grafo entità), l'utente ha trovato 4 problemi distinti nella qualità delle entità — nessuno coperto da `canonicalize_person_entities()` (che copre solo `entity_type='person'`, vedi commit `510aa1a`).
+
+**1. Tipo sbagliato vince nella risoluzione alias Wikidata (il più grave dei 4)**
+`link_wikidata()` risolve conflitti QID assegnando `canonical_entity_id` a **chiunque abbia ottenuto il QID per primo**, senza controllare la coerenza di `entity_type`. Verificato sul DB reale: `FRANCE` (entity_type=`company`, quasi certo estratto da testo TUTTO MAIUSCOLO tipo lanci d'agenzia) ha ottenuto QID `Q142` (corretto, è il QID di Francia-paese) **prima** di `France` (entity_type=`location`, corretto). Quando `France` risolve lo stesso QID, va in conflitto (`IntegrityError` in `extract.py:557-568`) e diventa alias di `FRANCE` — **tutte le 62 menzioni di "France" vengono attribuite a un nodo tipizzato `company`**. Il bug non è specifico di Francia: qualunque entità con una variante ALL-CAPS mistipizzata che raggiunge Wikidata per prima propaga il tipo sbagliato a valle (grafo, story-linking, futuro dashboard). Fix necessario: quando risolve un conflitto QID, `link_wikidata` dovrebbe preferire come canonico l'entità con `entity_type` "più plausibile" per quel QID (es. Wikidata stesso espone `instance of` — P31 — per distinguere paese da organizzazione), non semplicemente "chi arriva prima".
+
+**2. `LABEL_MAP` troppo stretto: ORG spaCy → sempre `company`**
+`EU`, `NATO` (e probabilmente `UN`, `WHO`, altre organizzazioni intergovernative/alleanze) finiscono tipizzate `company` — tecnicamente non falso (sono "organizzazioni"), ma fuorviante nel grafo/dashboard (mostrate come aziende). Serve una categoria più ampia tipo `organization` o una sub-classificazione (azienda vs alleanza/istituzione) — richiede euristica aggiuntiva oltre al solo label spaCy ORG (es. lista curata di org intergovernative, simile a `DEMONYM_TO_COUNTRY`).
+
+**3. Location/demonimi non canonicalizzati cross-entità**
+`backfill_demonym_entities()` sistema solo `entity_type` (other→location) + `canonical_name`, **non** fa dedup tra entità location diverse che si riferiscono allo stesso paese. Verificato: `England` (location, 20 mention), `English` (other, 10 mention), `British` (location, 37 mention), `Britain` (location, 32 mention), `UK` (location, 58 mention, canonico parziale → id=1408) sono **5 righe separate**, nessuna unificata sotto un unico canonico "United Kingdom". Stesso pattern già risolto per le persone (`canonicalize_person_entities`) manca per i luoghi — servirebbe una funzione analoga, con logica di honorific-stripping sostituita da un dizionario demonimo→paese (probabilmente riusabile da `DEMONYM_TO_COUNTRY` già esistente) + fuzzy match su alias noti (England/Britain/UK/British → stesso canonico).
+
+**4. Rumore NER puro (minore, non bloccante di per sé)**
+`VIDEO` (company, 22 mention) — quasi certo boilerplate tipo "WATCH VIDEO" mistipizzato come organizzazione da spaCy. Nessuna canonicalizzazione lo risolverebbe; serve espandere `GENERIC_ENTITY_STOPLIST` o un filtro euristico aggiuntivo (es. scarta entità ALL-CAPS single-word molto comuni in inglese). `AFP` invece verificato **corretto** (Agence France-Presse, agenzia stampa reale) — falso positivo del sospetto iniziale.
+
+**Perché bloccante:** il punto 1 (tipo-sbagliato-vince) e il punto 3 (demonimi non uniti) **peggiorano silenziosamente ogni grafo/dashboard futuro** che usa `COALESCE(canonical_entity_id, id)` per raggruppare — esattamente il pattern già usato in `graph.py` e `story.py` di oggi. Un dashboard Fase 4 costruito sopra questi dati mostrerebbe "France" come azienda e frammenterebbe la copertura UK su 4-5 nodi diversi, minando la fiducia nei dati visualizzati.
+
+**Non fatto in questa sessione:** nessun fix di codice per questi 4 punti — solo diagnosi. Priorità consigliata: punto 1 (root cause più subdola/pericolosa) → punto 3 (stesso pattern già collaudato oggi per le persone, riuso alto) → punto 2 → punto 4.
