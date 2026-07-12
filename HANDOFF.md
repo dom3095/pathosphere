@@ -1,6 +1,39 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-12 ~ 17:45 — CP-018 + CP-019 + CP-020 (classi sistemiche) risolti*
+*Aggiornato: 2026-07-12 ~ 18:35 — CP-018/019/020 risolti; CP-021 trovato e loggato (aperto, non bloccante)*
+
+## CP-021: story-linking, ordine greedy sub-ottimale con entità quasi-hub (2026-07-12, sera)
+
+**Contesto**: ispezionando `study_17` (sezione cluster, aggiunta su richiesta utente che
+notava assenza dei cluster di notizie), l'utente ha notato che 4-5 dei top-10 cluster
+sono palesemente la stessa storia (trattativa Iran-USA) mai unita da `pathos story`.
+
+**Verifica**: `Trump` compare in 149/~2000 eventi (quasi-hub). Il caso specifico
+(eventi 121960+122131, Iran-deal) supera **entrambi** i gate di `story.py` individualmente
+(similarità diretta 0.847 > soglia 0.82, span combinato 3gg < finestra 10gg) eppure resta
+non unito — causa: ~13700 coppie-candidate totali (chiunque condivida una persona),
+processate greedy per gap temporale crescente; un merge sbagliato con gap più piccolo,
+elaborato prima, può allargare un gruppo abbastanza da bloccare il merge corretto quando
+arriva il suo turno (union-find irreversibile).
+
+**Scala misurata con cautela**: audit isolato (coppia-vs-coppia) trova 683 coppie che
+passano entrambi i gate, di cui solo 298 unite nella storia finale — **ma il numero è
+sovrastimato**: l'audit isolato replica esattamente il punto cieco (coppia-vs-coppia,
+non gruppo-vs-gruppo) che `story.py` è già stato costruito per evitare. Campionando le
+"mancate", molte sono correttamente respinte dal vero algoritmo (coppie che condividono
+Trump ma sono topicamente slegate). Solo il caso Iran-deal è **confermato** come bug reale.
+
+**Non fatto**: nessun fix — l'utente ha scelto di investigare prima di decidere, e i
+risultati (rischio di sovrastimare + rischio di introdurre nuovi problemi con un
+riordino affrettato su un algoritmo già a v3 dopo 2 iterazioni fallite) supportano
+rimandare a sessione dedicata. Loggato come CP-021, **aperto, non bloccante** (non è
+una regressione: 27 storie nuove formate correttamente in questo stesso run).
+
+**Direzioni future possibili**: ordinare merge per similarità decrescente invece che per
+gap crescente; oppure passata iterativa (ri-tentare coppie respinte dopo stabilizzazione)
+invece di greedy single-pass.
+
+---
 
 ## CP-020: due classi sistemiche aggiuntive (2026-07-12, tardo pomeriggio)
 

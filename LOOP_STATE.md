@@ -1,6 +1,24 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-018/019/020 risolti — pronto per Fase 4 Dashboard (nessun blocco noto)
+## Fase corrente: CP-018/019/020 risolti; CP-021 aperto (non bloccante) — Fase 4 Dashboard può procedere
+
+**2026-07-12 ~ 18:35 UTC — CP-021 trovato durante ispezione visiva cluster in study_17:**
+
+Storia Iran-USA frammentata in 4-5 micro-eventi mai uniti da `pathos story` nonostante
+condividano Trump (149/2000 eventi) e superino i gate individuali (sim 0.847, span 3gg).
+Causa: ordine greedy per gap temporale su ~13700 coppie-candidate — un merge sbagliato
+processato prima può bloccare quello corretto (union-find irreversibile). Scala misurata
+con cautela (683 coppie passano gate isolati, 298 unite — ma stima sovrastimata, l'audit
+isolato ha lo stesso punto cieco che `story.py` già evita col check gruppo-vs-gruppo).
+Solo 1 caso confermato concretamente. Loggato CP-021, **aperto ma non bloccante** —
+utente ha scelto di non affrettare un fix su un algoritmo già a v3. Nessun codice
+modificato per questo punto.
+
+**Prossimo**: Fase 4 Dashboard — nessun blocco. CP-021 da riprendere in sessione dedicata
+con più tempo per verifica empirica di un eventuale riordino (similarità invece di gap).
+
+---
+
 
 **2026-07-12 ~ 17:45 UTC — CP-020 (classi sistemiche, correzione utente):**
 
