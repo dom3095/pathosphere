@@ -8,6 +8,7 @@ Memory: model is ~500 MB; load once, batch-process, unload explicitly when done.
 Prefix "passage: " follows intfloat/multilingual-e5 training convention.
 """
 
+import html
 import struct
 import sqlite3
 from dataclasses import dataclass
@@ -56,7 +57,10 @@ def _build_text(title: str | None, body: str | None) -> str | None:
         # footer). Unstripped, shared boilerplate URLs across many articles
         # from the same feed dominate the embedding signal over actual
         # content, causing same-source docs to cluster regardless of topic.
+        # html.unescape decodes entity references (&nbsp;, &ldquo;...) that
+        # bleach.clean leaves literal (it only strips tags, not entities).
         clean_body = bleach.clean(body, tags=[], strip=True)
+        clean_body = html.unescape(clean_body)
         clean_body = " ".join(clean_body.split())
         parts.append(clean_body[:MAX_TEXT_CHARS])
     if not parts:

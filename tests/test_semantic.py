@@ -178,6 +178,24 @@ def test_build_text_strips_html_boilerplate():
     assert "Leia mais" in text  # trailing anchor text preserved
 
 
+def test_build_text_decodes_html_entities():
+    """
+    bleach.clean strips TAGS but leaves HTML entity references (&nbsp;,
+    &ldquo;, &rdquo;) literal — found leaking into extracted entity names
+    (e.g. 'stabbed&nbsp;in', 'represents&nbsp;"a') on freshly re-processed
+    text. _build_text must also html.unescape after stripping tags.
+    """
+    body = "Netanyahu said &ldquo;very bad&rdquo; things about the deal.&nbsp;Officials reacted."
+
+    text = _build_text("Title", body)
+
+    assert text is not None
+    assert "&ldquo;" not in text
+    assert "&rdquo;" not in text
+    assert "&nbsp;" not in text
+    assert "very bad" in text
+
+
 def test_embed_skips_doc_without_text(tmp_db):
     tmp_db.execute(
         "INSERT INTO raw_documents (url, title, body, content_hash, embedded) "

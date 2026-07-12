@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from pathosphere.semantic.extract import (
+    _build_text,
     backfill_demonym_entities,
     extract_entities,
     geocode_events,
@@ -637,3 +638,21 @@ def test_extract_strips_html_from_body(tmp_db):
     assert len(rows) == 2
     assert rows[0]["name"] == "Reuters"
     assert rows[1]["name"] == "bold text"
+
+
+def test_build_text_decodes_html_entities():
+    """
+    bleach.clean strips TAGS but leaves HTML entity references (&nbsp;,
+    &ldquo;, &rdquo;) literal — found leaking into extracted entity names
+    (e.g. 'stabbed&nbsp;in') on freshly re-processed text. _build_text must
+    also html.unescape after stripping tags.
+    """
+    body = "Netanyahu said &ldquo;very bad&rdquo; things.&nbsp;Officials reacted."
+
+    text = _build_text("Title", body)
+
+    assert text is not None
+    assert "&ldquo;" not in text
+    assert "&rdquo;" not in text
+    assert "&nbsp;" not in text
+    assert "very bad" in text

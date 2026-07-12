@@ -12,6 +12,7 @@ Three independent, resumable steps:
 Memory: xx_ent_wiki_sm is ~30 MB; loaded only inside this phase, unloaded after.
 """
 
+import html
 import json
 import sqlite3
 import time
@@ -159,9 +160,12 @@ def _build_text(title: str | None, body: str | None) -> str | None:
         parts.append(title.strip())
     if body:
         # Strip HTML tags from body before NER (common in RSS feeds).
-        # bleach.clean with tags=[] removes all markup. Collapse internal
-        # whitespace (including newlines from block tags) to single spaces.
+        # bleach.clean with tags=[] removes all markup but leaves entity
+        # references (&nbsp;, &ldquo;...) literal — html.unescape decodes
+        # those. Collapse internal whitespace (including newlines from
+        # block tags) to single spaces.
         clean_body = bleach.clean(body, tags=[], strip=True)
+        clean_body = html.unescape(clean_body)
         clean_body = " ".join(clean_body.split())
         parts.append(clean_body)
     if not parts:
