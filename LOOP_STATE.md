@@ -1,6 +1,50 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Clustering pipeline solida end-to-end — COMPLETATO
+## Fase corrente: Pipeline semantica solida end-to-end — COMPLETATO, pronto per Fase 4
+
+**2026-07-12 ~ 15:10 UTC — Catena entity extraction → canonicalizzazione → story-linking:**
+
+Su richiesta esplicita utente ("prima risolviamo i problemi, non ha senso dashboard su
+dati di bassa qualità"), risolta catena di 3 problemi collegati emersi dalla domanda
+"serve un cap ai cluster?":
+
+1. **HTML non pulito in embedder.py + entity reference non decodificate** (`bleach`
+   mancava lì, presente solo in `extract.py`; entrambi mancavano `html.unescape()` per
+   `&nbsp;`/`&ldquo;`/`&rdquo;`) — commit `d5dc724`, `510aa1a`. 0 leak residuo (era 12%).
+2. **Canonicalizzazione entity person** — "Khamenei" era 10+ righe diverse in `entities`.
+   Nuova `canonicalize_person_entities()` in extract.py, pointer non distruttivo
+   (`canonical_entity_id`, stessa convenzione Wikidata-alias). Due passate: match esatto
+   post-strip onorifici (sicuro) + cognomi nudi ambigui uniti solo se dominanza ≥3×
+   menzioni (altrimenti separati — evita Ali/Mojtaba Khamenei fusi per errore). Agganciato
+   a `pathos extract`. Commit `510aa1a`.
+3. **Story-linking a due stadi** (`pathosphere/semantic/story.py`, nuovo modulo) — unisce
+   micro-eventi complete-linkage (troppo frammentati su storie grandi multi-angolo) in
+   macro-storie via entità persona canonica + finestra temporale + **vero complete-linkage
+   gruppo-vs-gruppo su embedding** (non solo la coppia-ponte). Schema: `events.story_id`
+   self-referenziale. Comando: `pathos story --time-window-days N`. Commit `0237389`,
+   `05e34e4`.
+
+**Due iterazioni prima del fix corretto sullo story-linking** (bug reali trovati durante
+il testing empirico sul DB reale, non solo teoria):
+- v1 (solo entità+tempo): Trump-come-hub → mega-storia da 244 eventi slegati
+- v2 (+ embedding solo su coppia-ponte): ridotto ma ancora 206 eventi — stesso blind spot
+  dell'average-linkage, un livello sopra
+- v3 (vero complete-linkage gruppo-vs-gruppo): **8 eventi max**, Khamenei 22→12 gruppi
+  sensati
+
+**Test**: 476 verdi (9 nuovi in test_story.py, inclusi 2 test di regressione specifici
+per i bug di chain-collapse trovati — coppia-ponte e hub temporale).
+
+**Pipeline semantica ora solida in 5 layer**:
+1. Complete-linkage clustering (chiude bridging-doc chain-collapse) — `779363d`
+2. HTML strip pre-embedding (chiude bias fonte/lingua) — `6b90804`
+3. HTML entity-reference decode in embedder+extract — `d5dc724`
+4. Canonicalizzazione entity person — `510aa1a`
+5. Story-linking complete-linkage gruppo-vs-gruppo — `0237389`, `05e34e4`
+
+**Prossimo**: Fase 4 Dashboard Streamlit (dati e algoritmi ora verificati solidi).
+
+---
 
 **2026-07-11 ~ 15:00 UTC — Fix HTML boilerplate embedding, applicato su DB reale:**
 

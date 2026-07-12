@@ -1,8 +1,91 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-11 ~ 15:00 — Fix HTML boilerplate embedding, applicato al DB reale*
+*Aggiornato: 2026-07-12 ~ 15:10 — Catena "sistemiamo i problemi prima di dashboard" completata*
 
-## Fix HTML boilerplate in embedding: risolto residuo bias fonte/lingua (2026-07-11 ~ 15:00)
+## Catena entity extraction → canonicalizzazione → story-linking (2026-07-12)
+
+**Contesto**: dopo il fix complete-linkage (11 luglio), l'utente ha chiesto: "è il caso
+che ci sia un cap ai cluster?" — questa domanda ha aperto un'indagine a cascata che ha
+richiesto sistemare 3 problemi collegati prima di passare a Fase 4 Dashboard, su esplicita
+richiesta dell'utente: "prima risolviamo i problemi che abbiamo, non ha senso andare in
+dashboard se dati/algoritmi sono di bassa qualità."
+
+**Problema radice trovato**: complete-linkage (fix precedente) frammenta sistematicamente
+eventi reali grandi e multi-angolo — 88 documenti sul funerale di Khamenei erano sparsi
+su 33 micro-eventi invece di formare un'unica storia forte. Causa: nessuna soglia di
+similarità embedding regge su copertura genuina multi-giorno/multi-angolo (breaking news
+vs pezzo di colore vs analisi geopolitica).
+
+### 1. Fix HTML boilerplate in embedding + extract (commit `d5dc724`, `510aa1a` parziale)
+
+`extract.py` aveva già bleach.clean per il body (fix CP-015) ma **mai applicato a
+`embedder.py`** — stesso bug, due file. Inoltre bleach pulisce i TAG ma non le ENTITY
+REFERENCE (`&nbsp;`, `&ldquo;`, `&rdquo;`) — serviva anche `html.unescape()`. Applicato
+a entrambi i file. Ri-eseguito su DB reale: 2972 doc RSS re-embedded + re-extracted,
+`pathos graph` ricostruito, 2969 entità stale (leak HTML pre-fix) purgate. Risultato:
+**0 entità con leak HTML residuo** (era 12%, 1264/10581).
+
+### 2. Canonicalizzazione entity person (commit `510aa1a`)
+
+Trovato: "Khamenei" esisteva come 10+ righe diverse in `entities` (Khamenei/Ali Khamenei/
+Ayatollah Khamenei/Ayatollah Ali Khamenei...) — NER estrae ogni variante onorifica come
+entità distinta, nessun dedup automatico. `canonicalize_person_entities()` in
+`extract.py`: due passate, non distruttive (pointer `canonical_entity_id`, stessa
+convenzione già usata per gli alias Wikidata in `graph.py`):
+1. Match esatto dopo strip onorifici (lista curata) su nomi multi-token — sicuro
+2. Cognomi nudi ambigui ("Khamenei" da solo) uniti solo se un candidato domina
+   nettamente (≥3× menzioni) — altrimenti lasciati separati (evita di fondere
+   Ali Khamenei col figlio Mojtaba Khamenei, persona diversa)
+
+Agganciato a `pathos extract` (gira sempre, locale, nessun costo di rete). Applicato al
+DB reale: 2 gruppi esatti + 215 cognomi nudi uniti, 48 ambigui correttamente lasciati separati.
+
+### 3. Story-linking a due stadi (commit `0237389`, `05e34e4`)
+
+**Schema**: `events.story_id` (self-referenziale, stessa convenzione COALESCE di
+`canonical_entity_id`) — non distruttivo, `event_documents` intatti, ogni micro-evento
+resta ispezionabile singolarmente.
+
+**Algoritmo** (`pathosphere/semantic/story.py`): unisce micro-eventi che condividono
+un'entità PERSONA canonica entro una finestra temporale, **e** superano una soglia di
+similarità embedding (0.82) calcolata come **vero complete-linkage gruppo-vs-gruppo**
+(non solo la coppia-ponte che ha scatenato il tentativo di merge).
+
+**Due iterazioni per arrivare al fix corretto** (documentate perché istruttive):
+- **v1** (solo entità+tempo): un politico onnipresente (Trump, menzionato di striscio
+  in decine di articoli slegati nella stessa settimana) ha agito da hub universale →
+  mega-storia da **244 eventi** slegati (World Cup, NATO, mercati petroliferi...).
+  Stesso identico chain-collapse già visto per gli embedding, spostato di un livello.
+- **v2** (+ check embedding solo sulla coppia-ponte, soglia 0.82): mega-blob ridotto ma
+  ancora presente a **206 eventi** — perché controllare solo i due eventi-innesco è
+  esattamente il punto cieco dell'average-linkage: un evento-ponte può passare il check
+  contro DUE gruppi diversi individualmente, pur essendo quei gruppi incoerenti tra loro.
+- **v3 (fix vero)**: track dell'intero insieme documenti per gruppo union-find; il gate
+  richiede la **similarità minima sull'intero cross-product** documenti-gruppo-A ×
+  documenti-gruppo-B, non solo doc-ponte vs doc-ponte — esattamente lo stesso principio
+  del fix complete-linkage di `cluster.py`, replicato un livello sopra.
+
+**Fix aggiuntivo tempo**: per la dimensione temporale (1D, ordinata), basta controllare
+che lo **span totale** del gruppo risultante (max-min) resti entro finestra — equivale
+matematicamente a un vero controllo complete-linkage (in 1D, span limitato ⟺ ogni coppia
+è vicina), niente approssimazione necessaria a differenza del caso embedding.
+
+**Risultato finale su DB reale**: max micro-eventi uniti in una storia = **8** (era 206
+nel mega-blob v2). Caso Khamenei: 22 micro-eventi frammentati → **12 macro-gruppi**
+(due cluster genuini da 6 e 5 eventi) — risultato conservativo e sicuro: angolature
+davvero diverse restano separate invece di essere forzate in un blob artificiale.
+
+**Comando CLI**: `pathos story [--time-window-days N]` (default 10).
+
+**Test**: 476 verdi (9 nuovi in `test_story.py`, inclusi test di regressione specifici
+per entrambi i bug di chain-collapse trovati — coppia-ponte ed hub temporale).
+
+**Status**: pipeline clustering→embedding→entity→story ora solida end-to-end. Pronto
+per Fase 4 Dashboard.
+
+---
+
+## Precedente: Fix HTML boilerplate in embedding (2026-07-11 ~ 15:00)
 
 **Contesto**: study_14 (complete-linkage fix) trovò un residuo — cluster Folha (12 doc,
 portoghese) che mescolava temi slegati (G7, Tesla, Taliban, elezioni Peru, ponte Brooklyn)
