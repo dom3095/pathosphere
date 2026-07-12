@@ -5,6 +5,7 @@ a time-window bound + an embedding-similarity floor.
 """
 
 import hashlib
+import math
 import sqlite3
 import struct
 
@@ -318,6 +319,59 @@ def test_prevents_chain_collapse_across_time(tmp_db):
     assert resolved[event_b] == resolved[event_c]
     # A stays separate — merging it with {B,C} would span 9d > 8d window
     assert resolved[event_a] != resolved[event_b]
+
+
+def test_ties_on_time_gap_prefer_higher_similarity_pair(tmp_db):
+    """CP-021: with a hub-ish person mentioned in many overlapping-time
+    events, thousands of candidate pairs can tie on gap=0 — with no
+    secondary sort key, which pair gets first crack at a group is arbitrary
+    Python set-iteration order, and a weaker-but-still-passing match
+    processed first can consume an event before its genuinely stronger match
+    gets a turn. A, B, C all mention the same person with fully overlapping
+    (gap=0) windows: sim(A,B)=0.90 (the real story), sim(A,C)=0.85 (weaker
+    but still clears 0.82 in isolation), sim(B,C)=0.53 (unrelated). The
+    strongest pair (A,B) must win regardless of tie order — verified here by
+    asserting the outcome directly, not by relying on hash order."""
+    person = _insert_person_entity(tmp_db, "Hub Person")
+
+    event_a = _insert_event(tmp_db, first_seen="2026-06-01T00:00:00")
+    event_b = _insert_event(tmp_db, first_seen="2026-06-01T00:00:00")
+    event_c = _insert_event(tmp_db, first_seen="2026-06-01T00:00:00")
+
+    doc_a = _insert_doc(tmp_db, url="https://x.com/a")
+    doc_b = _insert_doc(tmp_db, url="https://x.com/b")
+    doc_c = _insert_doc(tmp_db, url="https://x.com/c")
+    _link_doc_to_event(tmp_db, doc_a, event_a)
+    _link_doc_to_event(tmp_db, doc_b, event_b)
+    _link_doc_to_event(tmp_db, doc_c, event_c)
+    _mention(tmp_db, doc_a, person)
+    _mention(tmp_db, doc_b, person)
+    _mention(tmp_db, doc_c, person)
+
+    def vec_at(angle_deg: float) -> list[float]:
+        v = [0.0] * DIM
+        v[0] = math.cos(math.radians(angle_deg))
+        v[1] = math.sin(math.radians(angle_deg))
+        return v
+
+    vec_a = vec_at(0.0)
+    vec_b = vec_at(math.degrees(math.acos(0.90)))    # sim(A,B) = 0.90
+    vec_c = vec_at(-math.degrees(math.acos(0.85)))   # sim(A,C) = 0.85, sim(B,C) ~= 0.53
+    _insert_embedding(tmp_db, doc_a, vec_a)
+    _insert_embedding(tmp_db, doc_b, vec_b)
+    _insert_embedding(tmp_db, doc_c, vec_c)
+
+    result = link_related_events(tmp_db, time_window_days=10)
+
+    story_ids = {
+        r["id"]: r["story_id"]
+        for r in tmp_db.execute("SELECT id, story_id FROM events").fetchall()
+    }
+    resolved = {eid: (story_ids[eid] or eid) for eid in (event_a, event_b, event_c)}
+
+    assert result.stories_formed == 1
+    assert resolved[event_a] == resolved[event_b]
+    assert resolved[event_c] != resolved[event_a]
 
 
 def test_canonical_is_most_documents_tie_break_earliest(tmp_db):

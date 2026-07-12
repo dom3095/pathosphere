@@ -1,6 +1,33 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-12 ~ 18:35 — CP-018/019/020 risolti; CP-021 trovato e loggato (aperto, non bloccante)*
+*Aggiornato: 2026-07-12 ~ 19:15 — CP-018/019/020/021 tutti risolti e verificati sul DB reale*
+
+## CP-021 fix: story-linking, ordine merge per similarità a parità di gap (2026-07-12, sera)
+
+**Fix**: `link_related_events` in `story.py` ordina le coppie candidate per
+`(gap temporale crescente, similarità decrescente)` invece di solo gap crescente. A parità
+di gap (comune con un'entità quasi-hub: Trump in 149/2000 eventi → centinaia di coppie a
+gap=0), la coppia con similarità più alta viene processata per prima invece di lasciare
+l'ordine a un dettaglio implementativo (iterazione di un `set` Python). Nessuna modifica ai
+gate di accettazione (finestra temporale, complete-linkage gruppo-vs-gruppo) — solo all'ordine
+in cui le coppie vengono provate.
+
+**Verificato sul DB reale**: backup pre-fix
+(`pathosphere_backup_20260712_183828_pre_cp021_reorder.db`), reset completo `story_id` +
+riesecuzione da zero. Risultato: 125 storie (199 eventi), distribuzione sana (max 8, media
+2.6, **nessun mega-blob**). Il caso Iran-deal segnalato ora unisce correttamente 121960+122131
+(+2 altri eventi coerenti). Ispezionate a campione altre 2 storie da 6 eventi — coerenti.
+
+**Non completamente risolto**: 122059 (Hormuz) e 122072 (sticking points) restano separati
+dal gruppo Iran-deal — plausibilmente sotto-angolazioni sotto soglia 0.82 contro l'intero
+gruppo, comportamento conservativo accettabile (non forza angolazioni diverse insieme).
+
+**Test**: 1 nuovo (`test_ties_on_time_gap_prefer_higher_similarity_pair`), 498 totali verdi.
+
+**Status**: CP-018/019/020/021 tutti chiusi. Pipeline entity+clustering+story ora verificata
+end-to-end su dati reali. Nessun blocco noto per Fase 4 Dashboard.
+
+---
 
 ## CP-021: story-linking, ordine greedy sub-ottimale con entità quasi-hub (2026-07-12, sera)
 
@@ -553,7 +580,7 @@ launchctl list | grep pathosphere
 
 ```bash
 # Stato / DB
-uv run pytest tests/ -q                    # 497 verdi
+uv run pytest tests/ -q                    # 498 verdi
 uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
 uv run pathos db info                      # Row counts per tabella
 

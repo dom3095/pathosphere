@@ -1,21 +1,27 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-018/019/020 risolti; CP-021 aperto (non bloccante) — Fase 4 Dashboard può procedere
+## Fase corrente: CP-018/019/020/021 tutti risolti — Fase 4 Dashboard può procedere
 
-**2026-07-12 ~ 18:35 UTC — CP-021 trovato durante ispezione visiva cluster in study_17:**
+**2026-07-12 ~ 19:15 UTC — CP-021 risolto (riordino merge candidati per similarità):**
 
 Storia Iran-USA frammentata in 4-5 micro-eventi mai uniti da `pathos story` nonostante
 condividano Trump (149/2000 eventi) e superino i gate individuali (sim 0.847, span 3gg).
-Causa: ordine greedy per gap temporale su ~13700 coppie-candidate — un merge sbagliato
-processato prima può bloccare quello corretto (union-find irreversibile). Scala misurata
-con cautela (683 coppie passano gate isolati, 298 unite — ma stima sovrastimata, l'audit
-isolato ha lo stesso punto cieco che `story.py` già evita col check gruppo-vs-gruppo).
-Solo 1 caso confermato concretamente. Loggato CP-021, **aperto ma non bloccante** —
-utente ha scelto di non affrettare un fix su un algoritmo già a v3. Nessun codice
-modificato per questo punto.
+Causa: ordine greedy per gap temporale su ~13700 coppie-candidate — a parità di gap (molto
+comune con un'entità quasi-hub) l'ordine era arbitrario (iterazione set Python), non
+per forza semantico. Fix: `sorted_pairs` ordina per `(gap crescente, similarità
+decrescente)` — a parità di gap vince la coppia più simile. Nessuna modifica ai gate di
+accettazione, solo all'ordine dei tentativi.
 
-**Prossimo**: Fase 4 Dashboard — nessun blocco. CP-021 da riprendere in sessione dedicata
-con più tempo per verifica empirica di un eventuale riordino (similarità invece di gap).
+Verificato sul DB reale: backup pre-fix, reset completo `story_id`, riesecuzione da zero.
+125 storie (199 eventi), distribuzione sana (max 8, media 2.6, nessun mega-blob). Iran-deal
+ora unisce correttamente 121960+122131+2 altri. 2 storie campione da 6 eventi ispezionate,
+entrambe coerenti (funerale Khamenei, dichiarazioni Cremlino Ucraina). 122059/122072
+restano separati — plausibilmente sotto soglia contro l'intero gruppo, comportamento
+conservativo accettabile.
+
+**Test**: 1 nuovo, 498 totali verdi.
+
+**Prossimo**: Fase 4 Dashboard — nessun blocco noto residuo su clustering/entity/story.
 
 ---
 

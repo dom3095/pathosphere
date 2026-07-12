@@ -145,9 +145,6 @@ def link_related_events(
         return result
 
     # Candidate pairs: any two events sharing >=1 common person entity.
-    # Sorted by temporal proximity so tight, obviously-same-story pairs merge
-    # before looser ones — reduces the chance an early wide merge blocks a
-    # later tight one that would otherwise have gone through.
     candidate_pairs: set[tuple[int, int]] = set()
     for event_ids in person_to_events.values():
         if len(event_ids) < 2:
@@ -163,8 +160,6 @@ def link_related_events(
         latest_start = max(a_lo, b_lo)
         earliest_end = min(a_hi, b_hi)
         return max(timedelta(0), latest_start - earliest_end)
-
-    sorted_pairs = sorted(candidate_pairs, key=lambda p: pair_gap(*p))
 
     # Bulk-load doc membership and embeddings for every event that appears
     # in a candidate pair — group_docs tracks the FULL document set per
@@ -198,6 +193,25 @@ def link_related_events(
     def embedding_ok(ra: int, rb: int) -> bool:
         sim = _min_pairwise_similarity(group_docs[ra], group_docs[rb], doc_embeddings)
         return sim is not None and sim >= embedding_similarity
+
+    # Sort by temporal proximity first (tight, obviously-same-story pairs
+    # merge before looser ones) — but with a hub entity (e.g. a person
+    # mentioned in ~150 events), thousands of pairs tie on gap=0, and with no
+    # secondary key the tie order is arbitrary Python set-iteration order.
+    # Found empirically (CP-021): a genuinely correct pair (same story, 0.847
+    # complete-linkage similarity, tight overlapping window) stayed unmerged
+    # because some other gap=0 pair — sharing the hub person but NOT actually
+    # related — happened to be tried first and grew a group incompatible with
+    # the correct match. Breaking gap ties by descending initial similarity
+    # gives the strongest semantic matches first crack at claiming a group,
+    # instead of leaving it to incidental ordering.
+    initial_similarity: dict[tuple[int, int], float] = {
+        pair: (_min_pairwise_similarity(group_docs[pair[0]], group_docs[pair[1]], doc_embeddings) or -1.0)
+        for pair in candidate_pairs
+    }
+    sorted_pairs = sorted(
+        candidate_pairs, key=lambda p: (pair_gap(*p), -initial_similarity[p])
+    )
 
     parent = {eid: eid for eid in all_event_ids}
     group_span: dict[int, tuple[datetime, datetime]] = dict(event_span)
