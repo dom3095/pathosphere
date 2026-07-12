@@ -95,6 +95,15 @@ LOCATION_ALIAS_TO_COUNTRY: dict[str, str] = {
     "uae": "United Arab Emirates",
     "prc": "China", "mainland china": "China",
     "rok": "South Korea", "dprk": "North Korea", "roc": "Taiwan",
+    # Continents — same class of bug as country demonyms (noun tagged one
+    # way, adjective another, neither merged with the other): "European" was
+    # found stuck as entity_type='other' (not a location at all, invisible to
+    # canonicalize_location_entities) while "Europe" itself had picked up a
+    # wrong Wikidata match ("Europe PubMed Central", a literature database —
+    # the same fuzzy-search collision class as CP-019, just on a new word).
+    "europe": "Europe", "european": "Europe",
+    "asia": "Asia", "asian": "Asia",
+    "africa": "Africa", "african": "Africa",
 }
 
 # Boilerplate/UI noise (video players, "read more" widgets...) that spaCy
@@ -379,17 +388,22 @@ def extract_entities(
 
 
 def backfill_demonym_entities(conn: sqlite3.Connection) -> int:
-    """One-time repair: reclassify existing demonym entities (`entity_type`
-    != 'location', e.g. spaCy-tagged 'other') to location+canonical_name.
+    """One-time repair: reclassify existing demonym/alias entities
+    (`entity_type` != 'location', e.g. spaCy-tagged 'other' or mistagged
+    'company') to location+canonical_name. Covers both DEMONYM_TO_COUNTRY
+    (adjectival forms: "Chinese") and LOCATION_ALIAS_TO_COUNTRY (acronyms/
+    continents: "UK", "European") — same bug class, same fix, one pass.
 
     If a 'location' entity with the same name already exists (created after
     this fix), merges document_entities/entity_links into it and drops the
-    duplicate instead of violating the (name, entity_type) unique index.
-    Idempotent — running twice updates 0 rows the second time.
+    duplicate instead of violating the (name, entity_type) unique index —
+    and forces the survivor's canonical_name to the curated value (it may
+    hold a stale/wrong one, e.g. from a bad Wikidata match). Idempotent —
+    running twice updates 0 rows the second time.
     """
     updated = 0
     with conn:
-        for demonym, country in DEMONYM_TO_COUNTRY.items():
+        for demonym, country in {**DEMONYM_TO_COUNTRY, **LOCATION_ALIAS_TO_COUNTRY}.items():
             row = conn.execute(
                 "SELECT id, name FROM entities WHERE lower(name) = ? AND entity_type != 'location'",
                 (demonym,),
@@ -416,6 +430,7 @@ def backfill_demonym_entities(conn: sqlite3.Connection) -> int:
                 conn.execute("UPDATE entity_links SET entity_a = ? WHERE entity_a = ?", (new_id, old_id))
                 conn.execute("UPDATE entity_links SET entity_b = ? WHERE entity_b = ?", (new_id, old_id))
                 conn.execute("DELETE FROM entities WHERE id = ?", (old_id,))
+                conn.execute("UPDATE entities SET canonical_name = ? WHERE id = ?", (country, new_id))
             else:
                 conn.execute(
                     "UPDATE entities SET entity_type = 'location', canonical_name = ? WHERE id = ?",
@@ -661,17 +676,32 @@ class LocationCanonicalizeResult:
     entities_merged: int = 0
 
 
+# Lowercased lookup for the *targets* of the demonym/alias dicts (e.g.
+# "china", "united kingdom", "europe") — lets a country/continent's own
+# literal-name entity ("China") join the same group as its demonym variants
+# ("Chinese") even when nothing has set its canonical_name yet, or when
+# canonical_name holds Wikidata's full official form ("People's Republic of
+# China") rather than the short form used here. Without this, only the
+# demonym side of a pair ever resolved a key — found empirically: "China"
+# and "Chinese" stayed two separate nodes because "China" alone never
+# matched anything (class of bug, not specific to China/Chinese).
+_KNOWN_PLACE_VALUES_LOWER: dict[str, str] = {
+    v.lower(): v for v in set(DEMONYM_TO_COUNTRY.values()) | set(LOCATION_ALIAS_TO_COUNTRY.values())
+}
+
+
 def _location_country_key(name: str, canonical_name: str | None) -> str | None:
-    """Country string a location entity refers to, or None if it isn't a
-    known demonym/alias for a country (city/region names are left alone —
-    only entities this module already knows how to map are grouped)."""
+    """Country/continent string a location entity refers to, or None if it
+    isn't a known demonym/alias (city/region names are left alone — only
+    entities this module already knows how to map are grouped)."""
     lname = name.lower()
     key = LOCATION_ALIAS_TO_COUNTRY.get(lname) or DEMONYM_TO_COUNTRY.get(lname)
     if key is not None:
         return key
-    known_countries = set(DEMONYM_TO_COUNTRY.values()) | set(LOCATION_ALIAS_TO_COUNTRY.values())
-    if canonical_name in known_countries:
-        return canonical_name
+    if lname in _KNOWN_PLACE_VALUES_LOWER:
+        return _KNOWN_PLACE_VALUES_LOWER[lname]
+    if canonical_name and canonical_name.lower() in _KNOWN_PLACE_VALUES_LOWER:
+        return _KNOWN_PLACE_VALUES_LOWER[canonical_name.lower()]
     return None
 
 

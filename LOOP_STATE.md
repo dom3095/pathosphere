@@ -1,6 +1,30 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-018/CP-019 risolti — pronto per Fase 4 Dashboard (nessun blocco noto)
+## Fase corrente: CP-018/019/020 risolti — pronto per Fase 4 Dashboard (nessun blocco noto)
+
+**2026-07-12 ~ 17:45 UTC — CP-020 (classi sistemiche, correzione utente):**
+
+L'utente ha corretto l'inquadramento dopo CP-018/019: *"non sono segnalazioni puntuali,
+sono classi di errore"* — vedendo ancora `EU`/`European`/`Europe` (3 nodi) e `China`/
+`Chinese` (2 nodi) separati nel grafo. Due bug strutturali trovati e risolti:
+- **Classe A**: `_location_country_key` non riconosceva il nome letterale del paese
+  ("China") come appartenente al gruppo del suo demonimo ("Chinese") quando
+  `canonical_name` non coincideva esattamente (Wikidata usa nomi ufficiali completi,
+  "People's Republic of China"). Fix generale via `_KNOWN_PLACE_VALUES_LOWER`.
+- **Classe B**: aggettivi continentali ("European") non coperti da nessuna tabella
+  curata; "Europe" stessa aveva un'altra istanza della collisione Wikidata di CP-019
+  ("Europe" → "Europe PubMed Central"). Fix: `europe`/`european`, `asia`/`asian`,
+  `africa`/`african` aggiunti a `LOCATION_ALIAS_TO_COUNTRY`; `backfill_demonym_entities`
+  generalizzato per coprire anche questo dizionario.
+
+Verificato sul DB reale: China/Chinese, Europe/European, Asia/Asian, Africa/African
+uniti; EU resta `organization` distinta (2 nodi corretti invece di 3 confusi). 6 test
+nuovi (497 totali). `pathos graph` rieseguito.
+
+**Prossimo**: Fase 4 Dashboard — stessa nota di CP-019: lista curata, non rilevamento
+generale, probabili altre coppie non ancora osservate.
+
+---
 
 **2026-07-12 ~ 17:00 UTC — CP-018 (4/4) + CP-019 (bonus) risolti, verificati sul DB reale:**
 

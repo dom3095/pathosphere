@@ -1,6 +1,39 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-12 ~ 17:00 — CP-018 (4/4 punti) + CP-019 (bonus) risolti e verificati sul DB reale*
+*Aggiornato: 2026-07-12 ~ 17:45 — CP-018 + CP-019 + CP-020 (classi sistemiche) risolti*
+
+## CP-020: due classi sistemiche aggiuntive (2026-07-12, tardo pomeriggio)
+
+**Contesto**: dopo CP-018/CP-019, l'utente ha ricontrollato il grafo e corretto
+l'inquadramento — *"non sono segnalazioni puntuali, sono classi di errore"* — vedendo
+ancora `EU`/`European`/`Europe` (3 nodi) e `China`/`Chinese` (2 nodi) separati.
+
+**Classe A — asimmetria demonimo↔paese**: `_location_country_key()` riconosceva "Chinese"
+→ "China" via `DEMONYM_TO_COUNTRY`, ma **non riconosceva "China" stessa** come appartenente
+allo stesso gruppo (il suo `canonical_name` Wikidata era "People's Republic of China", non
+"China" — match esatto falliva). Fix: la chiave ora riconosce anche il **nome letterale**
+dell'entità (`_KNOWN_PLACE_VALUES_LOWER`), non solo `canonical_name` — si applica a
+qualunque paese nei dizionari esistenti, non solo Cina.
+
+**Classe B — aggettivi continentali non coperti**: "European" non era in nessuna tabella
+curata → restava `entity_type='other'`, invisibile alla canonicalizzazione. "Europe" (il
+continente) aveva un'**altra istanza della stessa collisione Wikidata di CP-019**:
+`wbsearchentities("Europe")` matchava "Europe PubMed Central" (database bibliografico), non
+il continente. Fix: aggiunte `europe`/`european`, `asia`/`asian`, `africa`/`african` a
+`LOCATION_ALIAS_TO_COUNTRY` — copre sia lo skip-Wikidata (CP-019) sia il backfill (esteso
+per iterare anche questo dizionario, non solo `DEMONYM_TO_COUNTRY`).
+
+**Verificato sul DB reale**: `China`/`Chinese` uniti; `Europe`/`European` uniti (canonical_name
+corretto da "Europe PubMed Central" a "Europe"); `EU` resta `organization` distinta — 3 nodi
+confusi → 2 nodi corretti. Bonus: `Asia`/`Asian`, `Africa`/`African` uniti preventivamente.
+
+**Test**: 6 nuovi in `test_extract.py` (497 totali verdi). `pathos graph` rieseguito.
+
+**Nota**: stessa lista curata, non rilevamento generale — probabile che emergano altre
+coppie non ancora osservate (Oceania/Antartide non coperte, "American" resta ambiguo
+US-vs-continente, non toccato).
+
+---
 
 ## CP-018 + CP-019: fix canonicalizzazione entità (2026-07-12, pomeriggio)
 
@@ -487,7 +520,7 @@ launchctl list | grep pathosphere
 
 ```bash
 # Stato / DB
-uv run pytest tests/ -q                    # 494 verdi
+uv run pytest tests/ -q                    # 497 verdi
 uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
 uv run pathos db info                      # Row counts per tabella
 

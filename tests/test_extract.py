@@ -1068,6 +1068,86 @@ def test_canonicalize_location_is_idempotent(tmp_db):
     assert second.groups_merged == 0
 
 
+def test_canonicalize_location_merges_country_with_its_own_demonym(tmp_db):
+    """Class-of-error fix: 'China' (the country's own literal name) must join
+    the same group as 'Chinese' (its demonym) — found empirically that only
+    the demonym side ever resolved a group key, so China/Chinese stayed two
+    separate nodes even though DEMONYM_TO_COUNTRY already maps 'chinese' ->
+    'China'. Also covers the case where the country's canonical_name holds
+    Wikidata's full official form ("People's Republic of China") rather than
+    the short form used in our tables."""
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type, canonical_name) VALUES "
+        "('China', 'location', \"People's Republic of China\")"
+    )
+    china = tmp_db.execute(
+        "SELECT id FROM entities WHERE name='China'"
+    ).fetchone()["id"]
+    doc = _insert_doc(tmp_db, url="https://x.com/china")
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 50)",
+        (doc, china),
+    )
+    chinese = _insert_location(tmp_db, "Chinese", mentions=5)
+    tmp_db.commit()
+
+    result = canonicalize_location_entities(tmp_db)
+
+    assert result.groups_merged == 1
+    assert result.entities_merged == 1
+    row = tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (chinese,)
+    ).fetchone()
+    assert row["canonical_entity_id"] == china
+    canonical_row = tmp_db.execute(
+        "SELECT canonical_name FROM entities WHERE id=?", (china,)
+    ).fetchone()
+    assert canonical_row["canonical_name"] == "China"
+
+
+def test_backfill_demonym_entities_covers_location_alias_continents(tmp_db):
+    """'European' (adjective for the continent) must be reclassified to
+    location too, not just DEMONYM_TO_COUNTRY entries — found stuck as
+    entity_type='other', invisible to canonicalize_location_entities."""
+    tmp_db.execute("INSERT INTO entities (name, entity_type) VALUES ('European', 'other')")
+    tmp_db.commit()
+
+    updated = backfill_demonym_entities(tmp_db)
+
+    assert updated == 1
+    row = tmp_db.execute(
+        "SELECT entity_type, canonical_name FROM entities WHERE name='European'"
+    ).fetchone()
+    assert row["entity_type"] == "location"
+    assert row["canonical_name"] == "Europe"
+
+
+def test_backfill_demonym_entities_forces_canonical_name_on_merge_survivor(tmp_db):
+    """A pre-existing 'location' dup with a WRONG canonical_name (e.g. from a
+    bad Wikidata match, CP-019-class) must have it corrected on merge, not
+    just inherit mentions."""
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type) VALUES ('Europe', 'company')"
+    )
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type, canonical_name) VALUES "
+        "('Europe', 'location', 'Europe PubMed Central')"
+    )
+    tmp_db.commit()
+
+    updated = backfill_demonym_entities(tmp_db)
+
+    assert updated == 1
+    assert tmp_db.execute(
+        "SELECT COUNT(*) FROM entities WHERE name='Europe'"
+    ).fetchone()[0] == 1
+    row = tmp_db.execute(
+        "SELECT entity_type, canonical_name FROM entities WHERE name='Europe'"
+    ).fetchone()
+    assert row["entity_type"] == "location"
+    assert row["canonical_name"] == "Europe"
+
+
 # ─── CP-018 #2: intergovernmental orgs → entity_type=organization ───────────
 
 
