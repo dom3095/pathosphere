@@ -977,6 +977,31 @@ def extract(
     conn.close()
 
 
+# ─── story ────────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option(
+    "--time-window-days", default=10.0, show_default=True,
+    help="Max span (days) a merged story can cover.",
+)
+def story(time_window_days: float) -> None:
+    """Group micro-events into macro-stories via shared canonical person entities."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.semantic.story import link_related_events
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+
+    result = link_related_events(conn, time_window_days=time_window_days)
+    click.echo(
+        f"Story linking: {result.stories_formed} stories formed | "
+        f"{result.events_linked} events linked"
+    )
+
+    conn.close()
+
+
 # ─── graph ────────────────────────────────────────────────────────────────────
 
 @cli.command()

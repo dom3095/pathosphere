@@ -461,6 +461,15 @@ _MIGRATIONS = [
     # to collapse aliases before building links (Trump/Donald Trump → same node).
     "ALTER TABLE entities ADD COLUMN canonical_entity_id INTEGER REFERENCES entities(id)",
     "CREATE INDEX IF NOT EXISTS idx_entity_canonical ON entities(canonical_entity_id)",
+    # story_id: same self-referential pointer convention as canonical_entity_id,
+    # but for events. Complete-linkage clustering (cluster.py) intentionally
+    # produces small, tight micro-events to avoid chain-collapse — this lets a
+    # second pass (semantic/story.py) group micro-events that are the same
+    # real-world story (shared canonical person entity + time proximity)
+    # without merging their event_documents, preserving each micro-event's
+    # internal coherence for inspection. Resolve via COALESCE(story_id, id).
+    "ALTER TABLE events ADD COLUMN story_id INTEGER REFERENCES events(id)",
+    "CREATE INDEX IF NOT EXISTS idx_event_story ON events(story_id)",
 ]
 
 
