@@ -1,8 +1,70 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-12 ~ 15:10 — Catena "sistemiamo i problemi prima di dashboard" completata*
+*Aggiornato: 2026-07-12 ~ 17:00 — CP-018 (4/4 punti) + CP-019 (bonus) risolti e verificati sul DB reale*
 
-## Catena entity extraction → canonicalizzazione → story-linking (2026-07-12)
+## CP-018 + CP-019: fix canonicalizzazione entità (2026-07-12, pomeriggio)
+
+**Contesto**: dopo la catena entity→canonicalizzazione→story-linking (sezione sotto),
+l'utente ha ispezionato visivamente `study_15_visual_tour.ipynb` e trovato 4 problemi
+nel grafo entità (loggati come CP-018, bloccante prima di Fase 4). Sessione ripresa per
+risolverli, con richiesta esplicita di **verificare empiricamente sul DB reale**, non
+fidarsi solo dei test unitari — e l'utente ha poi avvertito: *"non sono solo punti, sono
+segnalazioni/esempi — ci saranno altre incongruenze che non ho visto"*, il che ha guidato
+un audit più ampio invece di trattare i 4 punti come lista chiusa.
+
+**I 4 fix di CP-018** (`pathosphere/semantic/extract.py`):
+1. **Wikidata QID conflict, tipo-aware**: `link_wikidata` ora chiede P31 a Wikidata
+   quando due entità in conflitto QID hanno `entity_type` diverso, e scambia il canonico
+   verso quella col tipo corretto (`_wikidata_instance_of_hint` + `WIKIDATA_TYPE_HINTS`),
+   invece di "chi arriva primo vince". `repair_wikidata_type_conflicts()` per riparare
+   conflitti già mal risolti nel DB esistente (rete, opt-in).
+2. **Organization come tipo separato**: `INTERGOVERNMENTAL_ORGS` (EU/NATO/UN/WHO/IMF/
+   World Bank/WTO/OPEC/G7/G20/ASEAN/African Union/Arab League/BRICS) → `entity_type=
+   'organization'` invece di `company`. `backfill_organization_entities()` per righe esistenti.
+3. **Location canonicalization**: nuova `canonicalize_location_entities()` (stesso pattern
+   non distruttivo di `canonicalize_person_entities`) — England/British/Britain/UK ora
+   un solo canonico "United Kingdom".
+4. **Noise stoplist**: `NOISE_ENTITY_STOPLIST` (video/watch/photo/gallery/live/breaking/...)
+   escluso a livello di **creazione** entità (non solo skip Wikidata). `purge_noise_entities()`
+   per righe legacy.
+
+**CP-019 (bonus, trovato durante la verifica)**: `UK` risultava alias di un'entità
+"Ukrainian" con QID Q8798 — che è la **lingua** ucraina (codice ISO 639 `uk`), non il
+paese. Collisione fuzzy-search Wikidata su stringa corta ambigua, non ipotetica: trovata
+sui dati reali. Fix generale (non solo per UK): `CURATED_ALIAS_TO_LABEL` (demonimi + alias
+location + org intergovernative) escluso dalla ricerca Wikidata — stesso meccanismo di
+`GENERIC_ENTITY_STOPLIST` ma **preservando** il canonical_name corretto invece di azzerarlo.
+Audit successivo su parole-paese ambigue non ancora linkate (Turkey/uccello, Georgia/stato
+USA, Jordan/persona, Chad, Guinea, Niger, Congo, Mali, Jersey) — nessuna ancora corrotta,
+ma aggiunta verifica P31 **proattiva** (`AMBIGUOUS_ENTITY_NAMES`) prima di accettare un
+match, non solo dopo il fatto.
+
+**Verificato empiricamente sul DB reale** (backup pre-fix:
+`data/db/pathosphere_backup_20260712_163720_pre_cp018.db`):
+- `FRANCE` (company) ora alias corretto di `France` (location, QID Q142)
+- `EU`/`NATO` ora `organization` con canonical_name corretto
+- `England`/`British`/`Britain` ora alias di `UK`, canonical_name="United Kingdom"
+- `Ukrainian` bug riparato + bonus: ora unita anche all'entità paese "Ukraine" (id 1320)
+- `VIDEO` (22 mention) eliminata
+- `pathos graph` rieseguito: 77516 link scritti (da 83808 pre-canonicalizzazione)
+
+**Comando CLI aggiornato**: `pathos extract [--backfill-orgs] [--repair-wikidata-types]`
+(oltre ai flag già esistenti `--backfill-demonyms`). Canonicalizzazione location e purge
+rumore girano sempre (locale, no rete, come già la canonicalizzazione persone).
+
+**Test**: 53 nuovi in `test_extract.py` (494 totali verdi), ruff pulito.
+
+**Nota per il futuro**: CP-019 non è garanzia di completezza — 9 nomi ambigui curati,
+non un rilevatore generale. L'utente ha segnalato esplicitamente che ci sono probabilmente
+altre incongruenze non ancora osservate; i controlli aggiunti oggi vanno letti come
+*classi di difesa* generalizzate, non come lista chiusa.
+
+**Status**: CP-018 e CP-019 chiusi. Pipeline entity/graph pronta per Fase 4 Dashboard
+(nessun altro blocco noto aperto).
+
+---
+
+## Precedente: Catena entity extraction → canonicalizzazione → story-linking (2026-07-12)
 
 **Contesto**: dopo il fix complete-linkage (11 luglio), l'utente ha chiesto: "è il caso
 che ci sia un cap ai cluster?" — questa domanda ha aperto un'indagine a cascata che ha
@@ -425,7 +487,7 @@ launchctl list | grep pathosphere
 
 ```bash
 # Stato / DB
-uv run pytest tests/ -q                    # 452 verdi
+uv run pytest tests/ -q                    # 494 verdi
 uv run pathos db init                      # OBBLIGATORIO dopo pull con modifiche schema
 uv run pathos db info                      # Row counts per tabella
 

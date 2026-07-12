@@ -1,6 +1,33 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Pipeline semantica solida end-to-end — COMPLETATO, pronto per Fase 4
+## Fase corrente: CP-018/CP-019 risolti — pronto per Fase 4 Dashboard (nessun blocco noto)
+
+**2026-07-12 ~ 17:00 UTC — CP-018 (4/4) + CP-019 (bonus) risolti, verificati sul DB reale:**
+
+Ispezione visiva del grafo entità (`study_15_visual_tour.ipynb`) da parte dell'utente
+aveva trovato 4 problemi (CP-018, bloccante prima di Fase 4). Risolti tutti in
+`pathosphere/semantic/extract.py`:
+1. QID conflict Wikidata tipo-aware (P31 check) — fix `FRANCE`/company→`France`/location
+2. `INTERGOVERNMENTAL_ORGS` → `entity_type='organization'` (EU/NATO non più "company")
+3. `canonicalize_location_entities()` — England/British/Britain/UK → un solo canonico
+4. `NOISE_ENTITY_STOPLIST` — VIDEO e boilerplate simile esclusi a creazione
+
+**CP-019 (bonus)**, trovato verificando empiricamente prima di chiudere CP-018 (l'utente
+aveva avvertito: "non sono solo punti, sono segnalazioni — ci saranno altre incongruenze"):
+`UK` era alias di un'entità Wikidata sbagliata (Q8798 = lingua ucraina, via collisione
+codice ISO "uk", non il paese). Fix generale: nomi in tabelle curate (demonimi/alias/org)
+esclusi dalla ricerca Wikidata (`CURATED_ALIAS_TO_LABEL`); più verifica P31 proattiva per
+9 nomi-paese ambigui noti (Turkey/Georgia/Jordan/Chad/Guinea/Niger/Congo/Mali/Jersey) non
+ancora corrotti ma a rischio.
+
+Verificato sul DB reale (backup `data/db/pathosphere_backup_20260712_163720_pre_cp018.db`),
+`pathos graph` rieseguito (77516 link). 53 test nuovi, 494 totali verdi.
+
+**Prossimo**: Fase 4 Dashboard Streamlit — nessun blocco dati/algoritmi noto residuo.
+Nota: CP-019 non è rilevamento generale, solo 9 nomi curati — probabile che emergano
+altre incongruenze non ancora osservate (segnalazione esplicita utente).
+
+---
 
 **2026-07-12 ~ 15:10 UTC — Catena entity extraction → canonicalizzazione → story-linking:**
 

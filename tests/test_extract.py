@@ -15,10 +15,14 @@ import pytest
 from pathosphere.semantic.extract import (
     _build_text,
     backfill_demonym_entities,
+    backfill_organization_entities,
+    canonicalize_location_entities,
     canonicalize_person_entities,
     extract_entities,
     geocode_events,
     link_wikidata,
+    purge_noise_entities,
+    repair_wikidata_type_conflicts,
 )
 
 
@@ -598,6 +602,94 @@ def test_wikidata_stoplists_generic_names(tmp_db):
     assert good_row["wikidata_qid"] == "Q713418"
 
 
+def test_wikidata_skips_curated_alias_without_network_call(tmp_db):
+    """CP-019: 'UK' must never reach wbsearchentities — found empirically
+    that it fuzzy-matches Q8798 (the Ukrainian *language*, via ISO code "uk"),
+    not the United Kingdom. Curated alias/demonym/org names are stoplisted
+    the same way as GENERIC_ENTITY_STOPLIST, but keep their known-correct
+    label instead of being wiped to NULL."""
+    uk = _insert_entity(tmp_db, "UK", entity_type="location")
+    nato = _insert_entity(tmp_db, "NATO", entity_type="organization")
+
+    def explode(request):
+        raise AssertionError("network call not expected for curated alias names")
+
+    result = link_wikidata(tmp_db, client=_mock_client(explode), delay_s=0)
+
+    assert result.stoplisted == 2
+    rows = {
+        r["id"]: (r["wikidata_checked"], r["wikidata_qid"], r["canonical_name"])
+        for r in tmp_db.execute("SELECT id, wikidata_checked, wikidata_qid, canonical_name FROM entities")
+    }
+    assert rows[uk] == (1, None, "United Kingdom")
+    assert rows[nato] == (1, None, "NATO")
+
+
+def test_wikidata_curated_alias_strips_bad_legacy_qid_keeps_label(tmp_db):
+    """A curated-alias entity that already picked up a wrong QID from a past
+    run (before this fix) gets that QID cleared but its canonical_name
+    forced to the curated value, not wiped like GENERIC_ENTITY_STOPLIST."""
+    eid = _insert_entity(tmp_db, "Ukrainian", entity_type="location")
+    tmp_db.execute(
+        """UPDATE entities SET wikidata_qid = 'Q8798', canonical_name = 'Ukrainian',
+           wikidata_checked = 1 WHERE id = ?""",
+        (eid,),
+    )
+    tmp_db.commit()
+
+    result = link_wikidata(tmp_db, client=_mock_client(lambda r: (_ for _ in ()).throw(
+        AssertionError("no network expected")
+    )), delay_s=0)
+
+    assert result.stoplisted == 1
+    row = tmp_db.execute(
+        "SELECT wikidata_qid, canonical_name FROM entities WHERE id = ?", (eid,)
+    ).fetchone()
+    assert row["wikidata_qid"] is None
+    assert row["canonical_name"] == "Ukraine"
+
+
+def test_wikidata_ambiguous_name_rejects_wrong_type_match(tmp_db):
+    """'Turkey' (location, the country) must not accept a Wikidata hit whose
+    P31 says something else (e.g. Q10817602, an animal taxon — the bird) —
+    classic disambiguation trap for common-word country names."""
+    eid = _insert_entity(tmp_db, "Turkey", entity_type="location")
+    hit = [{"id": "Q10817602", "label": "turkey", "aliases": []}]
+    # P31 hint disagrees with the row's entity_type (location) — Q5 (human)
+    # stands in for "recognisably not a place", same as any non-location hint.
+    client = _mock_client(_combined_wikidata_handler(
+        {"Turkey": hit}, {"Q10817602": [_p31_claim("Q5")]},
+    ))
+
+    result = link_wikidata(tmp_db, client=client, delay_s=0)
+
+    assert result.qids_found == 0
+    assert result.entities_checked == 1
+    row = tmp_db.execute(
+        "SELECT wikidata_qid, wikidata_checked FROM entities WHERE id = ?", (eid,)
+    ).fetchone()
+    assert row["wikidata_qid"] is None
+    assert row["wikidata_checked"] == 1
+
+
+def test_wikidata_ambiguous_name_accepts_when_type_matches(tmp_db):
+    """'Turkey' correctly resolving to the country (P31=Q6256, country) must
+    still be accepted."""
+    eid = _insert_entity(tmp_db, "Turkey", entity_type="location")
+    hit = [{"id": "Q43", "label": "Turkey", "aliases": []}]
+    client = _mock_client(_combined_wikidata_handler(
+        {"Turkey": hit}, {"Q43": [_p31_claim("Q6256")]},
+    ))
+
+    result = link_wikidata(tmp_db, client=client, delay_s=0)
+
+    assert result.qids_found == 1
+    row = tmp_db.execute(
+        "SELECT wikidata_qid FROM entities WHERE id = ?", (eid,)
+    ).fetchone()
+    assert row["wikidata_qid"] == "Q43"
+
+
 def test_wikidata_stoplist_strips_legacy_qid(tmp_db):
     eid = _insert_entity(tmp_db, "PRESIDENT", entity_type="other")
     tmp_db.execute(
@@ -768,3 +860,298 @@ def test_build_text_decodes_html_entities():
     assert "&rdquo;" not in text
     assert "&nbsp;" not in text
     assert "very bad" in text
+
+
+# ─── CP-018 #1: type-aware Wikidata QID conflict resolution ─────────────────
+
+
+def _combined_wikidata_handler(
+    search_responses: dict[str, list[dict]],
+    claims_responses: dict[str, list[dict]] | None = None,
+):
+    """Mock transport handling both wbsearchentities (search=...) and
+    wbgetclaims (entity=QID, property=P31) actions."""
+    claims_responses = claims_responses or {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        action = request.url.params.get("action")
+        if action == "wbgetclaims":
+            qid = request.url.params["entity"]
+            return httpx.Response(200, json={"claims": {"P31": claims_responses.get(qid, [])}})
+        q = request.url.params["search"]
+        return httpx.Response(200, json={"search": search_responses.get(q, [])})
+
+    return handler
+
+
+def _p31_claim(qid: str) -> dict:
+    return {"mainsnak": {"datavalue": {"value": {"id": qid}}}}
+
+
+def test_wikidata_conflict_swaps_canonical_when_type_disagrees(tmp_db):
+    """CP-018 #1: ALL-CAPS 'FRANCE' (mistyped company) got the QID first;
+    correctly-typed 'France' (location) must become canonical instead, via
+    Wikidata's P31 (country, Q6256) breaking the tie — not "first arrival
+    wins"."""
+    wrong = _insert_entity(tmp_db, "FRANCE", entity_type="company")
+    tmp_db.execute(
+        "UPDATE entities SET wikidata_qid='Q142', canonical_name='France', wikidata_checked=1 WHERE id=?",
+        (wrong,),
+    )
+    tmp_db.commit()
+    correct = _insert_entity(tmp_db, "France", entity_type="location")
+
+    hit = [{"id": "Q142", "label": "France", "aliases": []}]
+    client = _mock_client(_combined_wikidata_handler(
+        {"France": hit}, {"Q142": [_p31_claim("Q6256")]},
+    ))
+
+    result = link_wikidata(tmp_db, client=client, delay_s=0)
+
+    assert result.conflicts == 1
+    rows = {
+        r["id"]: (r["entity_type"], r["wikidata_qid"], r["canonical_entity_id"])
+        for r in tmp_db.execute(
+            "SELECT id, entity_type, wikidata_qid, canonical_entity_id FROM entities"
+        )
+    }
+    assert rows[correct] == ("location", "Q142", None)
+    assert rows[wrong] == ("company", None, correct)
+
+
+def test_wikidata_conflict_keeps_first_when_type_hint_unavailable(tmp_db):
+    """No P31 hint (empty claims) → falls back to old first-arrival behavior
+    rather than guessing which side is right."""
+    first = _insert_entity(tmp_db, "TSMC", entity_type="company")
+    tmp_db.execute(
+        "UPDATE entities SET wikidata_qid='Q713418', wikidata_checked=1 WHERE id=?",
+        (first,),
+    )
+    tmp_db.commit()
+    second = _insert_entity(tmp_db, "台積電", entity_type="other")
+
+    hit = [{"id": "Q713418", "label": "TSMC", "aliases": []}]
+    client = _mock_client(_combined_wikidata_handler({"台積電": hit}, {}))
+
+    result = link_wikidata(tmp_db, client=client, delay_s=0)
+
+    assert result.conflicts == 1
+    row = tmp_db.execute(
+        "SELECT canonical_entity_id FROM entities WHERE id=?", (second,)
+    ).fetchone()
+    assert row["canonical_entity_id"] == first
+
+
+def test_repair_wikidata_type_conflicts_swaps_when_hint_disagrees(tmp_db):
+    wrong = _insert_entity(tmp_db, "FRANCE", entity_type="company")
+    tmp_db.execute(
+        "UPDATE entities SET wikidata_qid='Q142', canonical_name='France', wikidata_checked=1 WHERE id=?",
+        (wrong,),
+    )
+    correct = _insert_entity(tmp_db, "France", entity_type="location")
+    tmp_db.execute("UPDATE entities SET canonical_entity_id=? WHERE id=?", (wrong, correct))
+    tmp_db.commit()
+
+    client = _mock_client(_combined_wikidata_handler({}, {"Q142": [_p31_claim("Q6256")]}))
+
+    fixed = repair_wikidata_type_conflicts(tmp_db, client=client, delay_s=0)
+
+    assert fixed == 1
+    rows = {
+        r["id"]: (r["entity_type"], r["wikidata_qid"], r["canonical_entity_id"])
+        for r in tmp_db.execute(
+            "SELECT id, entity_type, wikidata_qid, canonical_entity_id FROM entities"
+        )
+    }
+    assert rows[correct] == ("location", "Q142", None)
+    assert rows[wrong] == ("company", None, correct)
+
+
+def test_repair_wikidata_type_conflicts_noop_when_types_already_agree(tmp_db):
+    canonical = _insert_entity(tmp_db, "Donald Trump", entity_type="person")
+    tmp_db.execute(
+        "UPDATE entities SET wikidata_qid='Q22686', wikidata_checked=1 WHERE id=?", (canonical,)
+    )
+    alias = _insert_entity(tmp_db, "Trump", entity_type="person")
+    tmp_db.execute("UPDATE entities SET canonical_entity_id=? WHERE id=?", (canonical, alias))
+    tmp_db.commit()
+
+    def explode(request):
+        raise AssertionError("network call not expected when types agree")
+
+    fixed = repair_wikidata_type_conflicts(tmp_db, client=_mock_client(explode), delay_s=0)
+    assert fixed == 0
+
+
+def test_repair_wikidata_type_conflicts_skips_when_hint_unavailable(tmp_db):
+    wrong = _insert_entity(tmp_db, "Weird Co", entity_type="company")
+    tmp_db.execute(
+        "UPDATE entities SET wikidata_qid='Q999', wikidata_checked=1 WHERE id=?", (wrong,)
+    )
+    alias = _insert_entity(tmp_db, "Weird", entity_type="location")
+    tmp_db.execute("UPDATE entities SET canonical_entity_id=? WHERE id=?", (wrong, alias))
+    tmp_db.commit()
+
+    client = _mock_client(_combined_wikidata_handler({}, {}))
+    fixed = repair_wikidata_type_conflicts(tmp_db, client=client, delay_s=0)
+
+    assert fixed == 0
+    row = tmp_db.execute("SELECT entity_type FROM entities WHERE id=?", (wrong,)).fetchone()
+    assert row["entity_type"] == "company"
+
+
+# ─── CP-018 #3: location canonicalization ────────────────────────────────────
+
+
+def _insert_location(conn, name, mentions=1):
+    conn.execute("INSERT INTO entities (name, entity_type) VALUES (?, 'location')", (name,))
+    eid = conn.execute(
+        "SELECT id FROM entities WHERE name=? AND entity_type='location'", (name,)
+    ).fetchone()["id"]
+    if mentions:
+        doc_id = _insert_doc(conn, url=f"https://x.com/loc-{name}-{eid}")
+        conn.execute(
+            "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, ?)",
+            (doc_id, eid, mentions),
+        )
+    return eid
+
+
+def test_canonicalize_location_merges_uk_aliases(tmp_db):
+    """England/British/Britain/UK all refer to the same country (CP-018 #3)
+    — most-mentioned (UK) wins as canonical."""
+    uk = _insert_location(tmp_db, "UK", mentions=58)
+    britain = _insert_location(tmp_db, "Britain", mentions=32)
+    british = _insert_location(tmp_db, "British", mentions=37)
+    england = _insert_location(tmp_db, "England", mentions=20)
+    tmp_db.commit()
+
+    result = canonicalize_location_entities(tmp_db)
+
+    assert result.groups_merged == 1
+    assert result.entities_merged == 3
+    rows = {
+        r["id"]: r["canonical_entity_id"]
+        for r in tmp_db.execute(
+            "SELECT id, canonical_entity_id FROM entities WHERE entity_type='location'"
+        )
+    }
+    assert rows[uk] is None
+    assert rows[britain] == uk
+    assert rows[british] == uk
+    assert rows[england] == uk
+    canonical_row = tmp_db.execute(
+        "SELECT canonical_name FROM entities WHERE id=?", (uk,)
+    ).fetchone()
+    assert canonical_row["canonical_name"] == "United Kingdom"
+
+
+def test_canonicalize_location_does_not_merge_unrelated_places(tmp_db):
+    _insert_location(tmp_db, "Paris")
+    _insert_location(tmp_db, "Tokyo")
+
+    result = canonicalize_location_entities(tmp_db)
+
+    assert result.groups_merged == 0
+    assert result.entities_merged == 0
+
+
+def test_canonicalize_location_is_idempotent(tmp_db):
+    _insert_location(tmp_db, "UK", mentions=10)
+    _insert_location(tmp_db, "Britain", mentions=5)
+    tmp_db.commit()
+
+    first = canonicalize_location_entities(tmp_db)
+    second = canonicalize_location_entities(tmp_db)
+
+    assert first.groups_merged == 1
+    assert second.groups_merged == 0
+
+
+# ─── CP-018 #2: intergovernmental orgs → entity_type=organization ───────────
+
+
+def test_ner_classifies_known_intergovernmental_orgs_as_organization(tmp_db):
+    _insert_doc(tmp_db, url="https://x.com/1", title="x", body="x")
+    ner = MockNer({"x": [("NATO", "ORG"), ("EU", "ORG"), ("Boeing", "ORG")]})
+
+    extract_entities(tmp_db, model=ner)
+
+    rows = {
+        r["name"]: (r["entity_type"], r["canonical_name"])
+        for r in tmp_db.execute("SELECT name, entity_type, canonical_name FROM entities")
+    }
+    assert rows["NATO"] == ("organization", "NATO")
+    assert rows["EU"] == ("organization", "European Union")
+    assert rows["Boeing"] == ("company", None)
+
+
+def test_backfill_organization_entities_reclassifies_existing(tmp_db):
+    tmp_db.execute("INSERT INTO entities (name, entity_type) VALUES ('NATO', 'company')")
+    tmp_db.commit()
+
+    updated = backfill_organization_entities(tmp_db)
+
+    assert updated == 1
+    row = tmp_db.execute(
+        "SELECT entity_type, canonical_name FROM entities WHERE name='NATO'"
+    ).fetchone()
+    assert row["entity_type"] == "organization"
+    assert row["canonical_name"] == "NATO"
+
+
+def test_backfill_organization_entities_is_idempotent(tmp_db):
+    tmp_db.execute("INSERT INTO entities (name, entity_type) VALUES ('NATO', 'company')")
+    tmp_db.commit()
+
+    first = backfill_organization_entities(tmp_db)
+    second = backfill_organization_entities(tmp_db)
+
+    assert first == 1
+    assert second == 0
+
+
+# ─── CP-018 #4: NER boilerplate noise ────────────────────────────────────────
+
+
+def test_ner_excludes_noise_boilerplate_entities(tmp_db):
+    _insert_doc(tmp_db, url="https://x.com/1", title="x", body="x")
+    ner = MockNer({"x": [("VIDEO", "ORG"), ("Reuters", "ORG")]})
+
+    result = extract_entities(tmp_db, model=ner)
+
+    assert result.entities_created == 1
+    names = {r["name"] for r in tmp_db.execute("SELECT name FROM entities")}
+    assert names == {"Reuters"}
+
+
+def test_purge_noise_entities_deletes_legacy_rows(tmp_db):
+    doc = _insert_doc(tmp_db, url="https://x.com/1")
+    tmp_db.execute("INSERT INTO entities (name, entity_type) VALUES ('VIDEO', 'company')")
+    eid = tmp_db.execute("SELECT id FROM entities WHERE name='VIDEO'").fetchone()["id"]
+    tmp_db.execute(
+        "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 22)",
+        (doc, eid),
+    )
+    tmp_db.commit()
+
+    deleted = purge_noise_entities(tmp_db)
+
+    assert deleted == 1
+    assert tmp_db.execute(
+        "SELECT COUNT(*) FROM entities WHERE name='VIDEO'"
+    ).fetchone()[0] == 0
+    assert tmp_db.execute(
+        "SELECT COUNT(*) FROM document_entities WHERE entity_id=?", (eid,)
+    ).fetchone()[0] == 0
+
+
+def test_purge_noise_entities_is_idempotent(tmp_db):
+    tmp_db.execute("INSERT INTO entities (name, entity_type) VALUES ('WATCH', 'company')")
+    tmp_db.commit()
+
+    first = purge_noise_entities(tmp_db)
+    second = purge_noise_entities(tmp_db)
+
+    assert first == 1
+    assert second == 0

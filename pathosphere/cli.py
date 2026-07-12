@@ -916,18 +916,28 @@ def cluster(time_window_hours: int) -> None:
 @click.option("--backfill-demonyms", is_flag=True, default=False,
               help="Reclassify existing demonym entities (Israeli, Russian...) "
                    "to location+country before running NER.")
+@click.option("--backfill-orgs", is_flag=True, default=False,
+              help="Reclassify existing intergovernmental-org entities (EU, NATO...) "
+                   "to entity_type=organization before running NER.")
+@click.option("--repair-wikidata-types", is_flag=True, default=False,
+              help="One-time network repair for QID conflicts resolved before "
+                   "type-aware resolution existed (CP-018 #1).")
 def extract(
     limit: int | None, max_lookups: int, skip_geocode: bool, skip_wikidata: bool,
-    backfill_demonyms: bool,
+    backfill_demonyms: bool, backfill_orgs: bool, repair_wikidata_types: bool,
 ) -> None:
     """Run NER, geocode events, link entities to Wikidata."""
     from pathosphere.db.schema import get_connection
     from pathosphere.semantic.extract import (
         backfill_demonym_entities,
+        backfill_organization_entities,
+        canonicalize_location_entities,
         canonicalize_person_entities,
         extract_entities,
         geocode_events,
         link_wikidata,
+        purge_noise_entities,
+        repair_wikidata_type_conflicts,
     )
 
     settings = get_settings()
@@ -938,11 +948,19 @@ def extract(
         reclassified = backfill_demonym_entities(conn)
         click.echo(f"Demonym backfill: {reclassified} entities reclassified to location\n")
 
+    if backfill_orgs:
+        reclassified_orgs = backfill_organization_entities(conn)
+        click.echo(f"Org backfill: {reclassified_orgs} entities reclassified to organization\n")
+
     ner = extract_entities(conn, limit=limit)
     click.echo(
         f"\nNER: {ner.docs_processed} docs | +{ner.entities_created} entities | "
         f"{ner.mentions_recorded} mentions | {ner.docs_skipped} skipped"
     )
+
+    noise_purged = purge_noise_entities(conn)
+    if noise_purged:
+        click.echo(f"Noise purge: {noise_purged} entities deleted")
 
     canon = canonicalize_person_entities(conn)
     click.echo(
@@ -950,6 +968,18 @@ def extract(
         f"{canon.bare_surname_merged} bare surnames merged | "
         f"{canon.bare_surname_skipped} ambiguous (skipped)"
     )
+
+    loc_canon = canonicalize_location_entities(conn)
+    click.echo(
+        f"Location canonicalization: {loc_canon.groups_merged} groups | "
+        f"{loc_canon.entities_merged} entities merged"
+    )
+
+    if repair_wikidata_types:
+        repaired = repair_wikidata_type_conflicts(
+            conn, user_agent=settings.nominatim_user_agent,
+        )
+        click.echo(f"Wikidata type-conflict repair: {repaired} canonical swaps")
 
     if not skip_geocode:
         geo = geocode_events(
