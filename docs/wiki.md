@@ -36,6 +36,7 @@ Sistema personale di intelligence OSINT. Paper trading virtuale come metrica di 
    - 6.4 [NER + geocoding + Wikidata](#64-ner--geocoding--wikidata)
 7. [Ciclo notturno](#7-ciclo-notturno)
 8. [Agent e valutazione (Fase 3)](#8-agent-e-valutazione-fase-3)
+   - 8b. [Dashboard Streamlit (Fase 4)](#8b-dashboard-streamlit-fase-4)
 9. [CLI Reference](#9-cli-reference)
 10. [Fonti dati](#10-fonti-dati)
 11. [Valutazione del modello](#11-valutazione-del-modello)
@@ -913,6 +914,45 @@ pathos predict calibration
 
 ---
 
+## 8b. Dashboard Streamlit (Fase 4)
+
+`pathos serve [--host localhost] [--port 8501]` — shell-out a `streamlit run pathosphere/dashboard/app.py`.
+
+Struttura: `pathosphere/dashboard/app.py` (entry point, `st.set_page_config` +
+navigazione sidebar) + `pathosphere/dashboard/views/*.py`, una funzione
+`render(conn: sqlite3.Connection)` per pagina. Non multipage nativo
+Streamlit (niente cartella `pages/`) — un `st.sidebar.radio` seleziona la
+vista, tutto in un solo processo/URL. `dashboard/db.py::get_connection()`
+apre una connessione SQLite fresca a ogni rerun invece di `st.cache_resource`:
+gli oggetti `sqlite3.Connection` non sono thread-safe e `cache_resource` è
+condiviso tra sessioni/thread Streamlit — aprire un file locale è comunque
+economico.
+
+**8 pagine:**
+| Pagina | Contenuto | Fonte dati |
+|---|---|---|
+| Overview | Conteggi tabelle, freschezza dati, stato fasi 0-4 | tutte |
+| Mappa | Eventi geolocalizzati (Folium + MarkerCluster), filtro tipo/fonte/giorni | `events` (lat/lon) |
+| Narrazioni | Divergenza media per coppia di blocchi + top eventi | `narrative_divergences` |
+| Grafo entità | Top-N entità hub per grado + sottografo indotto (layout circolare, no dipendenza layout aggiuntiva) | `entities`, `entity_links` (già risolti via `canonical_entity_id`, vedi `graph.py::build_entity_links`) |
+| Tesi | Tab pending/approved/rejected, bottoni Approva/Rifiuta/Apri trade — **stesso comportamento della CLI** (`approve_thesis` + `create_thesis_prediction` su approvazione) | `theses`, `watchlist_items` |
+| Portafogli | Curva equity (cash iniziale + P&L realizzato cumulato + punto live), trade aperti | `trades`, `portfolios` (via `market.trading`) |
+| Predizioni | Curva di calibrazione Tetlock (accuratezza osservata vs probabilità dichiarata per bucket), liste aperte/risolte | `predictions` (via `agent.predictions.get_calibration`) |
+| Brief | Storico brief mattutini, selezione per data | `briefs` |
+
+Le pagine Tesi/Portafogli/Predizioni/Brief mostrano stato vuoto (info box)
+finché il ciclo agent (Fase 3) non ha prodotto dati reali — normale finché
+`pathos brief`/`pathos thesis generate`/approvazioni non sono state eseguite
+almeno una volta sul DB corrente.
+
+**Verifica:** `streamlit.testing.v1.AppTest` — carica `app.py`, simula il
+click su ognuna delle 8 voci della sidebar, verifica assenza di eccezioni
+contro il DB reale. Nessun test pytest dedicato (interfaccia, non logica —
+la logica riusata, `approval.py`/`trading.py`/`predictions.py`, è già
+coperta dai 498 test esistenti).
+
+---
+
 ## 9. CLI Reference
 
 Entry point: `uv run pathos`
@@ -1051,6 +1091,9 @@ pathos
 │   │   └── --resolved-date      YYYY-MM-DD (obbligatorio — actual event date or eval date)
 │   └── calibration       Dual-metric: time-adjusted score (primaria) + Brier (secondaria)
 │       └── breakdown per bucket probabilità, macro_area, prediction_type
+├── serve                Avvia dashboard Streamlit (Fase 4, vedi sezione 8b)
+│   ├── --host           [default: localhost]
+│   └── --port           [default: 8501]
 └── config              Mostra configurazione attiva (.env + defaults)
 ```
 
@@ -1209,7 +1252,7 @@ _unit_vec(seed)      → genera vettore unitario riproducibile
 | **3** | Flusso approvazione CLI (list/show/approve/reject) | ✅ |
 | **3** | Paper trading EOD + portafogli di controllo | ✅ |
 | **3** | Calibrazione Tetlock (predizioni non finanziarie) | ✅ |
-| **4** | Dashboard Streamlit minimale | ⬜ |
+| **4** | Dashboard Streamlit minimale (`pathos serve`) | ✅ |
 
 **MVP verticale:** filiera semiconduttori — TSMC/ASML/SMIC, chokepoint Taiwan Strait. Pochi attori, geopolitica intensa, segnali chiari.
 

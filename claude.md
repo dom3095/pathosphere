@@ -166,7 +166,7 @@ download → dedup (GDELT è ridondante: stesso evento in decine di articoli) �
 **MVP verticale**: task 1-4 + embeddings/clustering + brief mattutino su filiera semiconduttori (pochi attori, chokepoint chiari, geopolitica intensa). Il resto a strati.
 
 ## Stato attuale
-**Fasi 0, 1, 2, 3 completate. Prossimo: redesign Predictions v2 → poi Fase 4 Dashboard.**
+**Fasi 0, 1, 2, 3, 4 completate** (Fase 4 Dashboard Streamlit su branch `feat/streamlit-dashboard`, non ancora mergiata — vedi HANDOFF).
 
 Vedi `LOOP_STATE.md` per stato esatto e `HANDOFF.md` per dettaglio sessione corrente.
 

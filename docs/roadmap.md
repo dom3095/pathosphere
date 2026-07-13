@@ -149,14 +149,23 @@ pathos predict calibration
 
 ---
 
-## Fase 4 — Interfaccia ⬜
+## Fase 4 — Interfaccia ✅
 
 | Task | Note |
 |---|---|
-| Dashboard Streamlit minimale | Mappa eventi (folium), confronto narrazioni, portafogli, tesi aperte, storico brief |
-| `pathos serve` | Avvia dashboard su `localhost:8501` |
+| Dashboard Streamlit minimale | Mappa eventi (folium), confronto narrazioni, grafo entità, tesi aperte (approva/rifiuta), portafogli, predizioni (calibrazione Tetlock), storico brief |
+| `pathos serve [--host] [--port]` | Avvia dashboard su `localhost:8501` (shell-out a `streamlit run`) |
 
-Dipende da Fase 3 completata (senza dati reali di trading/tesi, dashboard vuota).
+Implementata in `pathosphere/dashboard/` (`app.py` + `views/*.py`, una funzione
+`render(conn)` per pagina, navigazione via radio in sidebar — non multipage
+nativo Streamlit). Connessione SQLite aperta/chiusa per rerun (non
+cache_resource: i connection object sqlite3 non sono thread-safe, e
+cache_resource è condiviso tra sessioni/thread). Pagine Tesi/Portafogli/
+Predizioni/Brief mostrano stato vuoto finché il ciclo agent (Fase 3) non ha
+prodotto dati reali (0 righe al momento della prima verifica). Mappa/
+Narrazioni/Grafo entità già popolate con dati reali (8241 eventi, 9142
+entità, 749 divergenze). Verificata con `streamlit.testing.v1.AppTest` su
+tutte le 8 pagine contro il DB reale (nessuna eccezione).
 
 ---
 

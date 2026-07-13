@@ -1,6 +1,83 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-12 ~ 19:15 — CP-018/019/020/021 tutti risolti e verificati sul DB reale*
+*Aggiornato: 2026-07-13 ~ 19:30 — CP-022 aperto e validato (notebook), Fase 4 Dashboard implementata*
+
+## CP-022 — Geolocalizzazione eventi RSS (2026-07-13, investigazione + validazione, non implementato)
+
+Usando la dashboard, l'utente ha notato Cuba/Venezuela mostrare solo terremoti USGS sulla mappa, mai
+notizie politiche. Causa: nessuno step deriva `location_name` per eventi `origin='rss'` (0/1996).
+Dettaglio completo in `CRITICAL_POINTS.md` CP-022.
+
+**Regola richiesta**: relazione bilaterale grandi-potenze → no geoloc; 1 paese → geoloc lì; attore→
+bersaglio *via* terzo paese → geoloc sul bersaglio (non attore, non mezzo). Task di ruolo semantico,
+non deducibile da conteggio entità.
+
+**Validato in `notebooks/study_19_rss_event_geolocation.ipynb`** (solo lettura, nessuna scrittura DB):
+euristica risolve 38% del volume, 59% resta ambiguo; Qwen3 4B locale (Ollama, installato ex-novo
+questa sessione via `brew install ollama` + `ollama pull qwen3:4b`) corretto sui 2 casi reali testati
+a mano, ma **90-113s/chiamata** sotto la pressione di memoria di questa sessione (8GB M1, IDE+Jupyter+
+Ollama insieme) — va ri-misurato a macchina scarica prima di un backfill storico (~1000 eventi
+ambigui, va fatto come batch notturno offline, non interattivo).
+
+**Ollama ora installato e attivo sulla macchina** (`ollama serve` avviato manualmente, non via `brew
+services` — non persiste al riavvio finché non deciso altrimenti).
+
+**Prossimo passo** (non fatto): `geolocate_rss_events()` in `extract.py` (euristica + fallback batch
+Qwen), chiamata da `pathos extract`, poi `geocode_events()` esistente invariato fa il resto.
+
+---
+
+*Sessione precedente — Fase 4 Dashboard Streamlit:*
+
+## Fase 4 — Dashboard Streamlit (2026-07-12, sera, branch `feat/streamlit-dashboard`)
+
+**Cosa**: `pathos serve [--host] [--port]` avvia dashboard Streamlit
+(`pathosphere/dashboard/app.py` + `views/*.py`, 8 pagine: Overview, Mappa,
+Narrazioni, Grafo entità, Tesi, Portafogli, Predizioni, Brief). Dettaglio
+completo in `docs/wiki.md` sezione 8b. Dipendenze aggiunte: `streamlit`,
+`plotly`, `folium`, `streamlit-folium`.
+
+**Decisioni chiave**:
+- Connessione DB **non cachata** (`st.cache_resource`) — `sqlite3.Connection`
+  non è thread-safe e la cache di Streamlit è condivisa tra sessioni/thread;
+  si apre una connessione fresca a ogni rerun (costo trascurabile, file locale).
+- Navigazione **non multipage nativo** Streamlit (niente cartella `pages/`) —
+  un `st.sidebar.radio` in `app.py` seleziona la vista, un solo processo/URL.
+- Grafo entità: layout **circolare manuale** (non force-directed) per non
+  aggiungere una dipendenza di layout grafi — sufficiente per il sottografo
+  indotto top-N hub mostrato (default 30, slider 10-80).
+- Pagina Tesi: bottoni Approva/Rifiuta/Apri-trade **replicano esattamente**
+  il comportamento CLI (`approve_thesis` + `create_thesis_prediction` su
+  approvazione, `open_agent_trade` + `link_thesis_prediction_to_trade` su
+  apertura trade) — nessuna logica di business duplicata, solo UI sopra le
+  funzioni già testate in `agent/approval.py`, `agent/predictions.py`,
+  `market/trading.py`.
+- Curva equity portafogli: nessuna tabella di snapshot storici in schema —
+  ricostruita come `INITIAL_CASH + cumsum(pnl)` sui trade chiusi in ordine
+  cronologico, più un punto finale "live" con `get_portfolio_status()`
+  (include unrealized dei trade aperti, no-lookahead-safe: non riscrive mai
+  `price_open`).
+
+**Verificato**: `streamlit.testing.v1.AppTest` — caricato `app.py`, simulato
+click su tutte le 8 voci sidebar, **nessuna eccezione** contro il DB reale
+(8241 eventi, 9142 entità, 75912 link, 749 divergenze — Tesi/Portafogli/
+Predizioni/Brief vuote perché Fase 3 non ha ancora prodotto dati reali,
+mostrano correttamente stato vuoto invece di errore). `pathos serve --help`
+verificato. Ruff pulito su `pathosphere/dashboard/`. 498 test pytest
+pre-esistenti ancora tutti verdi (nessuna regressione, nessun test nuovo:
+interfaccia pura sopra logica già coperta).
+
+**Non fatto in questa sessione**: nessun dato reale di tesi/trade/predizioni
+esiste ancora sul DB — le pagine corrispondenti sono verificate solo in
+stato vuoto. Prima esecuzione reale di `pathos brief` → `pathos thesis
+generate` → approvazione via dashboard darà la prima verifica end-to-end
+con dati veri.
+
+**Prossimo**: aprire PR da `feat/streamlit-dashboard` → review → merge.
+Poi, primo giro reale del ciclo agent (brief/thesis/approvazione) per
+popolare Tesi/Portafogli/Predizioni e verificare la dashboard con dati veri.
+
+---
 
 ## CP-021 fix: story-linking, ordine merge per similarità a parità di gap (2026-07-12, sera)
 

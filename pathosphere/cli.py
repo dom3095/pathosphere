@@ -153,6 +153,25 @@ def config() -> None:
         click.echo(f"  {field_name:<30} = {value}")
 
 
+# ─── serve (Fase 4 dashboard) ──────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--port", default=8501, show_default=True, help="Dashboard port.")
+@click.option("--host", default="localhost", show_default=True, help="Dashboard host.")
+def serve(port: int, host: str) -> None:
+    """Launch the Streamlit dashboard (map, narratives, theses, portfolios, predictions, briefs)."""
+    import subprocess
+    import sys
+
+    app_path = Path(__file__).parent / "dashboard" / "app.py"
+    cmd = [
+        sys.executable, "-m", "streamlit", "run", str(app_path),
+        "--server.port", str(port), "--server.address", host,
+    ]
+    click.echo(f"Starting dashboard at http://{host}:{port} ...")
+    subprocess.run(cmd)
+
+
 # ─── sources ──────────────────────────────────────────────────────────────────
 
 @cli.group()

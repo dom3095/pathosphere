@@ -280,3 +280,47 @@ Verifica quantitativa: top-20 entità collegate a doc `origin='rss'` → 19/20 n
 **Non completamente risolto**: 122059 (Stretto di Hormuz) e 122072 ("sticking points") restano separati dal gruppo 121960 — non necessariamente un problema: potrebbero essere sotto-angolazioni che non superano la soglia di similarità 0.82 contro l'intero gruppo, comportamento plausibile e sicuro (evita di forzare angolazioni diverse in un blob artificiale, stesso principio conservativo di v3).
 
 **Test**: 1 nuovo (`test_ties_on_time_gap_prefer_higher_similarity_pair`, verifica che a parità di gap temporale vinca la coppia con similarità più alta), 498 totali verdi.
+
+---
+
+## CP-022: eventi RSS non geolocalizzati — nessuno step deriva `location_name` (aperto, in validazione)
+
+**Contesto**: dashboard Streamlit (Fase 4) — utente nota che sulla mappa Cuba/Venezuela mostrano solo
+terremoti USGS, mai le notizie politiche/economiche pur presenti nel DB (15+ articoli Cuba, 15+
+Venezuela).
+
+**Causa**: `location_name` è scritto solo dagli ingestor geo-nativi (USGS/FIRMS/PortWatch, coordinate
+nel dato grezzo). Nessuno step deriva `location_name` per eventi `origin='rss'` dall'entità location
+dominante nel cluster — `geocode_events()` (`extract.py:783`) filtra `WHERE location_name IS NOT
+NULL`, quindi 0/1996 eventi RSS (e 0/219 IODA) vengono mai geolocalizzati. Non è un problema di
+rate-limit/budget Nominatim, è uno step mancante.
+
+**Regola richiesta dall'utente** (non triviale — richiede comprensione del ruolo semantico, non solo
+conteggio entità):
+- Relazione bilaterale/multilaterale tra grandi potenze (USA-Iran, USA-Israele) → **non
+  geolocalizzare**.
+- Un solo paese menzionato → geolocalizza lì.
+- Attore agisce su bersaglio *tramite* un terzo paese (USA→Cuba via Venezuela) → geolocalizza sul
+  **bersaglio**, non su attore né mezzo.
+
+**Validazione fatta** (`notebooks/study_19_rss_event_geolocation.ipynb`, no scrittura DB):
+- Euristica su conteggio country-entity (major-power set data-driven, top-8 per n_docs) risolve solo
+  **38%** (641/1690) degli eventi RSS con almeno 1 entità location; **59%** (1002) restano ambigui
+  (in parte rumore NER, in parte casi genuinamente difficili tipo mediatori Pakistan/Qatar/Svizzera).
+- Qwen3 4B locale (Ollama, già cablato in `pathosphere/llm/client.py`) testato su titolo, 2 casi reali
+  motivanti l'indagine: **entrambi corretti** (Cuba→Cuba ignorando rumore Venezuela; US-Iran→null).
+- **Latenza reale misurata: 90-113s/chiamata** sotto pressione di memoria della sessione di sviluppo
+  (Jupyter+Ollama+Claude Code insieme su 8GB, ~4.5GB già wired). Va ri-misurata a macchina scarica
+  prima di impegnarsi su un backfill storico (~1000 eventi ambigui × ~100s ≈ 28h in serie all'attuale
+  velocità — improponibile interattivo, plausibile solo come batch notturno offline, stesso pattern
+  di `pathos loop`).
+
+**Non ancora implementato**: nessuna modifica a `extract.py`. Prossimo passo: `geolocate_rss_events()`
+(euristica + fallback batch Qwen offline) chiamata da `pathos extract`, poi `geocode_events()`
+esistente invariato. Ollama installato ex-novo in questa sessione (`brew install ollama`, non
+presente prima) — verificare se debba restare un servizio permanente (`brew services start ollama`)
+o essere avviato solo durante il ciclo notturno.
+
+**Impatto**: basso/medio — non blocca nulla di esistente (dashboard già gestisce eventi non
+geolocalizzati mostrando solo quelli con lat/lon), ma la mappa sottorappresenta sistematicamente
+tutte le notizie politiche/economiche a favore dei soli segnali fisici (terremoti/incendi/chokepoint).
