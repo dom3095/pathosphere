@@ -1,6 +1,54 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-018/019/020/021 tutti risolti — Fase 4 Dashboard può procedere
+## Fase corrente: Fase 4 Dashboard pronta per commit/PR; CP-022 (geoloc RSS) validato ma non implementato
+
+**2026-07-13 ~ 19:30 UTC — CP-022 investigato e validato (solo notebook, nessun codice toccato):**
+
+Usando la dashboard (Mappa), utente nota Cuba/Venezuela senza notizie geolocalizzate — solo
+terremoti USGS. Causa: nessuno step scrive `location_name` per eventi `origin='rss'` (0/1996).
+Dettaglio in `CRITICAL_POINTS.md` CP-022 e `HANDOFF.md`.
+
+Validato in `notebooks/study_19_rss_event_geolocation.ipynb`: euristica su conteggio country-entity
+risolve 38% del volume, 59% ambiguo. Qwen3 4B locale (Ollama installato ex-novo questa sessione,
+`brew install ollama` + `qwen3:4b`) corretto sui 2 casi reali testati a mano, ma 90-113s/chiamata
+sotto pressione di memoria della sessione — da ri-misurare a macchina scarica prima di decidere
+l'architettura di backfill (batch notturno offline, non interattivo).
+
+**Decisione presa con l'utente**: non bloccare la PR dashboard su questo — committare/PR
+`feat/streamlit-dashboard` così com'è (dashboard + notebook di validazione + doc), trattare
+l'implementazione in `extract.py` (`geolocate_rss_events()`, euristica + fallback Qwen batch) come
+lavoro separato quando la latenza reale sarà rimisurata a macchina scarica.
+
+**Ollama ora presente e attivo sulla macchina** (non c'era prima di questa sessione) — avviato a
+mano (`ollama serve`), non persiste al riavvio finché non deciso altrimenti.
+
+**Prossimo**: commit + PR di `feat/streamlit-dashboard` (dashboard + study_19 + CP-022). Poi, in
+sessione separata: ri-misurare latenza Qwen a macchina scarica → decidere design batch →
+implementare `geolocate_rss_events()` in `extract.py`.
+
+---
+
+**2026-07-12 ~ 20:00 UTC — Fase 4 Dashboard Streamlit:**
+
+`pathos serve` avvia dashboard Streamlit su `localhost:8501` (8 pagine:
+Overview, Mappa, Narrazioni, Grafo entità, Tesi, Portafogli, Predizioni,
+Brief). Nuovo modulo `pathosphere/dashboard/` (`app.py` + `views/*.py`,
+`db.py`). Nuove dipendenze: `streamlit`, `plotly`, `folium`,
+`streamlit-folium`. Dettaglio in `HANDOFF.md` e `docs/wiki.md` §8b.
+
+Verificato con `streamlit.testing.v1.AppTest` contro DB reale, nessuna
+eccezione su tutte le 8 pagine. Ruff pulito, 498 test pytest pre-esistenti
+ancora verdi (nessun test nuovo — interfaccia pura sopra logica già
+testata). Tesi/Portafogli/Predizioni/Brief mostrano stato vuoto (Fase 3
+non ha ancora prodotto dati reali sul DB).
+
+**Prossimo**: PR `feat/streamlit-dashboard` → review → merge. Poi primo
+giro reale del ciclo agent per popolare dati e verificare dashboard
+end-to-end con tesi/trade/predizioni vere.
+
+---
+
+## Fase precedente: CP-018/019/020/021 tutti risolti — Fase 4 Dashboard può procedere
 
 **2026-07-12 ~ 19:15 UTC — CP-021 risolto (riordino merge candidati per similarità):**
 
