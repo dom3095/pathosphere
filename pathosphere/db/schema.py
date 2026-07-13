@@ -499,6 +499,12 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
+    # CP-010: migrate on every connection, not just `pathos db init` — a pulled
+    # DB with pre-existing tables but missing new columns must not crash with
+    # "no such column" on the first query that touches them. Idempotent
+    # (migrate_db swallows "already exists" OperationalError) and cheap for a
+    # local CLI tool, so no-op cost on the common case (already-migrated DB).
+    migrate_db(conn)
     return conn
 
 
