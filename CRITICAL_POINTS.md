@@ -353,3 +353,26 @@ i primi run reali per decidere se EDGAR v2 vale lo sforzo.
 
 **Impatto:** basso — è un livello di contesto, non decisionale; il testo renderizzato dichiara i
 caveat. Ma un assessment LLM basato su numeri sbagliati può ancorare male l'umano in approvazione.
+
+---
+
+## CP-024: loop notturno automatico (launchd) non parte mai — permessi macOS (aperto)
+
+**Contesto:** `com.pathosphere.loop` (installato via `scripts/setup_launchd.sh`, vedi CP-017) risulta
+caricato (`launchctl list`) ma `LastExitStatus=19968` (78 dopo shift, `EX_CONFIG`), `data/logs/launchd.log`
+vuoto. `data/logs/launchd_error.log` pieno di `Operation not permitted` su `.venv/bin/activate`.
+
+**Causa:** non è un bug di codice — macOS (TCC/privacy) blocca l'accesso di processi background
+(`launchd`→`bash`) alla cartella `~/Documents` (dove vive il repo) senza permesso esplicito. Il comando
+identico funziona perfettamente lanciato a mano da terminale (sessione interattiva con permessi utente).
+
+**Workaround:** nessuno via codice. Richiede azione utente in **System Settings → Privacy & Security →
+Full Disk Access** — aggiungere `/bin/bash` (o il processo che esegue il job) alla lista consentita.
+
+**Impatto:** alto per l'automazione — il ciclo notturno documentato come "attivo" in HANDOFF/roadmap
+in realtà non ha mai girato da solo; ogni ciclo finora eseguito è stato lanciato a mano
+(`caffeinate -i uv run pathos loop ...`). Finché non risolto, l'ingestione/pipeline si ferma se
+nessuno lancia il comando manualmente.
+
+**Azione:** nessuna per l'agent — segnalato per azione utente. Dopo la concessione permessi, verificare
+con `launchctl kickstart -k gui/$(id -u)/com.pathosphere.loop` e controllare che `launchd.log` si popoli.
