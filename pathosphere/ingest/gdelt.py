@@ -14,6 +14,7 @@ Tables updated: raw_documents, events, event_documents, gdelt_file_log.
 import csv
 import hashlib
 import io
+import sqlite3
 import zipfile
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone

@@ -19,6 +19,7 @@ Tables updated: sources (pilot source row), raw_documents
 """
 
 import hashlib
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import date

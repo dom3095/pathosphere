@@ -8,6 +8,7 @@ Tables updated: raw_documents
 """
 
 import hashlib
+import sqlite3
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone

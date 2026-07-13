@@ -17,6 +17,7 @@ the anomaly events surface (principle: "the LLM sees only the best").
 Tables updated: chokepoint_metrics, events
 """
 
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 

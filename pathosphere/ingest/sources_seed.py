@@ -7,6 +7,8 @@ state_control: 0=none  1=partial/subsidy  2=significant  3=full
 active:        1=fetch in RSS cycle  0=disabled (no feed or unreliable)
 """
 
+import sqlite3
+
 SOURCES: list[tuple] = [
     # ── Wire agencies ─────────────────────────────────────────────────────────
     # DISABLED 2026-06-14: hostname no longer resolves; Reuters dropped public RSS.

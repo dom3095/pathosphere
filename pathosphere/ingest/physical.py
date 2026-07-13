@@ -23,6 +23,7 @@ Tables updated: events, fire_metrics
 
 import csv
 import io
+import sqlite3
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
