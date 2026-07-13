@@ -298,6 +298,49 @@ def test_dedup_sets_dedup_checked(tmp_db):
     assert row["dedup_checked"] == 1
 
 
+def test_dedup_batch_commit_survives_later_batch_failure(tmp_db, monkeypatch):
+    """CP-012: batches commit independently — if a later batch raises
+    (simulated crash/Ctrl+C), docs already processed in a prior, already-
+    committed batch keep dedup_checked=1. With the old single-transaction
+    version, any failure anywhere rolled back the entire run."""
+    id1 = _insert_doc(tmp_db, url="http://a.com", published_at="2026-06-01T00:00:00")
+    id2 = _insert_doc(tmp_db, url="http://b.com", published_at="2026-06-01T01:00:00")
+    id3 = _insert_doc(tmp_db, url="http://c.com", published_at="RAISE_ME")
+    _insert_vec(tmp_db, id1, _unit_vec(1))
+    _insert_vec(tmp_db, id2, _unit_vec(2))
+    _insert_vec(tmp_db, id3, _unit_vec(3))
+
+    import pathosphere.semantic.dedup as dedup_module
+
+    real_parse_dt = dedup_module._parse_dt
+
+    def _boom(s):
+        if s == "RAISE_ME":
+            raise RuntimeError("simulated crash mid-batch")
+        return real_parse_dt(s)
+
+    monkeypatch.setattr(dedup_module, "_parse_dt", _boom)
+
+    # Oldest-first ordering puts id1, id2 in batch 1 and id3 (lexicographically
+    # last: "RAISE_ME" > ISO date strings) alone in batch 2.
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        dedup_documents(tmp_db, batch_size=2)
+
+    row1 = tmp_db.execute(
+        "SELECT dedup_checked FROM raw_documents WHERE id = ?", (id1,)
+    ).fetchone()
+    row2 = tmp_db.execute(
+        "SELECT dedup_checked FROM raw_documents WHERE id = ?", (id2,)
+    ).fetchone()
+    row3 = tmp_db.execute(
+        "SELECT dedup_checked FROM raw_documents WHERE id = ?", (id3,)
+    ).fetchone()
+
+    assert row1["dedup_checked"] == 1  # batch 1: committed before batch 2 raised
+    assert row2["dedup_checked"] == 1
+    assert row3["dedup_checked"] == 0  # batch 2: rolled back, not re-attempted here
+
+
 # ─── cluster ─────────────────────────────────────────────────────────────────
 
 def test_cluster_empty_db(tmp_db):

@@ -1,6 +1,20 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: enrichment fondamentali implementato (branch `feat/fundamentals-analysis`, PR aperta)
+## Fase corrente: CP-008/CP-010/CP-012 risolti (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-13 ~ notte — 3 critical point chiusi (indipendenti, 1 giro):**
+
+- **CP-008**: `import sqlite3` mancante in 6 moduli ingest (comtrade/gdelt/physical/portwatch/rss/sources_seed) → `ruff check --select F821` 0 errori.
+- **CP-010**: `get_connection` ora chiama `migrate_db(conn)` — DB pulled con schema vecchio non crasha più senza `pathos db init` esplicito. 1 test nuovo.
+- **CP-012**: `dedup_documents` commit per batch (BATCH_SIZE=32, stesso pattern di `embedder.py`) invece di una transazione unica sull'intero backfill — resiliente a Ctrl+C/crash, log progresso INFO per batch. 1 test nuovo (batch parziale committato sopravvive a eccezione su batch successivo).
+
+Test: 519 verdi (era 517 in `feat/fundamentals-analysis`, +2). Ruff pulito su tutti i file toccati (2 F401 pre-esistenti in `gdelt.py`, non introdotti, fuori scope). 3 commit separati, push su `feat/fundamentals-analysis` (PR #14 si aggiorna da sola).
+
+**Prossimo**: nessuna azione specifica — CP-008/010/012 chiusi. Riprendere da dove lasciato prima (merge PR fondamentali → primo `thesis generate` reale, o CP-022 geoloc RSS).
+
+---
+
+## Fase precedente: enrichment fondamentali implementato (branch `feat/fundamentals-analysis`, PR aperta)
 
 **2026-07-13 ~ sera — Modulo fondamentali (enrichment layer, non motore quant):**
 

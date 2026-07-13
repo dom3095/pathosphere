@@ -84,15 +84,15 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
-## CP-008: ruff F821 — `sqlite3` usato ma mai importato in moduli ingest
+## CP-008: ruff F821 — `sqlite3` usato ma mai importato in moduli ingest — **RISOLTO 2026-07-13**
 
 **Contesto:** `ruff check` segnala 9 F821 (`sqlite3` undefined) in `ingest/comtrade.py:186`, `ingest/gdelt.py:229,246,389`, `ingest/physical.py:159,404`, `ingest/portwatch.py:255`, `ingest/rss.py:88`, `ingest/sources_seed.py:405` — probabilmente type hints o except su `sqlite3.X` senza import. Più 37 violazioni minori (F401 import inutilizzati, F541, E741), 33 auto-fixabili con `ruff check --fix`.
 
-**Workaround:** i 403 test passano — i path incriminati o non vengono eseguiti nei test o il nome arriva per vie indirette. Rischio: NameError a runtime su path non coperti.
+**Workaround (superato):** i 403 test passano — i path incriminati o non vengono eseguiti nei test o il nome arriva per vie indirette. Rischio: NameError a runtime su path non coperti.
 
-**Impatto:** potenziale crash negli ingestor su path di errore. Fuori scope per `feat/predictions-v2` (nessuna violazione nel diff v2).
+**Fix:** aggiunto `import sqlite3` nei 6 file (annotazione tipo `"sqlite3.Connection"` con `# type: ignore[name-defined]` invariata — bastava rendere il nome definito nel modulo). `uv run ruff check pathosphere/ --select F821` → 0 errori.
 
-**Azione:** branch dedicato `chore/ruff-cleanup` — aggiungere `import sqlite3` mancanti + `ruff check --fix` per il resto.
+**Non incluso (fuori scope):** le 37 violazioni minori (F401/F541/E741) restano — 2 F401 pre-esistenti in `gdelt.py` (`date`, `Path` non usati) verificate come non introdotte da questo fix. Serve ancora `chore/ruff-cleanup` per il resto.
 
 ---
 
@@ -106,13 +106,17 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
-## CP-010: migration v2 girano solo con `pathos db init`
+## CP-010: migration v2 girano solo con `pathos db init` — **RISOLTO 2026-07-13**
 
 **Contesto:** `get_connection` non esegue `migrate_db`; solo `init_db` (comando `pathos db init`, idempotente). DB pre-v2 + codice v2 senza re-init → `sqlite3.OperationalError: no column named macro_area` sui nuovi path.
 
-**Workaround:** dopo ogni pull con modifiche schema: `uv run pathos db init` (sicuro, idempotente).
+**Workaround (superato):** dopo ogni pull con modifiche schema: `uv run pathos db init` (sicuro, idempotente).
 
-**Impatto:** crash CLI su DB non migrato. Documentato in HANDOFF comandi utili.
+**Fix:** `get_connection` (`pathosphere/db/schema.py`) ora chiama `migrate_db(conn)` dopo i PRAGMA, prima del `return conn` — ogni connessione auto-migra, non solo `pathos db init`. `migrate_db` resta idempotente (ogni ALTER in try/except che ignora `OperationalError`), costo trascurabile per tool CLI locale. `init_db` continua a chiamarlo 3 volte in totale (pre-DDL, post-DDL, dentro `get_connection`) — ridondante ma innocuo, non toccato per non introdurre rischio.
+
+**Test:** nuovo `test_get_connection_auto_migrates_pre_v2_db` (`tests/test_db.py`) — DB con solo `CREATE TABLE entities` minimale, `get_connection` chiamato SENZA `init_db`/`migrate_db` espliciti, verifica che `canonical_entity_id` (colonna aggiunta via migration) compaia comunque.
+
+**Impatto:** nessun più crash CLI su DB non re-inizializzato. `uv run pathos db init` resta comunque il modo esplicito consigliato dopo un pull, ma non più l'unico che previene il crash.
 
 ---
 
@@ -126,13 +130,17 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
-## CP-012: dedup — transazione unica, non riprendibile, nessun progresso
+## CP-012: dedup — transazione unica, non riprendibile, nessun progresso — **RISOLTO 2026-07-13**
 
 **Contesto:** `dedup_documents` (`semantic/dedup.py:70`) avvolge l'intero loop in un solo `with conn:` → una transazione per 169k doc. Ctrl+C o crash = rollback totale, riparte da zero (a differenza di embed, commit per batch). Nessun log di progresso tra inizio e fine; progresso invisibile anche da fuori (update uncommitted). KNN sqlite-vec è brute-force: 169k query × scan 169k vettori ≈ ore su backfill grossi.
 
-**Workaround:** non interrompere; lanciare con `caffeinate -i` e lasciar finire. Vitalità verificabile solo via `ps aux | grep pathos` (CPU ~100%).
+**Workaround (superato):** non interrompere; lanciare con `caffeinate -i` e lasciar finire. Vitalità verificabile solo via `ps aux | grep pathos` (CPU ~100%).
 
-**Impatto:** backfill grossi fragili (ore di lavoro persi su interrupt). Fix futuro: commit ogni N doc + tqdm, come embed.
+**Fix:** stesso pattern di `embedder.py` — `dedup_documents` ora processa i doc candidati (query invariata, `WHERE dedup_checked = 0`) in chunk di `BATCH_SIZE=32`, con `with conn:` (commit) per batch invece che sull'intero run, e log INFO di progresso (`Dedup progress: N/tot checked, M duplicates so far`) ad ogni batch. La KNN query resta per-documento (non raggruppata) — solo il commit è a livello di batch. Interruzione/crash a metà: i doc dei batch già committati restano `dedup_checked=1` e non vengono ripresi al retry (garantito dal filtro `WHERE dedup_checked = 0` nella SELECT iniziale, invariato).
+
+**Test:** nuovo `test_dedup_batch_commit_survives_later_batch_failure` (`tests/test_semantic.py`) — 3 doc, `batch_size=2`, eccezione simulata (monkeypatch `_parse_dt`) sul 3° doc (batch 2). Verificato: doc 1-2 (batch 1, già committato) restano `dedup_checked=1` dopo che batch 2 solleva e fa rollback; doc 3 resta `dedup_checked=0`.
+
+**Impatto:** backfill grossi ora resilienti a interrupt — perdita massima = 1 batch (32 doc) invece dell'intero run. Progresso visibile a log INFO invece che solo a fine run.
 
 ---
 

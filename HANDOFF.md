@@ -1,6 +1,29 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-13 ~ sera — enrichment fondamentali (branch `feat/fundamentals-analysis`)*
+*Aggiornato: 2026-07-13 ~ notte — CP-008/CP-010/CP-012 risolti (branch `feat/fundamentals-analysis`)*
+
+## CP-008 + CP-010 + CP-012 risolti (2026-07-13, notte, branch `feat/fundamentals-analysis`, PR #14)
+
+3 critical point indipendenti, ciclo fix→test→docs→commit per ciascuno, stesso branch/PR delle fondamentali (nessun nuovo branch, su richiesta esplicita).
+
+**CP-008 — ruff F821 `sqlite3` non importato:**
+`import sqlite3` aggiunto in `pathosphere/ingest/{comtrade,gdelt,physical,portwatch,rss,sources_seed}.py`, rispettando lo stile import già presente in ciascun file (stdlib import-prima-di-from, alfabetico). Annotazioni tipo `"sqlite3.Connection"  # type: ignore[name-defined]` invariate — bastava rendere il nome definito nel modulo. `uv run ruff check pathosphere/ --select F821` → 0 errori (era 9). Nota: 2 F401 pre-esistenti in `gdelt.py` (`date`, `Path` non usati) verificate come non introdotte da questo fix — restano fuori scope (CP-008 copriva solo F821).
+
+**CP-010 — migration non automatica su `get_connection`:**
+`pathosphere/db/schema.py::get_connection` ora chiama `migrate_db(conn)` dopo i PRAGMA, prima del `return conn`. Prima solo `init_db` (`pathos db init`) la eseguiva esplicitamente — un DB pullato con nuove colonne/migration ma non re-inizializzato crashava con `sqlite3.OperationalError: no such column` sul primo path che toccava la colonna nuova. `migrate_db` resta idempotente (ogni ALTER in try/except che ignora `OperationalError`), costo trascurabile per CLI locale. `init_db` ora la chiama 3 volte in sequenza (pre-DDL, post-DDL, dentro `get_connection`) — ridondante ma innocuo, lasciato com'è (nessun rischio di correttezza, non vale la pena toccarlo).
+
+Test nuovo: `test_get_connection_auto_migrates_pre_v2_db` (`tests/test_db.py`) — DB con solo `CREATE TABLE entities` minimale (bypassando `init_db`/`migrate_db`), poi `get_connection` da solo, verifica che `canonical_entity_id` (colonna aggiunta via `_MIGRATIONS`, CP-018) compaia.
+
+**CP-012 — dedup non riprendibile, transazione unica:**
+`pathosphere/semantic/dedup.py::dedup_documents` ora processa i doc candidati (query invariata) in batch di `BATCH_SIZE=32` (stessa costante/pattern di `embedder.py`), con `with conn:` (commit) per batch invece che sull'intero run, più log INFO di progresso ad ogni batch (`Dedup progress: N/tot checked, M duplicates so far`) — prima il progresso era invisibile fino a fine run su backfill di ore (169k doc storici). La KNN query resta per-documento (nessun batching della query stessa, solo del commit). Un crash/Ctrl+C a metà perde al massimo 1 batch invece dell'intero run; i doc già `dedup_checked=1` nei batch committati non vengono ripresi al retry (garantito dal filtro `WHERE dedup_checked = 0` nella SELECT iniziale, invariato — verificato con test).
+
+Test nuovo: `test_dedup_batch_commit_survives_later_batch_failure` (`tests/test_semantic.py`) — 3 doc, `batch_size=2`, eccezione simulata (monkeypatch `_parse_dt`) sul 3° doc (batch 2, isolato dal 1° batch grazie all'ordinamento per `published_at`). Verificato: doc 1-2 restano `dedup_checked=1` dopo il rollback del batch 2; doc 3 resta `dedup_checked=0`.
+
+**Esito**: 519 test verdi (era 517 su `feat/fundamentals-analysis`, +2 nuovi, nessuna regressione). Ruff pulito su tutti i file toccati. 3 commit separati (Conventional Commits), push su `feat/fundamentals-analysis` — PR #14 si aggiorna da sola, nessuna nuova PR aperta.
+
+**CRITICAL_POINTS.md**: CP-008/CP-010/CP-012 marcati RISOLTO con dettaglio fix+test, stesso formato delle voci già chiuse (CP-018 etc.).
+
+---
 
 ## Enrichment fondamentali (2026-07-13, branch `feat/fundamentals-analysis`)
 
