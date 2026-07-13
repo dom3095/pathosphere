@@ -1,6 +1,67 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-13 ~ 19:30 — CP-022 aperto e validato (notebook), Fase 4 Dashboard implementata*
+*Aggiornato: 2026-07-13 ~ sera — enrichment fondamentali (branch `feat/fundamentals-analysis`)*
+
+## Enrichment fondamentali (2026-07-13, branch `feat/fundamentals-analysis`)
+
+**Cosa**: livello di contesto fondamentali per le tesi — l'LLM propone un
+ticker, il modulo lo arricchisce con ratio + Altman Z + Piotroski F + testo
+interpretativo; una review LLM batch annota supporta/contraddice/neutrale.
+NESSUNA soglia decisionale automatica: decide l'umano in approvazione
+(principio "core = agent semantico, non modello quant" rispettato).
+
+**File**:
+- Nuovo: `pathosphere/market/fundamentals.py` (fetch + score + render testo)
+- Nuovo: `tests/test_fundamentals.py` (15 test, yfinance interamente mockato)
+- Modificati: `pathosphere/agent/thesis.py` (enrichment + review pass),
+  `pathosphere/db/schema.py` (migrazione `theses.fundamentals_json`),
+  `pathosphere/cli.py` (`pathos fundamentals <ticker>`, `--no-fundamentals`,
+  sezione in `thesis show`), `tests/test_thesis.py` (4 test nuovi),
+  `docs/wiki.md` §8.7, `docs/roadmap.md`, `docs/schema.md`
+
+**Decisioni chiave**:
+- Colonna JSON (`theses.fundamentals_json`), non tabella dedicata: snapshot
+  1:1 con la tesi al decision time (no-lookahead), mai query aggregate.
+- Testo interpretativo = template deterministico (no LLM): dato numerico,
+  zero costo, testabile. L'unico costo LLM extra è 1 call batch/run di
+  `thesis generate` per la review (annotazione).
+- Altman Z solo se TUTTI i 5 componenti presenti (un Z parziale non è uno Z);
+  skippato con flag `not_applicable` per settore finanziario.
+- Piotroski F scorato solo sui test con dati (`piotroski_testable` esposto).
+- SEC EDGAR rimandato a v2: ticker→CIK + solo USA-filer + delay ~45gg =
+  complessità > valore per enrichment v1.
+
+**Valutazione critica (limiti reali, non feature list)**:
+1. **Copertura**: yfinance statements spesso vuoti/disallineati per non-USA
+   e small-cap (issue nota #2584) — proprio i ticker che un sistema
+   geopolitico multi-blocco propone più spesso (2330.TW, cinesi, russi
+   delisted). Per questi il modulo degrada a "minimal" (solo ratio .info,
+   spesso pure quelli parziali): l'arricchimento vale soprattutto per
+   large-cap USA/EU, cioè dove serve di meno.
+2. **Affidabilità dati non verificata**: nessun cross-check (EDGAR rimandato)
+   — se Yahoo ha line item disallineati di un anno, Z e F sono calcolati su
+   dati sbagliati SENZA che il sistema se ne accorga. Il testo dichiara il
+   caveat ma non può rilevare l'errore.
+3. **Rate-limit yfinance**: N ticker/run in sequenza sincrona dentro
+   `generate_theses` — con rate-limit Yahoo il fetch fallisce silenziosamente
+   (per design), ma nei log appare solo un warning: facile non accorgersi che
+   l'enrichment è degradato da giorni. Nessun retry/backoff in v1.
+4. **Fondamentali ≠ orizzonte tesi**: le tesi hanno orizzonti 7-30gg; i
+   fondamentali sono trimestrali/annuali con delay. L'assessment LLM può
+   sovra-pesare un bilancio vecchio di 6 mesi su un trade event-driven di 2
+   settimane. La review è annotazione, ma il bias di ancoraggio sull'umano
+   esiste.
+5. **Snapshot mai aggiornato**: fundamentals_json è congelato alla
+   generazione; se la tesi resta pending giorni e escono earnings, nessun
+   refresh (coerente col no-lookahead ma da sapere).
+6. **Review pass = +1 call Claude/run**: budget credito SDK, non gratis.
+   Con `--no-fundamentals` si azzera, ma il default consuma.
+
+**Prossimo**: merge PR → primo `thesis generate` reale → misurare quota di
+tesi con data_quality full/partial/minimal/none sui ticker realmente proposti
+(decide se EDGAR v2 vale lo sforzo).
+
+---
 
 ## CP-022 — Geolocalizzazione eventi RSS (2026-07-13, investigazione + validazione, non implementato)
 

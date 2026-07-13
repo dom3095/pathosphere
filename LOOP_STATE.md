@@ -1,6 +1,34 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Fase 4 Dashboard pronta per commit/PR; CP-022 (geoloc RSS) validato ma non implementato
+## Fase corrente: enrichment fondamentali implementato (branch `feat/fundamentals-analysis`, PR aperta)
+
+**2026-07-13 ~ sera — Modulo fondamentali (enrichment layer, non motore quant):**
+
+Nuovo `pathosphere/market/fundamentals.py`: `fetch_fundamentals(ticker)` →
+`FundamentalsSnapshot` (ratio yfinance `.info` + Altman Z con skip settore
+finanziario + Piotroski F con conteggio test calcolabili) +
+`render_fundamentals_text()` (template deterministico prompt-ready, no LLM).
+Contratto degradazione identico a `fetch_price`: `None` solo su fallimento
+totale, dati parziali = caso atteso (warnings), mai eccezioni.
+
+Aggancio in `generate_theses`: ogni ticker proposto → snapshot+testo in
+`theses.fundamentals_json` (nuova colonna, migrazione idempotente); se ≥1
+tesi ha dati → 1 call LLM batch di review (annotazione supporta/contraddice/
+neutrale, salvata come `llm_assessment` — NON decide, l'umano approva).
+Fallimento review → warning, tesi salvate comunque. CLI: `pathos fundamentals
+<ticker>`, `pathos thesis generate --no-fundamentals`, sezione Fundamentals
+in `thesis show`. SEC EDGAR rimandato a v2 (motivato in HANDOFF).
+
+**Test**: 19 nuovi (15 test_fundamentals.py + 4 test_thesis.py), 517 totali
+verdi. Ruff pulito sui file toccati (residui pre-esistenti invariati).
+
+**Prossimo**: merge PR → primo giro reale `pathos thesis generate` per
+vedere fundamentals_json su tesi vere; valutare copertura reale dei ticker
+proposti dall'LLM (non-USA attesi problematici).
+
+---
+
+## Fase precedente: Fase 4 Dashboard pronta per commit/PR; CP-022 (geoloc RSS) validato ma non implementato
 
 **2026-07-13 ~ 19:30 UTC — CP-022 investigato e validato (solo notebook, nessun codice toccato):**
 

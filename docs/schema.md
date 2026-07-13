@@ -180,6 +180,7 @@ erDiagram
         TEXT rejection_reason
         TEXT sources_json "JSON array di URL"
         REAL price_snapshot "prezzo snapshot al momento generazione (no-lookahead)"
+        TEXT fundamentals_json "JSON: snapshot ratio/Altman Z/Piotroski F + testo + llm_assessment (NULL se non disponibili)"
         TEXT created_at "ISO 8601"
     }
 

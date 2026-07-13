@@ -1172,7 +1172,10 @@ def thesis() -> None:
               help="Number of primary theses to generate.")
 @click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
               help="LLM backend override (default: from REASONING_MODEL in .env).")
-def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
+@click.option("--no-fundamentals", is_flag=True, default=False,
+              help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+def thesis_generate(brief_date: str | None, n: int, model: str | None,
+                    no_fundamentals: bool) -> None:
     """Generate theses from today's brief (fast, single LLM call)."""
     import asyncio
     from pathosphere.db.schema import get_connection
@@ -1184,7 +1187,10 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
     conn = get_connection(settings.db_path)
     llm_client = LLMClient(backend=model)
 
-    result = asyncio.run(generate_theses(conn, llm_client, brief_date=brief_date, n=n))
+    result = asyncio.run(generate_theses(
+        conn, llm_client, brief_date=brief_date, n=n,
+        enrich_fundamentals=not no_fundamentals,
+    ))
     conn.close()
 
     click.echo(
@@ -1319,6 +1325,15 @@ def thesis_show(thesis_id: int) -> None:
             click.echo(f"  [{w['status']}] {w['label']}")
             if w["indicator_query"]:
                 click.echo(f"           query: {w['indicator_query']}")
+
+    if "fundamentals_json" in thesis.keys() and thesis["fundamentals_json"]:
+        import json as _json
+        fund = _json.loads(thesis["fundamentals_json"])
+        click.echo("\n── Fundamentals ─────────────────────────────────────────")
+        click.echo(fund.get("text", "(no text)"))
+        assessment = fund.get("llm_assessment")
+        if assessment:
+            click.echo(f"\n  [LLM assessment] {assessment}")
 
     click.echo(f"{'═' * 70}\n")
 
@@ -1459,6 +1474,31 @@ def thesis_debate(brief_date: str | None, n: int) -> None:
         f"  Watchlist  : +{result.thesis_result.watchlist_created} items\n"
         f"  IDs        : {result.thesis_result.thesis_ids}"
     )
+
+
+# ─── fundamentals ─────────────────────────────────────────────────────────────
+
+@cli.command("fundamentals")
+@click.argument("ticker")
+def fundamentals_cmd(ticker: str) -> None:
+    """Show fundamentals snapshot for TICKER (ratios, Altman Z, Piotroski F).
+
+    Manual inspection tool — same data the thesis pipeline attaches to each
+    proposed instrument. Degrades gracefully: missing data shown as n/d.
+    """
+    from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
+
+    snap = fetch_fundamentals(ticker)
+    if snap is None:
+        click.echo(f"No fundamentals data for '{ticker}' (bad ticker or yfinance unavailable).")
+        raise SystemExit(1)
+
+    click.echo("\n" + render_fundamentals_text(snap))
+    if snap.warnings:
+        click.echo("\nWarnings:")
+        for w in snap.warnings:
+            click.echo(f"  - {w}")
+    click.echo("")
 
 
 # ─── export ───────────────────────────────────────────────────────────────────

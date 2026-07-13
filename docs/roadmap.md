@@ -85,6 +85,11 @@ Stato aggiornato: 2026-07-07.
 - `causal_chain` JSON: `{"steps": [...], "trigger_summary": "...", "persona_notes": {}, "debate_context": {...}}`
 - `price_snapshot` al momento della generazione (no-lookahead)
 - `watchlist_items` auto-popolati per ogni tesi
+- **Enrichment fondamentali** (`pathosphere/market/fundamentals.py`): ratio yfinance +
+  Altman Z (skip finanziari) + Piotroski F per ogni ticker proposto →
+  `theses.fundamentals_json` + 1 call LLM batch di review (annotazione, non decisione).
+  Degrada senza bloccare; `--no-fundamentals` per saltare. CLI: `pathos fundamentals <ticker>`.
+  SEC EDGAR rimandato a v2.
 
 ### 3d. Flusso approvazione CLI ✅
 

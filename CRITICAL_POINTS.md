@@ -324,3 +324,24 @@ o essere avviato solo durante il ciclo notturno.
 **Impatto**: basso/medio — non blocca nulla di esistente (dashboard già gestisce eventi non
 geolocalizzati mostrando solo quelli con lat/lon), ma la mappa sottorappresenta sistematicamente
 tutte le notizie politiche/economiche a favore dei soli segnali fisici (terremoti/incendi/chokepoint).
+
+---
+
+## CP-023: fondamentali yfinance — degradazione silenziosa e dati non cross-verificati (aperto)
+
+**Contesto:** `pathosphere/market/fundamentals.py` arricchisce le tesi con ratio/Altman Z/Piotroski F
+da yfinance. Per design degrada senza mai bloccare `generate_theses` (`None`/campi mancanti + warning
+nei log). Due rischi strutturali noti:
+
+1. **Degradazione silenziosa**: se Yahoo rate-limita o i ticker proposti sono non-USA/small-cap
+   (statements vuoti — issue yfinance #2584), l'enrichment può restare degradato per giorni e
+   l'unico segnale è un warning nei log. Nessun retry/backoff in v1.
+2. **Nessun cross-check**: line item Yahoo a volte disallineati di un anno → Z/F calcolati su dati
+   sbagliati senza possibilità di accorgersene. SEC EDGAR (cross-check per USA-filer) rimandato a v2.
+
+**Workaround:** `pathos fundamentals <ticker>` per ispezione manuale; campo `data_quality`
+(full/partial/minimal/none) salvato in `theses.fundamentals_json` — monitorare la distribuzione dopo
+i primi run reali per decidere se EDGAR v2 vale lo sforzo.
+
+**Impatto:** basso — è un livello di contesto, non decisionale; il testo renderizzato dichiara i
+caveat. Ma un assessment LLM basato su numeri sbagliati può ancorare male l'umano in approvazione.

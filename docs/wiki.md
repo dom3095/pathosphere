@@ -912,6 +912,48 @@ pathos predict calibration
 - `pathos trade open <thesis_id>` → link oldest unresolved economic prediction a trade via `link_thesis_prediction_to_trade()`
 - Migrazione: `outcome` legacy specchia `outcome_on_time` per retrocompatibilità; pre-v2 righe auto-backfillate come `macro_area='world'` + `prediction_type='geopolitical'`
 
+### 8.7 Fondamentali (enrichment) — `pathosphere/market/fundamentals.py` ✅
+
+**Livello di contesto, non motore decisionale**: arricchisce ogni tesi con i
+fondamentali del ticker proposto dall'LLM. Nessuna soglia automatica di
+rifiuto — decide l'agent/l'umano; il modulo fornisce solo dati + testo
+interpretativo.
+
+**Cosa calcola** (`fetch_fundamentals(ticker) → FundamentalsSnapshot | None`):
+- Ratio da `yfinance .info`: P/E trailing/forward, P/B, EV/EBITDA, D/E (in %,
+  convenzione yfinance), ROE, current ratio, revenue/earnings growth, margine
+- **Altman Z-score** (5 fattori, soglie standard: >2.99 safe, <1.81 distress) —
+  calcolato SOLO se tutti i componenti presenti; **skippato con flag
+  `not_applicable` per settore finanziario** (leva = core business)
+- **Piotroski F-score** (0-9) sui due anni più recenti — ogni test scorato solo
+  se i dati esistono; riporta `piotroski_testable` (quanti dei 9 avevano dati)
+- `data_quality`: full | partial | minimal | none
+- `render_fundamentals_text(snap)`: blocco testuale prompt-ready deterministico
+  (template, no LLM — dato numerico, zero costo, testabile) con caveat espliciti
+
+**Contratto di degradazione** (identico a `fetch_price`): `None` solo su
+fallimento totale; dati parziali → snapshot con campi `None` + `warnings`;
+ETF/index/FX → snapshot minimale flaggato; mai eccezioni. Dati mancanti per
+non-USA/small-cap = caso ATTESO (limiti noti yfinance), non errore.
+
+**Aggancio in `generate_theses`**: dopo `fetch_price`, ogni ticker proposto
+riceve `fetch_fundamentals` (con cache intra-run); snapshot+testo salvati in
+`theses.fundamentals_json`. Se ≥1 tesi ha fondamentali → **1 call LLM batch
+extra** ("fundamentals review"): 2-3 frasi per tesi (supporta/contraddice/
+neutrale + rischi bilancio) salvate come `llm_assessment` nel JSON. Qualsiasi
+fallimento della review → warning, tesi salvate comunque senza assessment.
+Disattivabile con `--no-fundamentals`.
+
+**Ispezione manuale**: `pathos fundamentals TICKER`. In `pathos thesis show`
+la sezione Fundamentals mostra testo + assessment LLM.
+
+**SEC EDGAR rimandato a v2**: mapping ticker→CIK + copertura solo USA-filer +
+delay filing ~45gg = complessità > valore per un enrichment layer v1.
+
+**Limiti noti**: yfinance statements spesso vuoti/disallineati per non-USA e
+small-cap (issue #2584), rate-limit su scraping non autenticato, ratio
+comparabili solo intra-settore (il testo renderizzato lo dichiara).
+
 ---
 
 ## 8b. Dashboard Streamlit (Fase 4)
@@ -1043,16 +1085,17 @@ pathos
 │   ├── --model         claude|qwen-local [default: da .env]
 │   └── --dry-run       Mostra solo conteggi segnali, no LLM
 ├── thesis              Generazione e approvazione tesi
-│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call)
+│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call + 1 review fondamentali)
 │   │   ├── --date      Data brief [default: oggi UTC]
 │   │   ├── --n         Numero tesi primarie [default: 3]
-│   │   └── --model     claude|qwen-local
+│   │   ├── --model     claude|qwen-local
+│   │   └── --no-fundamentals  Salta enrichment fondamentali (no yfinance, no review call)
 │   ├── debate          Genera tesi via debate pipeline (Qwen×13 + Claude×1)
 │   │   ├── --date      Data brief
 │   │   └── --n         Numero tesi primarie [default: 3]
 │   ├── list            Lista tesi filtrate per status
 │   │   └── --status    pending|approved|rejected|closed|all [default: pending]
-│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist
+│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist, fondamentali
 │   ├── approve <id>    Approva tesi pending (valida ticker yfinance, warn non blocca)
 │   └── reject <id>     Rifiuta tesi pending con motivazione
 │       └── --reason    Motivazione (obbligatoria, loggata in theses.rejection_reason)
@@ -1091,6 +1134,7 @@ pathos
 │   │   └── --resolved-date      YYYY-MM-DD (obbligatorio — actual event date or eval date)
 │   └── calibration       Dual-metric: time-adjusted score (primaria) + Brier (secondaria)
 │       └── breakdown per bucket probabilità, macro_area, prediction_type
+├── fundamentals <ticker>  Snapshot fondamentali (ratio, Altman Z, Piotroski F) — ispezione manuale
 ├── serve                Avvia dashboard Streamlit (Fase 4, vedi sezione 8b)
 │   ├── --host           [default: localhost]
 │   └── --port           [default: 8501]

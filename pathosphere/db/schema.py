@@ -470,6 +470,12 @@ _MIGRATIONS = [
     # internal coherence for inspection. Resolve via COALESCE(story_id, id).
     "ALTER TABLE events ADD COLUMN story_id INTEGER REFERENCES events(id)",
     "CREATE INDEX IF NOT EXISTS idx_event_story ON events(story_id)",
+    # fundamentals enrichment: JSON snapshot (ratios, Altman Z, Piotroski F,
+    # rendered text, optional LLM assessment) captured at thesis-generation
+    # time — 1:1 with the thesis, no cross-thesis queries → JSON column,
+    # not a dedicated table. NULL = fundamentals unavailable (expected for
+    # non-US/small-cap/ETF instruments).
+    "ALTER TABLE theses ADD COLUMN fundamentals_json TEXT",
 ]
 
 

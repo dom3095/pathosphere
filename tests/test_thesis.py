@@ -203,7 +203,8 @@ def test_generate_theses_full(tmp_db):
     mock_client = MagicMock()
     mock_client.complete = AsyncMock(return_value=_SAMPLE_LLM_RESPONSE)
 
-    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50):
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
         result = asyncio.run(
             generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
         )
@@ -248,7 +249,8 @@ def test_generate_theses_price_fetch_failure(tmp_db):
     mock_client = MagicMock()
     mock_client.complete = AsyncMock(return_value=_SAMPLE_LLM_RESPONSE)
 
-    with patch("pathosphere.agent.thesis.fetch_price", return_value=None):
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=None), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
         result = asyncio.run(
             generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
         )
@@ -257,3 +259,109 @@ def test_generate_theses_price_fetch_failure(tmp_db):
     rows = tmp_db.execute("SELECT price_snapshot FROM theses").fetchall()
     for row in rows:
         assert row["price_snapshot"] is None
+
+
+# ── fundamentals enrichment ───────────────────────────────────────────────────
+
+def _fake_snapshot(ticker: str):
+    from pathosphere.market.fundamentals import FundamentalsSnapshot
+    return FundamentalsSnapshot(
+        ticker=ticker,
+        quote_type="EQUITY",
+        sector="Technology",
+        pe_trailing=30.0,
+        altman_z=4.1,
+        altman_zone="safe",
+        piotroski_f=7,
+        piotroski_testable=9,
+        data_quality="full",
+        fetched_at="2026-06-23T00:00:00+00:00",
+    )
+
+
+_REVIEW_RESPONSE = json.dumps({
+    "assessments": [
+        {"thesis_id": 1, "assessment": "Fundamentals support the long thesis."},
+        {"thesis_id": 2, "assessment": "Neutral: data quality low."},
+        {"thesis_id": 3, "assessment": "Fundamentals support the thesis."},
+        {"thesis_id": 4, "assessment": "Fundamentals support the thesis."},
+    ]
+})
+
+
+def test_generate_theses_with_fundamentals(tmp_db):
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    # 1st call = thesis JSON, 2nd call = fundamentals review JSON
+    mock_client.complete = AsyncMock(side_effect=[_SAMPLE_LLM_RESPONSE, _REVIEW_RESPONSE])
+
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot):
+        result = asyncio.run(
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+        )
+
+    assert result.theses_created == 4
+    assert mock_client.complete.await_count == 2
+
+    rows = tmp_db.execute("SELECT id, fundamentals_json FROM theses ORDER BY id").fetchall()
+    for row in rows:
+        assert row["fundamentals_json"] is not None
+        doc = json.loads(row["fundamentals_json"])
+        assert doc["snapshot"]["quote_type"] == "EQUITY"
+        assert "FUNDAMENTALS" in doc["text"]
+        assert doc["llm_assessment"]  # review pass annotated every thesis
+
+
+def test_generate_theses_fundamentals_review_failure_degrades(tmp_db):
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(side_effect=[_SAMPLE_LLM_RESPONSE, "not json at all"])
+
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot):
+        result = asyncio.run(
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+        )
+
+    # Review failed → theses still saved, snapshot present, no assessment
+    assert result.theses_created == 4
+    rows = tmp_db.execute("SELECT fundamentals_json FROM theses").fetchall()
+    for row in rows:
+        doc = json.loads(row["fundamentals_json"])
+        assert "llm_assessment" not in doc
+
+
+def test_generate_theses_fundamentals_fetch_none_skips_review(tmp_db):
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(return_value=_SAMPLE_LLM_RESPONSE)
+
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+        result = asyncio.run(
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+        )
+
+    # No fundamentals → single LLM call (no review pass), NULL column
+    assert result.theses_created == 4
+    assert mock_client.complete.await_count == 1
+    rows = tmp_db.execute("SELECT fundamentals_json FROM theses").fetchall()
+    assert all(row["fundamentals_json"] is None for row in rows)
+
+
+def test_generate_theses_enrich_disabled(tmp_db):
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(return_value=_SAMPLE_LLM_RESPONSE)
+
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals") as mock_fund:
+        asyncio.run(
+            generate_theses(
+                tmp_db, mock_client, brief_date="2026-06-23", n=3,
+                enrich_fundamentals=False,
+            )
+        )
+
+    mock_fund.assert_not_called()
