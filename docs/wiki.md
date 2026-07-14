@@ -29,6 +29,9 @@ Sistema personale di intelligence OSINT. Paper trading virtuale come metrica di 
    - 5.1 [GDELT 2.0](#51-gdelt-20)
    - 5.2 [RSS multi-blocco](#52-rss-multi-blocco)
    - 5.3 [PortWatch / Comtrade / USGS](#53-portwatch--comtrade--usgs)
+   - 5.4 [IODA (blackout internet)](#54-ioda-blackout-internet)
+   - 5.5 [Backfill storico eventi](#55-backfill-storico-eventi-ucdp--who-don--reliefweb--wikidata)
+   - 5.6 [Export Parquet](#56-export-parquet)
 6. [Pipeline semantica (Fase 2)](#6-pipeline-semantica-fase-2)
    - 6.1 [Embedding](#61-embedding)
    - 6.2 [Dedup semantica](#62-dedup-semantica)
@@ -118,6 +121,8 @@ Tutte opzionali — i default funzionano out-of-the-box.
 | `OLLAMA_HOST` | `http://localhost:11434` | Endpoint Ollama locale |
 | `OLLAMA_MODEL` | `qwen3:4b` | Modello per lavoro di massa |
 | `EMBED_MODEL_NAME` | `intfloat/multilingual-e5-small` | Modello embedding (HuggingFace) |
+| `FIRMS_MAP_KEY` | — | NASA FIRMS (registrazione gratuita); senza chiave l'ingest firms viene saltato |
+| `RELIEFWEB_APPNAME` | — | ReliefWeb v2 (registrazione gratuita); senza appname l'ingest reliefweb viene saltato |
 
 ---
 
@@ -522,7 +527,36 @@ uv run pathos ingest ioda --start 2026-01-01       # bootstrap storico
 
 **API (2026-07):** endpoint corretto `https://api.ioda.inetintel.cc.gatech.edu/v2` (il vecchio host `ioda.inetintel.cc.gatech.edu/api/v2` risponde HTML SPA con 200). Query singola limitata a <100 giorni → range lunghi spezzati automaticamente in chunk da 90 giorni (`IODA_MAX_CHUNK_DAYS`). Risposta reale annidata `{"data": [[{...}]]}` — gestita insieme alle shape `{"data": {"signals": [...]}}` e `{"data": [...]}`.
 
-### 5.5 Export Parquet
+### 5.5 Backfill storico eventi (UCDP / WHO DON / ReliefWeb / Wikidata)
+
+**Stato: ✅ Implementato** — `ingest/ucdp.py`, `ingest/who_don.py`, `ingest/reliefweb.py`, `ingest/econ_crises.py` (CP-027, parte eventi)
+
+Quattro fonti aperte, gratuite e verificabili per popolare la mappa con eventi storici **realmente accaduti e geolocalizzati**. GDELT è escluso di proposito: i suoi documenti sono sintetici da codici CAMEO, senza prosa reale (CP-016) — inutilizzabili per mappa e clustering. Tutte e quattro le fonti scrivono direttamente in `events` (niente `raw_documents`/embedding: lo storico è statico, serve da ancoraggio per mappa e future "situazioni", non da input di clustering).
+
+| Fonte | Copertura | event_type | origin | Accesso |
+|---|---|---|---|---|
+| UCDP GED (CSV zip ~29 MB) | Conflitti armati 1989→, lat/lon precisi | `conflict` | `ucdp` | aperto (l'API REST richiede token, il download CSV no) |
+| WHO Disease Outbreak News (OData API) | Epidemie 1996→, prosa reale in `Overview` | `epidemic` | `who_don` | aperto |
+| ReliefWeb v2 (UN OCHA) | Disastri naturali 1981→, coordinate paese | `hazard` | `reliefweb` | serve `RELIEFWEB_APPNAME` in `.env` (registrazione gratuita, skip graceful se assente — pattern FIRMS) |
+| Wikidata SPARQL | Crisi economiche/finanziarie (Q3733076/Q290178/Q176494, P580/P585, P17) | `economic` | `wikidata` | aperto |
+
+```bash
+uv run pathos ingest ucdp                            # scarica zip, filtro ≥25 morti (~16k eventi)
+uv run pathos ingest ucdp --min-deaths 100           # solo eventi maggiori (~3k)
+uv run pathos ingest ucdp --csv-path ged.csv --start 2010-01-01   # CSV locale + range
+uv run pathos ingest who-don                         # full history al primo run, poi resume incrementale
+uv run pathos ingest reliefweb --start 2000-01-01    # richiede RELIEFWEB_APPNAME
+uv run pathos ingest econ-crises                     # one-off, poche centinaia di ancoraggi
+```
+
+**Note:**
+- Dedup idempotente `(title, first_seen)` su tutte e quattro; rilanci sicuri.
+- UCDP: severity a bucket di morti (≥25→2, ≥100→3, ≥250→4, ≥1000→5); il CSV (250 MB raw) è letto in streaming.
+- WHO DON: paese estratto dal titolo (separatore en-dash "–") → `location_name`; lat/lon NULL, li risolve il geocoder della fase extract. Resume incrementale da `max(first_seen)`.
+- Wikidata: crisi multi-paese (>3) salvate come `location_name='global'` senza punto; ogni evento porta il QID nel summary per verificabilità.
+- Terremoti storici: già coperti da `pathos ingest usgs --start` (§5.3).
+
+### 5.6 Export Parquet
 
 **Stato: ✅ Implementato** — `export/parquet.py`
 
@@ -1098,13 +1132,23 @@ pathos
 │   │   ├── --baseline-days Finestra baseline [default: 30]
 │   │   ├── --z-threshold   Soglia z-score [default: 2.0]
 │   │   └── --min-detections Floor rilevazioni per anomalia [default: 50]
-│   └── ioda            Blackout internet IODA (BGP, 24 paesi) → internet_metrics + eventi drop
-│       ├── --days          Giorni recenti [default: 1]
-│       ├── --start / --end Bootstrap storico (date fisse YYYY-MM-DD)
-│       ├── --countries     ISO-2 comma-separated [default: tutti 24]
-│       ├── --baseline-days Finestra baseline [default: 30]
-│       ├── --z-threshold   Soglia z-score [default: 2.5]
-│       └── --datasource    bgp | active [default: bgp]
+│   ├── ioda            Blackout internet IODA (BGP, 24 paesi) → internet_metrics + eventi drop
+│   │   ├── --days          Giorni recenti [default: 1]
+│   │   ├── --start / --end Bootstrap storico (date fisse YYYY-MM-DD)
+│   │   ├── --countries     ISO-2 comma-separated [default: tutti 24]
+│   │   ├── --baseline-days Finestra baseline [default: 30]
+│   │   ├── --z-threshold   Soglia z-score [default: 2.5]
+│   │   └── --datasource    bgp | active [default: bgp]
+│   ├── ucdp            Backfill conflitti storici UCDP GED 1989→ → events (conflict)
+│   │   ├── --min-deaths    Soglia morti (best estimate) [default: 25]
+│   │   ├── --start / --end Range su date_start (YYYY-MM-DD)
+│   │   └── --csv-path      CSV GED già scaricato (salta il download ~29 MB)
+│   ├── who-don         Epidemie WHO Disease Outbreak News 1996→ → events (epidemic)
+│   │   └── --start / --end Backfill (default: resume incrementale, full al primo run)
+│   ├── reliefweb       Disastri ReliefWeb v2 1981→ → events (hazard, richiede RELIEFWEB_APPNAME)
+│   │   └── --start / --end Backfill (default: resume incrementale, full al primo run)
+│   └── econ-crises     Crisi economiche/finanziarie da Wikidata → events (economic)
+│       └── --start / --end Range (YYYY-MM-DD)
 ├── export
 │   └── parquet         Export tabelle principali → Parquet partizionato
 │       ├── --tables        Subset (es. raw_documents,events) [default: tutte]
@@ -1217,8 +1261,12 @@ pathos
 |---|---|---|---|
 | GDELT 2.0 | Conflitti/politica (multilingua) | 15 min | ✅ |
 | RSS multi-blocco | Notizie 7 blocchi geopolitici | Asincrono | ✅ |
-| ACLED, UCDP | Conflitti armati | Settimanale | ⬜ |
-| WHO DON, ProMED | Epidemie | Quotidiana | ⬜ |
+| UCDP GED | Conflitti armati storici 1989→ | One-off (backfill) | ✅ |
+| ACLED | Conflitti armati | Settimanale | ⬜ |
+| WHO DON | Epidemie 1996→ | Backfill + resume incrementale | ✅ |
+| ProMED | Epidemie | Quotidiana | ⬜ |
+| ReliefWeb (UN OCHA) | Disastri naturali 1981→ | Backfill + resume incrementale | ✅ (richiede appname) |
+| Wikidata SPARQL | Crisi economiche storiche | One-off (backfill) | ✅ |
 | IMF PortWatch | Traffico chokepoint marittimo | Quotidiana | ✅ |
 | UN Comtrade | Flussi commerciali (HS code) | Mensile | ✅ |
 | USGS | Terremoti | Realtime | ✅ |
