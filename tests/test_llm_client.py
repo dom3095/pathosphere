@@ -9,6 +9,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from pathosphere.llm.client import (
@@ -296,12 +297,12 @@ def test_complete_qwen_success():
     assert result == "Qwen says hello."
 
 
-def test_complete_qwen_uses_900s_timeout():
-    """CP-029: measured a real single research-prompt call at 318.7s (not the
-    46-113s seen for small classification prompts in CP-022) — 900s leaves
-    real margin for the larger divergence/critique prompts in the debate
-    pipeline, which is documented as a background-only command, not a
-    latency-sensitive path."""
+def test_complete_qwen_uses_1800s_timeout():
+    """CP-029: per-call latency grows over a long debate session (~370s early,
+    >900s after ~50 min in the same run — critique step timed out at exactly
+    900.0s despite a smaller prompt than the research step that succeeded).
+    1800s absorbs the worst observed spikes; debate stays a background-only
+    command, not a latency-sensitive path."""
     client = LLMClient(backend="qwen-local")
 
     mock_resp = MagicMock()
@@ -321,7 +322,61 @@ def test_complete_qwen_uses_900s_timeout():
             return mock_cls
 
     mock_cls = asyncio.run(run())
-    assert mock_cls.call_args.kwargs["timeout"] == 900
+    assert mock_cls.call_args.kwargs["timeout"] == 1800
+
+
+def test_complete_qwen_retries_once_on_read_timeout():
+    """CP-029: a single ReadTimeout may be a transient latency spike, not a
+    hard limit — one automatic retry distinguishes the two. Second attempt
+    succeeding must return its response normally."""
+    client = LLMClient(backend="qwen-local")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": "recovered"}}]
+    }
+    mock_resp.raise_for_status = MagicMock()
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(
+                side_effect=[httpx.ReadTimeout("timed out"), mock_resp]
+            )
+            mock_cls.return_value = mock_http
+
+            result = await client.complete([{"role": "user", "content": "hi"}])
+            return result, mock_http.post.call_count
+
+    result, call_count = asyncio.run(run())
+    assert result == "recovered"
+    assert call_count == 2
+
+
+def test_complete_qwen_raises_after_second_read_timeout():
+    """CP-029: exactly one retry — two consecutive ReadTimeouts mean a real
+    limit, the exception must propagate (no infinite retry loop)."""
+    client = LLMClient(backend="qwen-local")
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(
+                side_effect=httpx.ReadTimeout("timed out")
+            )
+            mock_cls.return_value = mock_http
+
+            with pytest.raises(httpx.ReadTimeout):
+                await client.complete([{"role": "user", "content": "hi"}])
+            return mock_http.post.call_count
+
+    call_count = asyncio.run(run())
+    assert call_count == 2
 
 
 def test_complete_qwen_custom_model():

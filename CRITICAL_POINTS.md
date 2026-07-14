@@ -507,7 +507,7 @@ correggere.
 
 ---
 
-## CP-029: `pathos thesis debate` — non la concorrenza, è la velocità del modello, variabile e crescente nel tempo — **APERTO, in handoff** (non risolto — 2 tentativi reali falliti dopo il fix)
+## CP-029: `pathos thesis debate` — non la concorrenza, è la velocità del modello, variabile e crescente nel tempo — **APERTO, in handoff** (3 run reali falliti, id 1/2/3; timeout 1800s + retry implementati, da validare con run reale)
 
 **Contesto (2026-07-14)**: primo run reale di `pathos thesis debate` (mai lanciato prima d'ora — verificato,
 nessuna traccia nei log). Crashato allo Step 1 (research) con `httpx.ReadTimeout` dopo esattamente 120.0s
@@ -581,19 +581,26 @@ orfana (verificato via query diretta).
 prima di una validazione end-to-end riuscita, poi smentito dal secondo run reale. **Non richiudere
 CP-029 come risolto finché un run completo (tutti e 4 gli step) non arriva a `status='complete'`.**
 
-**Opzioni non ancora scelte per il prossimo tentativo** (nessuna implementata in questa sessione —
-richiede decisione + tempo di validazione che non c'è più stasera):
-1. Timeout ancora più largo (es. 1800s) + **retry automatico 1 volta su `ReadTimeout`** per chiamata
-   (un timeout potrebbe essere un picco transitorio, non un limite duro — un singolo retry lo
-   distinguerebbe senza sommare grande complessità).
-2. Investigare la causa della crescita di latenza nel tempo (throttling? altri processi?) prima di
-   continuare a inseguire il numero di timeout — rilanciare a macchina totalmente scarica (nessun altro
-   processo, non durante una sessione Claude Code attiva) come test di controllo.
+**Opzione 1 IMPLEMENTATA (2026-07-14 notte, sessione successiva)**: timeout 900s→**1800s** + **retry
+automatico 1 volta su `ReadTimeout`** per chiamata (`llm/client.py`, costanti `_QWEN_TIMEOUT_S` /
+`_QWEN_READ_TIMEOUT_RETRIES`). Razionale: un timeout può essere un picco transitorio, non un limite
+duro — un singolo retry li distingue senza grande complessità; 1800s assorbe i picchi peggiori
+osservati (>900s). 3 test dedicati (`test_complete_qwen_uses_1800s_timeout`,
+`test_complete_qwen_retries_once_on_read_timeout`,
+`test_complete_qwen_raises_after_second_read_timeout`) — 584 test verdi. Verificato prima nel DB:
+nessun run nuovo dopo id=3, ultimo status sempre `failed`.
+
+**Opzioni restanti, non ancora fatte**:
+2. Investigare la causa della crescita di latenza nel tempo (throttling? altri processi?) —
+   rilanciare a macchina totalmente scarica (nessun altro processo, non durante una sessione Claude
+   Code attiva) come test di controllo.
 3. Accettare il costo e lanciare overnight con margine molto ampio, monitorando `data/logs/` al mattino
    invece di aspettare in sessione.
 
-**Azione**: rimandato a prossima sessione/lancio manuale dell'utente. Vedi `HANDOFF.md` per il prompt di
-ripresa.
+**Azione**: prossimo run reale lanciato manualmente dall'utente (vedi prompt di ripresa in
+`HANDOFF.md`) — CP-029 si chiude SOLO con `debates.status='complete'` verificato nel DB. Peggior caso
+teorico con nuovi parametri: 13 chiamate × 1800s × 2 tentativi ≈ 13h — improbabile, ma lanciare
+overnight con `caffeinate`.
 
 ---
 

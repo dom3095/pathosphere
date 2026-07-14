@@ -1,6 +1,26 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-029 ANCORA APERTO — 2 run reali falliti, in handoff (branch `feat/fundamentals-analysis`, PR #14)
+## Fase corrente: CP-029 APERTO — timeout 1800s + retry implementati, attesa run reale utente (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 notte (2ª sessione) — Implementata opzione 1 di CP-029:**
+
+Verificato nel DB: nessun run nuovo dopo id=3 (ultimo sempre `failed`) — l'utente non ha ancora
+rilanciato. Implementata opzione 1 di CP-029 in `llm/client.py`:
+- Timeout per-chiamata Qwen **900s → 1800s** (`_QWEN_TIMEOUT_S`) — assorbe i picchi >900s osservati.
+- **1 retry automatico su `ReadTimeout`** (`_QWEN_READ_TIMEOUT_RETRIES=1`) — distingue picco
+  transitorio da limite duro; al secondo timeout consecutivo l'eccezione propaga.
+- 3 test dedicati: valore 1800s, retry-poi-successo (2 POST, risposta del 2°), doppio timeout propaga
+  (esattamente 2 POST, no loop infinito). **584 test verdi** (582+2). Ruff pulito.
+
+Doc aggiornate: `CRITICAL_POINTS.md` (CP-029: opzione 1 fatta, restano opzioni 2-3), `HANDOFF.md`
+(prompt di ripresa riscritto), `docs/wiki.md` §8.3 (nota timeout/retry).
+
+**Prossima azione**: run reale lanciato DALL'UTENTE a macchina scarica (comando nel prompt di ripresa
+in `HANDOFF.md`). CP-029 si chiude solo con `debates.status='complete'` verificato nel DB.
+
+---
+
+## Fase precedente: CP-029 — 2 run reali falliti, in handoff (branch `feat/fundamentals-analysis`, PR #14)
 
 **2026-07-14 notte — Secondo run reale con timeout 900s, fallito di nuovo (id=3):**
 

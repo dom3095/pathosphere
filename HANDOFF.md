@@ -1,23 +1,25 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-14 notte — CP-029 ANCORA APERTO: `pathos thesis debate` fallito 2 volte su run reali, in handoff per il prossimo tentativo (branch `feat/fundamentals-analysis`, PR #14)*
+*Aggiornato: 2026-07-14 notte (2ª sessione) — CP-029 ANCORA APERTO: timeout 1800s + retry automatico implementati e testati (584 verdi), manca SOLO la validazione con run reale lanciato dall'utente (branch `feat/fundamentals-analysis`, PR #14)*
 
 ## ⚠️ PROMPT DI RIPRESA — leggi questo per primo
 
 Contesto in una riga: `pathos thesis debate` (pipeline multi-persona, 13 chiamate Qwen locali) non ha
-mai completato un run reale con successo. 2 tentativi, 2 fallimenti diversi, entrambi con dati puliti
-(nessuna riga sporca nel DB). Codice attuale committato e testato (582 test verdi, unit-level) ma **non
+mai completato un run reale con successo. 3 run falliti (debates id 1/2/3, tutti `status='failed'`
+puliti, nessuna riga sporca). Codice attuale committato e testato (584 test verdi, unit-level) ma **non
 validato end-to-end** — questa è la parte che manca.
 
 **Cosa è già vero, non ridiscutere**:
 - Il batching a 2 (`_gather_in_batches`, `agent/debate.py`) funziona — Step 1 research l'ha superato
-  pulito nel secondo run (~37 min, 6 chiamate).
-- Il timeout è a 900s (`llm/client.py:103`) — non abbastanza: Step 3 critique ha comunque fatto
-  `ReadTimeout` esatto a 900.0s nel secondo run, nonostante un prompt più piccolo del research.
+  pulito nel run id=3 (~37 min, 6 chiamate).
 - La causa non è (solo) la dimensione del prompt — la latenza per chiamata **cresce nel corso della
-  sessione** (stimata ~370s a inizio run, >900s dopo ~50 minuti). Causa non accertata: throttling
-  termico M1 sotto carico CPU sostenuto, o interferenza di altri processi attivi in parallelo
-  (inclusa una sessione Claude Code aperta contemporaneamente).
+  sessione** (stimata ~370s a inizio run, >900s dopo ~50 minuti; critique fallito a 900.0s esatti con
+  prompt PIÙ PICCOLO del research riuscito). Causa non accertata: throttling termico M1 sotto carico
+  CPU sostenuto, o interferenza di altri processi attivi in parallelo (inclusa una sessione Claude
+  Code aperta contemporaneamente).
+- **Opzione 1 di CP-029 già implementata** (questa sessione): timeout 900s→**1800s** + **1 retry
+  automatico su `ReadTimeout`** per chiamata (`llm/client.py`, `_QWEN_TIMEOUT_S`,
+  `_QWEN_READ_TIMEOUT_RETRIES`), 3 test dedicati. NON reimplementare, NON ridiscutere il numero.
 
 **Prossimo tentativo raccomandato** (lanciato dall'utente, non dall'agent — vedi nota permessi sotto):
 ```bash
@@ -26,16 +28,17 @@ caffeinate -i uv run pathos thesis debate > data/logs/debate_$(date +%Y%m%d_%H%M
 # poi, per controllare più tardi senza restare in attesa:
 tail -f data/logs/debate_*.log
 ```
-Se fallisce ANCORA con `ReadTimeout` anche a macchina scarica: la causa non è carico esterno, serve
-alzare il timeout molto oltre 900s (es. 1800s) e/o aggiungere un retry automatico per chiamata (vedi
-opzioni in `CRITICAL_POINTS.md` CP-029). Se invece completa con successo (`debates.status='complete'`,
-tesi salvate) — chiudere CP-029 come risolto per davvero stavolta, solo dopo conferma reale, non prima.
+Se fallisce ANCORA con `ReadTimeout` (ora vorrebbe dire 2×1800s consecutivi sulla stessa chiamata,
+anche a macchina scarica): il problema non è più il numero del timeout — isolare la causa della
+crescita di latenza (opzione 2 di CP-029: throttling termico vs interferenza processi) prima di
+toccare altro codice. Se invece completa (`debates.status='complete'`, tesi salvate) — chiudere
+CP-029 come risolto per davvero stavolta, solo dopo conferma reale nel DB, non prima.
 
 **Verifica rapida esito**: `sqlite3 data/db/pathosphere.db "SELECT id, status FROM debates ORDER BY id DESC LIMIT 1;"`
 
 ---
 
-## CP-029 — cronologia completa dei 2 tentativi falliti (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
+## CP-029 — cronologia completa dei 3 run falliti (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
 
 **Perché è partito**: controllando i punti critici aperti, l'utente ha notato che `pathos thesis
 debate` non era mai stato lanciato per davvero (solo test mockati) — ha chiesto di lanciarlo per
@@ -67,8 +70,12 @@ prepara l'handoff, scrivi il prompt per il tuo collega e lancio io" — codice c
 **aperto**, non risolto — la dichiarazione di "risolto" scritta dopo il tentativo 2 era prematura,
 corretta qui e in `CRITICAL_POINTS.md` dopo il fallimento del tentativo 3.
 
-**Test**: 582 verdi (unit-level, mock — batching e timeout verificati per costruzione, non da un run
-reale riuscito). Ruff pulito, 7 violazioni pre-esistenti invariate.
+**Aggiornamento 2ª sessione (2026-07-14 notte)**: verificato nel DB che nessun run nuovo è partito
+(ultimo sempre id=3 `failed`). Implementata opzione 1 di CP-029: timeout 1800s + 1 retry automatico
+su `ReadTimeout` in `llm/client.py`, 3 test dedicati (1800s, retry-riesce, retry-esaurito-propaga).
+
+**Test**: 584 verdi (unit-level, mock — batching, timeout e retry verificati per costruzione, non da
+un run reale riuscito). Ruff pulito, 7 violazioni pre-esistenti invariate.
 
 **Dettaglio + opzioni per il prossimo tentativo**: CP-029 in `CRITICAL_POINTS.md`.
 

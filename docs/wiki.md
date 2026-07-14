@@ -867,8 +867,11 @@ uv run pathos brief --dry-run              # solo conteggi, no LLM
 4. Synthesis — Claude genera tesi con `debate_context` (supporters/opponents)
 
 **LENTO (CP-029)**: ~5+ min/chiamata Qwen misurati su prompt reale (318.7s, non i 46-113s di un prompt
-di classificazione minuscolo) — 13 chiamate totali ⇒ **60-90+ minuti** end-to-end. Lanciare SOLO in
-background/overnight (`caffeinate -i uv run pathos thesis debate &`), mai interattivo. Preferire
+di classificazione minuscolo) — 13 chiamate totali ⇒ **60-90+ minuti** end-to-end. La latenza per
+chiamata inoltre **cresce nel corso della sessione** (~370s a inizio run → >900s dopo ~50 min, causa
+non isolata): timeout per-chiamata Qwen a **1800s** con **1 retry automatico** su `ReadTimeout`
+(`llm/client.py`). Lanciare SOLO in background/overnight
+(`caffeinate -i uv run pathos thesis debate &`), mai interattivo. Preferire
 `pathos thesis generate` (fast path, 1 sola chiamata Claude) quando serve rapidità.
 
 `price_snapshot` = prezzo EOD yfinance al momento della generazione (no-lookahead bias).

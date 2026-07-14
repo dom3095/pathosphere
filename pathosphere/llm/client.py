@@ -21,6 +21,14 @@ Backend = Literal["claude", "qwen-local"]
 _OLLAMA_BASE = "http://localhost:11434/v1"
 _QWEN_MODEL = "qwen3:4b"
 
+# CP-029: per-call latency on qwen3:4b (M1 8GB, CPU-bound) is highly variable
+# and grows over a long session (~370s early → >900s after ~50 min in the same
+# run, cause not yet isolated — thermal throttling vs. concurrent processes).
+# 1800s absorbs the worst observed spikes; one retry distinguishes a transient
+# spike from a hard limit without adding real complexity.
+_QWEN_TIMEOUT_S = 1800
+_QWEN_READ_TIMEOUT_RETRIES = 1
+
 _JSON_SYSTEM = (
     "Respond ONLY with valid JSON. Do not include markdown fences, "
     "explanations, or any text outside the JSON structure."
@@ -100,25 +108,36 @@ class LLMClient:
 
         logger.debug(f"LLM/qwen → {url} model={mdl}")
 
-        async with httpx.AsyncClient(timeout=900) as client:
-            try:
-                resp = await client.post(url, json=payload)
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                logger.error(
-                    f"LLM/qwen HTTP {exc.response.status_code}: {exc.response.text[:200]}"
-                )
-                raise
-            except httpx.ConnectError:
-                raise RuntimeError(
-                    f"Cannot reach Ollama at {_OLLAMA_BASE}. "
-                    "Is the server running? (`ollama serve`)"
-                )
+        for attempt in range(_QWEN_READ_TIMEOUT_RETRIES + 1):
+            async with httpx.AsyncClient(timeout=_QWEN_TIMEOUT_S) as client:
+                try:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                except httpx.ReadTimeout:
+                    if attempt >= _QWEN_READ_TIMEOUT_RETRIES:
+                        raise
+                    logger.warning(
+                        f"LLM/qwen ReadTimeout after {_QWEN_TIMEOUT_S}s "
+                        f"(attempt {attempt + 1}), retrying once"
+                    )
+                    continue
+                except httpx.HTTPStatusError as exc:
+                    logger.error(
+                        f"LLM/qwen HTTP {exc.response.status_code}: {exc.response.text[:200]}"
+                    )
+                    raise
+                except httpx.ConnectError:
+                    raise RuntimeError(
+                        f"Cannot reach Ollama at {_OLLAMA_BASE}. "
+                        "Is the server running? (`ollama serve`)"
+                    )
 
-        data = resp.json()
-        content: str = data["choices"][0]["message"]["content"]
-        logger.debug(f"LLM/qwen response ({len(content)} chars)")
-        return content
+            data = resp.json()
+            content: str = data["choices"][0]["message"]["content"]
+            logger.debug(f"LLM/qwen response ({len(content)} chars)")
+            return content
+
+        raise AssertionError("unreachable")  # pragma: no cover
 
 
 # ──────────────────────────────────────────────────────────────────────────────
