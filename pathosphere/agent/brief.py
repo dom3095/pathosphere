@@ -332,7 +332,17 @@ async def generate_brief(
     messages = _build_prompt(divergences, hub_entities, anomalies, recent_events, brief_date)
     content = await llm_client.complete(messages)
 
-    total_events = len(divergences) + len(anomalies) + len(recent_events)
+    # Dedup by event_id before counting: an RSS event can appear in both
+    # divergences (score > 0.5) and recent_events (top by source coverage) —
+    # summing raw list lengths double-counted it. anomalies pull from
+    # disjoint origins (portwatch/usgs/firms/ioda vs rss) so they can't
+    # collide with the other two, but included for correctness regardless.
+    unique_event_ids = (
+        {d["event_id"] for d in divergences}
+        | {a["id"] for a in anomalies}
+        | {e["event_id"] for e in recent_events}
+    )
+    total_events = len(unique_event_ids)
 
     file_path = _save_brief_file(content, brief_date, briefs_dir)
     brief_id = _save_brief_db(

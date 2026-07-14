@@ -495,6 +495,21 @@ def test_generate_brief_with_data(tmp_db, tmp_path):
     assert result.entity_count >= 1  # TSMC + Taiwan as hub entities
 
 
+def test_generate_brief_event_count_dedups_overlap(tmp_db, tmp_path):
+    """An RSS event with both a high divergence score AND enough source
+    coverage to land in recent_events must be counted once, not twice."""
+    eid = _insert_event(tmp_db, title="Overlapping event", origin="rss")
+    _insert_divergence(tmp_db, eid, score=0.8)
+    _link_event_doc(tmp_db, eid, _insert_doc(tmp_db, "https://example.com/overlap"))
+
+    llm = _make_mock_llm("# Brief")
+    result = asyncio.run(
+        generate_brief(tmp_db, llm, brief_date="2026-06-22", briefs_dir=tmp_path / "briefs")
+    )
+
+    assert result.event_count == 1  # not 2, despite appearing in both lists
+
+
 def test_generate_brief_idempotent(tmp_db, tmp_path):
     """Running twice on the same date updates rather than inserts a duplicate."""
     llm = _make_mock_llm("Version 1")
