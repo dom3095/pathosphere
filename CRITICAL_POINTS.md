@@ -421,3 +421,86 @@ nessuno lancia il comando manualmente.
 
 **Azione:** nessuna per l'agent — segnalato per azione utente. Dopo la concessione permessi, verificare
 con `launchctl kickstart -k gui/$(id -u)/com.pathosphere.loop` e controllare che `launchd.log` si popoli.
+
+---
+
+## CP-025: brief mattutino senza contenuto narrativo nei giorni senza divergenze — **RISOLTO 2026-07-14**
+
+**Contesto**: primo `pathos thesis generate` reale della storia del progetto (2026-07-14). Il brief
+generato aveva 0 divergenze, 10 hub entities (solo numeri di grado), 12 anomalie fisiche (terremoti/
+IODA) — **zero contenuto narrativo reale**, nonostante **1846 eventi RSS reali** negli ultimi 7 giorni
+nel DB (Bulgaria-coalizione Ucraina, UE su pulizia etnica, Al-Shabaab...). Claude, correttamente, si è
+rifiutato di fabbricare tesi da segnali così deboli, spiegando il motivo in prosa (vedi CP-026 per la
+gestione di quel rifiuto).
+
+**Causa**: `brief.py::_query_divergences` pesca solo da `narrative_divergences` (score > 0.5) — un
+segnale specifico e spesso vuoto (749 righe totali nel DB, ma 0 in finestra 7gg quel giorno). Non
+esisteva nessuna query di fallback per "eventi RSS recenti in generale", indipendente dal fatto che
+sia stata rilevata una divergenza narrativa tra blocchi.
+
+**Fix**: nuova `_query_recent_events()` in `brief.py` — eventi `origin='rss'` recenti (lookback
+configurabile), ordinati per copertura fonti (`COUNT(document_id)` via `event_documents`) poi
+recency, top 12. Nuova sezione `## RECENT EVENTS` nel prompt, **sempre popolata quando esistono
+eventi RSS nella finestra**, indipendente da `narrative_divergences`. `event_count` persistito ora
+somma anche questa sezione.
+
+**Verificato sul DB reale**: rilanciato `pathos brief` per il 2026-07-14 — 12 recent events (Hormuz
+kinetic escalation, morte Lindsey Graham, verdetto Le Pen...) invece di 0 sezioni narrative. Il
+successivo `thesis generate` ha prodotto 7 tesi reali e sensate (vedi CP-026).
+
+**Test**: 8 nuovi in `test_brief.py` (query + integrazione prompt), 546 totali verdi a questo punto
+della sessione.
+
+---
+
+## CP-026: `claude -p` eredita CLAUDE.md/hooks del repo — output contaminato + JSON in fence non gestito — **RISOLTO 2026-07-14**
+
+**Contesto**: stesso primo run reale. Il brief generato conteneva testo fuori formato prima E dopo il
+Markdown atteso: *"Brief pronto, salvato in scratchpad. Contenuto sotto (Markdown, tono analitico...
+non caveman, formato per uso pipeline)"* in testa, e *"File salvato: `scratchpad/brief_2026-07-14.md`.
+Dimmi se serve integrarlo nel modulo `brief.py`..."* in coda — il modello si comportava come una
+sessione di coding agentica (menzionando file "salvati in scratchpad", chiedendo se integrare nel
+codice) invece di una pura completion testuale.
+
+**Causa**: `pathosphere/llm/client.py::_run_claude_subprocess` chiamava `subprocess.run(["claude",
+"-p", prompt], ...)` **senza isolarlo dal repo** — il processo `claude -p` lanciato dalla working
+directory del progetto carica automaticamente `CLAUDE.md` (incluso il caveman-mode e le istruzioni di
+workflow da coding-agent) più hook/skill/plugin del progetto, contaminando ogni completion generata
+dalla pipeline (brief, tesi, review fondamentali, debate persona — ogni chiamata `json_mode`/testuale
+via backend `claude`).
+
+**Fix 1 — isolamento**: aggiunti `--safe-mode --tools=` alla chiamata subprocess. `--safe-mode`
+disabilita CLAUDE.md/hook/skill/plugin per la sessione mantenendo **auth OAuth intatta** (verificato:
+nessun `ANTHROPIC_API_KEY` impostato in questo ambiente — il progetto usa credito abbonamento via
+login, non API key diretta, per design in CLAUDE.md). **Deliberatamente NON `--bare`**: quel flag
+richiede *esplicitamente* `ANTHROPIC_API_KEY`/`apiKeyHelper` e non legge mai OAuth/keychain — avrebbe
+rotto l'autenticazione dell'intero progetto. `--tools=` disabilita l'accesso a strumenti file/bash,
+garantendo che ogni chiamata resti una pura completion testuale, mai una sessione con effetti
+collaterali sul filesystem (verificato: nessun file reale scritto fuori controllo, la menzione
+"scratchpad" era contaminazione testuale, non un tool-call effettivo).
+
+**Fix 2 — fence JSON non gestito**: scoperto lanciando `thesis generate` col brief ora pulito — Claude
+ha prodotto JSON valido e ben formato ma **avvolto in un fence ` ```json ... ``` `**, nonostante il
+system prompt dica esplicitamente "no markdown fences". Ogni chiamante `json_mode=True` (thesis.py×2,
+debate.py×4, extract.py×1 per il fallback Qwen geoloc) faceva il proprio `json.loads(raw)` senza
+gestire questo caso — con la gestione graceful appena aggiunta per CP-022bis (vedi sopra, thesis.py)
+questo veniva silenziosamente scambiato per un "rifiuto" del modello invece che per un parsing
+fallito su contenuto valido. Fix centralizzato in `LLMClient.complete()`: nuovo `_strip_json_fence()`
+applicato automaticamente a **ogni** risposta quando `json_mode=True`, prima di restituirla al
+chiamante — un solo punto di fix per tutti i consumer presenti e futuri, invece di ripetere lo
+strip in ognuno.
+
+**Verificato sul DB reale, end-to-end**: rilanciato `pathos brief` (output pulito, parte
+direttamente con `# Intelligence Brief`) poi `pathos thesis generate` — **7 tesi reali persistite**
+(3 primarie + 4 alternative: BZ=F long/short su escalation Hormuz, FRO long/short su tanker
+war-risk, ITA long/short/short su settore difesa), fundamentals review batch completato (1 chiamata
+Claude), nessun rifiuto, nessuna contaminazione residua.
+
+**Non esplorato**: se la stessa contaminazione affligge anche il backend `qwen-local` (system prompt
+via Ollama non ha accesso a CLAUDE.md per costruzione — improbabile lì, ma non verificato
+esplicitamente). Impatto storico sconosciuto: ogni brief/tesi/review generata **prima** di questo fix
+(nessuna in produzione — questo era il primo run reale) non esisteva, quindi nessun dato storico da
+correggere.
+
+**Test**: 8 nuovi in `test_llm_client.py` (regression guard su flag subprocess + fence-stripping),
+554 totali verdi.

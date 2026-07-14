@@ -1,6 +1,68 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-14 — CP-022 risolto (branch `feat/fundamentals-analysis`, PR #14)*
+*Aggiornato: 2026-07-14 — primo ciclo reale eseguito, CP-025/CP-026 trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)*
+
+## Primo ciclo reale: `brief` → `thesis generate` (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
+
+**Perché**: tutto il lavoro di Fase 3 (predictions v2, fundamentals enrichment, CP-022 geoloc) era
+implementato ma **mai eseguito su dati veri** — `predictions`/`theses`/`trades`/`portfolios` a 0 righe
+verificato a inizio giornata. Eseguito `pathos portfolio init` → `pathos brief` → `pathos thesis
+generate` per la prima volta.
+
+**Trovati 2 bug reali, non ipotetici — il valore del primo run vero**:
+
+**CP-025 — brief senza contenuto narrativo nei giorni senza divergenze.** Il primo brief aveva 0
+divergenze, solo entity-degree e anomalie fisiche — zero storie, nonostante 1846 eventi RSS reali
+negli ultimi 7 giorni nel DB. Causa: `_query_divergences` (score>0.5) è l'unico canale di contenuto
+narrativo in `brief.py`, e quel giorno era vuoto (749 righe totali nel DB, 0 in finestra). Claude si
+è correttamente rifiutato di fabbricare tesi da segnali così deboli — comportamento giusto, ma
+sintomo di un buco di design. Fix: `_query_recent_events()`, eventi RSS recenti ordinati per copertura
+fonti, sezione `## RECENT EVENTS` sempre popolata **indipendentemente** dalle divergenze. 8 test nuovi.
+
+**CP-026 — `claude -p` eredita CLAUDE.md del repo, contamina l'output; JSON in fence non gestito.**
+Il brief (anche dopo il fix CP-025) conteneva meta-commentario da coding-agent in testa/coda ("salvato
+in scratchpad", "vuoi che lo integri in brief.py?") — il subprocess `claude -p` lanciato dalla cwd del
+progetto carica CLAUDE.md/hook/skill automaticamente, comportandosi come una sessione Claude Code
+invece di una pura completion testuale. Fix: `--safe-mode --tools=` in `_run_claude_subprocess`
+(isola dal repo, **preserva l'auth OAuth** — deliberatamente NON `--bare`, che richiede
+`ANTHROPIC_API_KEY` esplicita e romperebbe l'autenticazione via abbonamento di questo progetto,
+verificato: nessuna API key impostata in questo ambiente). Secondo bug trovato nello stesso giro:
+Claude produceva JSON valido ma avvolto in un fence ` ```json `, che nessuno dei chiamanti
+`json_mode=True` (thesis.py, debate.py, extract.py) gestiva — con la gestione graceful appena
+aggiunta per i rifiuti in prosa (vedi sotto), questo veniva scambiato per un rifiuto invece che per
+un parsing fallito su contenuto valido. Fix centralizzato: `_strip_json_fence()` applicato
+automaticamente in `LLMClient.complete()` quando `json_mode=True` — un solo punto per tutti i
+consumer. 8 test nuovi.
+
+**Fix di robustezza collaterale in `thesis.py`**: una risposta LLM non-JSON (rifiuto motivato in
+prosa) ora produce `ThesisResult(theses_created=0, refusal_reason=...)` invece di sollevare
+`ValueError` non gestita — "0 tesi oggi" è un esito legittimo per un job che gira anche non presidiato
+(`pathos loop`), non un crash. La ragione del modello resta leggibile (log + CLI output), non
+scartata.
+
+**Risultato finale, verificato end-to-end sul DB reale**: brief pulito (parte da `# Intelligence
+Brief`, 12 recent events reali: Hormuz kinetic escalation, morte Lindsey Graham, verdetto Le Pen) →
+**7 tesi reali persistite** (BZ=F long/short su risk premium petrolio, FRO long/short su tanker
+war-risk, ITA long/short/short su settore difesa — 3 primarie + 4 alternative), fundamentals review
+batch completato (BZ=F flaggato "future", ITA flaggato "ETF", entrambi minimal snapshot corretto per
+tipo strumento), 11 watchlist items, nessun rifiuto, nessuna contaminazione residua.
+
+**Bonus**: `.gitignore` mancava `data/briefs/` (a differenza di db/parquet/logs) — brief reali
+sarebbero finiti tracciati per errore. Aggiunto.
+
+**Test**: 554 verdi (era 535 a inizio giornata, +19 in questo giro: 8 llm_client, 8 brief, 3 thesis).
+Ruff pulito sui file toccati (11 violazioni pre-esistenti invariate, stesso baseline di prima).
+
+**CRITICAL_POINTS.md**: CP-025 e CP-026 aperti e chiusi nella stessa sessione, con dettaglio +
+verifica end-to-end.
+
+**Prossimo passo consigliato**: `pathos thesis approve <id>` su una delle 7 tesi reali (verifica
+auto-creazione predizione economic collegata, CP-004/005) → `pathos trade open <id>` (primo trade
+reale, primo dato vero per giudicare CP-023 — vale la pena SEC EDGAR v2?). In alternativa, fermarsi
+e aspettare il merge di PR #14 prima di continuare ad accumulare commit sullo stesso branch (già a
+~8 commit logici in questa sessione: fundamentals, CP-008/010/012, CP-022, bookkeeping, CP-025/026).
+
+---
 
 ## CP-022 risolto (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
 

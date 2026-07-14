@@ -829,9 +829,26 @@ result = await client.complete(messages, json_mode=True)
 
 Cambiare backend = una riga di config. A/B testing: stesso giorno, tesi da Qwen3 4B vs Claude, il paper trading misura la differenza.
 
+**Isolamento subprocess (`claude` backend, CP-026)**: `_run_claude_subprocess` invoca `claude -p
+--safe-mode --tools= PROMPT` — `--safe-mode` disabilita CLAUDE.md/hook/skill/plugin del repo per
+quella chiamata (senza, il processo erediterebbe il caveman-mode e le istruzioni da coding-agent di
+questo stesso file, contaminando l'output con meta-commentario tipo "salvato in scratchpad") **senza**
+rompere l'auth OAuth/abbonamento (a differenza di `--bare`, che richiede `ANTHROPIC_API_KEY` esplicita
+e non legge mai OAuth/keychain). `--tools=` disabilita l'accesso a strumenti file/bash — ogni chiamata
+resta una pura completion testuale.
+
+**Fence-stripping automatico (CP-026)**: quando `json_mode=True`, `complete()` applica
+`_strip_json_fence()` alla risposta prima di restituirla — i modelli non rispettano sempre l'istruzione
+"no markdown fences" nel system prompt; centralizzato qui invece che ripetuto in ogni chiamante
+(`thesis.py`, `debate.py`, `extract.py`).
+
 ### 8.2 Brief mattutino — `pathosphere/agent/brief.py` ✅
 
-Legge dal DB: divergenze narrative (`divergence_score > 0.5`), entità hub (`entity_links`), anomalie recenti (portwatch/firms/usgs/ioda). 1 chiamata Claude → brief strutturato salvato in `briefs` + file `data/briefs/YYYY-MM-DD.md`.
+Legge dal DB: **eventi RSS recenti** (`origin='rss'`, ordinati per copertura fonti — CP-025, sempre
+popolato indipendentemente dalle divergenze), divergenze narrative (`divergence_score > 0.5`,
+spesso vuoto — è un segnale specifico, non il canale primario di contenuto), entità hub
+(`entity_links`), anomalie recenti (portwatch/firms/usgs/ioda). 1 chiamata Claude → brief strutturato
+salvato in `briefs` + file `data/briefs/YYYY-MM-DD.md`.
 
 ```bash
 uv run pathos brief                        # oggi, tutti i segnali

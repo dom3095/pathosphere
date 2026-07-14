@@ -1,6 +1,37 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-022 geoloc RSS risolto (branch `feat/fundamentals-analysis`, PR #14)
+## Fase corrente: primo ciclo reale completato — CP-025/CP-026 trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 — Primo `pathos brief` → `pathos thesis generate` reale della storia del progetto:**
+
+`pathos portfolio init` (3 portafogli, benchmark SPY aperto) → `pathos brief` → `pathos thesis
+generate`. Il primo tentativo ha esposto 2 bug reali mai visti prima (nessun run reale era mai stato
+fatto):
+
+- **CP-025**: brief senza contenuto narrativo nei giorni a 0 `narrative_divergences` (il caso comune)
+  — nessuna query di fallback per eventi RSS recenti in generale. Fix: `_query_recent_events()` in
+  `brief.py`, sezione sempre popolata indipendente dalle divergenze.
+- **CP-026**: `claude -p` (subprocess in `llm/client.py`) ereditava CLAUDE.md/hook del repo,
+  contaminando l'output con meta-commentario da coding-agent ("salvato in scratchpad", "vuoi che lo
+  integri in brief.py?"). Fix: `--safe-mode --tools=` (isola dal repo, preserva auth OAuth — NON
+  `--bare`, che romperebbe l'auth). Trovato anche un secondo problema nello stesso giro: JSON valido
+  ma avvolto in fence ` ```json ` non gestito da nessun chiamante `json_mode=True` — fix centralizzato
+  (`_strip_json_fence()` in `complete()`).
+
+**Risultato dopo i fix**: brief pulito (parte da `# Intelligence Brief`, 12 recent events reali su
+Hormuz/Graham/Le Pen), **7 tesi reali persistite** (BZ=F, FRO, ITA — 3 primarie + 4 alternative),
+fundamentals review batch completato, nessun rifiuto, nessuna contaminazione.
+
+Test: 554 verdi (era 546, +8 llm_client +8 brief). `.gitignore` corretto (`data/briefs/` mancava,
+ora ignorato come db/parquet/logs).
+
+**Prossimo**: `pathos thesis approve <id>` su una delle 7 (verifica auto-creazione predizione
+economic, CP-004/005) → `pathos trade open <id>` (verifica apertura trade reale, primo dato vero per
+CP-023). Oppure aspettare merge PR #14 prima di continuare ad accumulare commit sullo stesso branch.
+
+---
+
+## Fase precedente: CP-022 geoloc RSS risolto (branch `feat/fundamentals-analysis`, PR #14)
 
 **2026-07-14 — CP-022 implementato (euristica + fallback Qwen), eseguito sul DB reale (solo Step 1):**
 
