@@ -20,6 +20,7 @@ from pathosphere.agent.brief import (
     _query_divergences,
     _query_hub_entities,
     _query_recent_anomalies,
+    _query_recent_events,
     _save_brief_db,
     _save_brief_file,
     generate_brief,
@@ -68,6 +69,20 @@ def _insert_link(conn: sqlite3.Connection, a: int, b: int, relation="ally") -> N
     conn.execute(
         "INSERT INTO entity_links (entity_a, entity_b, relation_type) VALUES (?, ?, ?)",
         (a, b, relation),
+    )
+    conn.commit()
+
+
+def _insert_doc(conn: sqlite3.Connection, url: str) -> int:
+    conn.execute("INSERT INTO raw_documents (url, origin) VALUES (?, 'rss')", (url,))
+    conn.commit()
+    return conn.execute("SELECT id FROM raw_documents WHERE url = ?", (url,)).fetchone()[0]
+
+
+def _link_event_doc(conn: sqlite3.Connection, event_id: int, document_id: int) -> None:
+    conn.execute(
+        "INSERT INTO event_documents (event_id, document_id) VALUES (?, ?)",
+        (event_id, document_id),
     )
     conn.commit()
 
@@ -207,24 +222,120 @@ def test_query_recent_anomalies_ordered_by_severity(tmp_db):
     assert result[0]["severity"] >= result[-1]["severity"]
 
 
+# ─── _query_recent_events (CP-025) ─────────────────────────────────────────────
+
+def test_query_recent_events_empty(tmp_db):
+    result = _query_recent_events(tmp_db, lookback_days=7)
+    assert result == []
+
+
+def test_query_recent_events_requires_at_least_one_document(tmp_db):
+    """An RSS event with no linked documents (shouldn't happen via the real
+    clustering pipeline, but the query is an INNER JOIN) is excluded."""
+    _insert_event(tmp_db, title="Orphan event", origin="rss")
+    result = _query_recent_events(tmp_db, lookback_days=7)
+    assert result == []
+
+
+def test_query_recent_events_returns_rss_with_docs(tmp_db):
+    eid = _insert_event(tmp_db, title="Bulgaria coalition statement", origin="rss")
+    doc = _insert_doc(tmp_db, "https://example.com/a")
+    _link_event_doc(tmp_db, eid, doc)
+
+    result = _query_recent_events(tmp_db, lookback_days=7)
+    assert len(result) == 1
+    assert result[0]["event_id"] == eid
+    assert result[0]["doc_count"] == 1
+
+
+def test_query_recent_events_excludes_non_rss_origin(tmp_db):
+    eid = _insert_event(tmp_db, title="Earthquake", origin="usgs")
+    doc = _insert_doc(tmp_db, "https://example.com/b")
+    _link_event_doc(tmp_db, eid, doc)
+
+    result = _query_recent_events(tmp_db, lookback_days=7)
+    assert result == []
+
+
+def test_query_recent_events_filters_old_events(tmp_db):
+    old_date = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    eid = _insert_event(tmp_db, title="Old story", origin="rss", last_seen=old_date)
+    doc = _insert_doc(tmp_db, "https://example.com/c")
+    _link_event_doc(tmp_db, eid, doc)
+
+    result = _query_recent_events(tmp_db, lookback_days=7)
+    assert result == []
+
+
+def test_query_recent_events_ordered_by_doc_count_desc(tmp_db):
+    e_small = _insert_event(tmp_db, title="Minor story", origin="rss")
+    e_big = _insert_event(tmp_db, title="Major story", origin="rss")
+    _link_event_doc(tmp_db, e_small, _insert_doc(tmp_db, "https://example.com/d1"))
+    _link_event_doc(tmp_db, e_big, _insert_doc(tmp_db, "https://example.com/d2"))
+    _link_event_doc(tmp_db, e_big, _insert_doc(tmp_db, "https://example.com/d3"))
+
+    result = _query_recent_events(tmp_db, lookback_days=7)
+    assert result[0]["event_id"] == e_big
+    assert result[0]["doc_count"] == 2
+    assert result[1]["doc_count"] == 1
+
+
+def test_query_recent_events_independent_of_divergence(tmp_db):
+    """The whole point of CP-025: an event with zero narrative divergence
+    (the common case) still surfaces here."""
+    eid = _insert_event(tmp_db, title="Undisputed story", origin="rss")
+    _link_event_doc(tmp_db, eid, _insert_doc(tmp_db, "https://example.com/e"))
+
+    assert _query_divergences(tmp_db, lookback_days=7) == []
+    result = _query_recent_events(tmp_db, lookback_days=7)
+    assert len(result) == 1
+
+
 # ─── _build_prompt ────────────────────────────────────────────────────────────
 
 def test_build_prompt_returns_two_messages():
-    messages = _build_prompt([], [], [], "2026-06-22")
+    messages = _build_prompt([], [], [], [], "2026-06-22")
     assert len(messages) == 2
     assert messages[0]["role"] == "system"
     assert messages[1]["role"] == "user"
 
 
 def test_build_prompt_includes_date():
-    messages = _build_prompt([], [], [], "2026-06-22")
+    messages = _build_prompt([], [], [], [], "2026-06-22")
     assert "2026-06-22" in messages[1]["content"]
 
 
 def test_build_prompt_empty_data_notes_absence():
-    messages = _build_prompt([], [], [], "2026-06-22")
+    messages = _build_prompt([], [], [], [], "2026-06-22")
     user_content = messages[1]["content"]
     assert "No significant signals" in user_content
+
+
+def test_build_prompt_with_recent_events():
+    events = [{
+        "event_id": 42,
+        "title": "Bulgaria says no place in Ukraine coalition of willing",
+        "event_type": None,
+        "location_name": "Bulgaria",
+        "last_seen": "2026-07-14T16:10:56+00:00",
+        "doc_count": 3,
+    }]
+    messages = _build_prompt([], [], [], events, "2026-06-22")
+    content = messages[1]["content"]
+    assert "RECENT EVENTS" in content
+    assert "Bulgaria says no place in Ukraine coalition of willing" in content
+    assert "sources=3" in content
+
+
+def test_build_prompt_recent_events_alone_avoids_absence_note():
+    """CP-025: recent_events is the fallback signal — its presence alone
+    should suppress the 'no significant signals' placeholder."""
+    events = [{
+        "event_id": 1, "title": "Some story", "event_type": None,
+        "location_name": None, "last_seen": "2026-06-20", "doc_count": 1,
+    }]
+    messages = _build_prompt([], [], [], events, "2026-06-22")
+    assert "No significant signals" not in messages[1]["content"]
 
 
 def test_build_prompt_with_divergence():
@@ -239,7 +350,7 @@ def test_build_prompt_with_divergence():
         "divergence_score": 0.82,
         "divergence_summary": "Major narrative gap",
     }]
-    messages = _build_prompt(divs, [], [], "2026-06-22")
+    messages = _build_prompt(divs, [], [], [], "2026-06-22")
     content = messages[1]["content"]
     assert "Taiwan tensions" in content
     assert "0.82" in content
@@ -249,7 +360,7 @@ def test_build_prompt_with_divergence():
 
 def test_build_prompt_with_hub_entities():
     hubs = [{"id": 1, "name": "TSMC", "entity_type": "company", "canonical_name": None, "degree": 10}]
-    messages = _build_prompt([], hubs, [], "2026-06-22")
+    messages = _build_prompt([], hubs, [], [], "2026-06-22")
     assert "TSMC" in messages[1]["content"]
     assert "degree=10" in messages[1]["content"]
 
@@ -257,7 +368,7 @@ def test_build_prompt_with_hub_entities():
 def test_build_prompt_canonical_name_preferred():
     hubs = [{"id": 1, "name": "TSMC", "entity_type": "company",
               "canonical_name": "Taiwan Semiconductor Manufacturing Company", "degree": 5}]
-    messages = _build_prompt([], hubs, [], "2026-06-22")
+    messages = _build_prompt([], hubs, [], [], "2026-06-22")
     assert "Taiwan Semiconductor Manufacturing Company" in messages[1]["content"]
 
 
@@ -272,7 +383,7 @@ def test_build_prompt_with_anomalies():
         "last_seen": "2026-06-21",
         "summary": "20% drop in transits",
     }]
-    messages = _build_prompt([], [], anoms, "2026-06-22")
+    messages = _build_prompt([], [], anoms, [], "2026-06-22")
     content = messages[1]["content"]
     assert "PORTWATCH" in content
     assert "Suez traffic drop" in content

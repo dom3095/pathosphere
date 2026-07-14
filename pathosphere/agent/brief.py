@@ -2,6 +2,8 @@
 Morning brief generator.
 
 Queries the DB for:
+  - Recent RSS-clustered events, ranked by source coverage (CP-025 — always
+    populated when RSS data exists, independent of narrative divergence)
   - High-divergence narrative clusters (divergence_score > 0.5)
   - Hub entities (highest-degree nodes in entity_links)
   - Recent physical / infrastructure anomaly events (portwatch, usgs, firms, ioda)
@@ -29,6 +31,7 @@ _DIVERGENCE_THRESHOLD = 0.5
 _MAX_DIVERGENCES = 8
 _MAX_HUB_ENTITIES = 10
 _MAX_ANOMALY_EVENTS = 12
+_MAX_RECENT_EVENTS = 12
 _ANOMALY_ORIGINS = ("portwatch", "usgs", "firms", "ioda")
 
 
@@ -99,6 +102,38 @@ def _query_hub_entities(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _query_recent_events(conn: sqlite3.Connection, lookback_days: int) -> list[dict]:
+    """Return recent RSS-clustered events, ranked by source coverage (doc
+    count) then recency — independent of narrative_divergences.
+
+    _query_divergences only surfaces events where TWO OR MORE geopolitical
+    blocs covered the *same* clustered story with diverging framing
+    (divergence_score > 0.5) — a narrow, often-empty signal (0 rows is a
+    normal day, not missing data). Without this query the brief had no
+    fallback source of real narrative content on such days: only entity
+    co-occurrence degree (numbers, no story) and physical-sensor anomalies
+    (earthquakes/fires/outages, not political/economic events) — see CP-025
+    in CRITICAL_POINTS.md. Every RSS event that made it into a cluster is
+    real reporting regardless of whether a divergence was detected.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat()
+    rows = conn.execute(
+        """
+        SELECT
+            e.id AS event_id, e.title, e.event_type, e.location_name, e.last_seen,
+            COUNT(ed.document_id) AS doc_count
+        FROM events e
+        JOIN event_documents ed ON ed.event_id = e.id
+        WHERE e.origin = 'rss' AND e.last_seen >= ?
+        GROUP BY e.id
+        ORDER BY doc_count DESC, e.last_seen DESC
+        LIMIT ?
+        """,
+        (cutoff, _MAX_RECENT_EVENTS),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def _query_recent_anomalies(
     conn: sqlite3.Connection, lookback_days: int
 ) -> list[dict]:
@@ -127,6 +162,7 @@ def _build_prompt(
     divergences: list[dict],
     hub_entities: list[dict],
     anomalies: list[dict],
+    recent_events: list[dict],
     brief_date: str,
 ) -> list[dict]:
     """Construct the chat-message list to send to the LLM."""
@@ -142,12 +178,25 @@ def _build_prompt(
         "",
         "## TASK",
         "Generate a structured morning intelligence brief from the signals below.",
+        "For recent events, summarize the 2-4 most newsworthy and note why they matter.",
         "For each high-divergence event explain what the narrative gap implies.",
         "For hub entities flag any strategic significance of their centrality.",
         "For anomalies hypothesize the most likely cause and downstream impact.",
         "End with a **SYNTHESIS** section: 2-3 key takeaways and watchlist updates.",
         "",
     ]
+
+    if recent_events:
+        lines += ["## RECENT EVENTS (top by source coverage)", ""]
+        for e in recent_events:
+            lines.append(
+                f"- **Event {e['event_id']}**: {e['title']} | "
+                f"type={e['event_type'] or 'unknown'} | "
+                f"location={e['location_name'] or 'unknown'} | "
+                f"sources={e['doc_count']} | "
+                f"last_seen={e['last_seen']}"
+            )
+        lines.append("")
 
     if divergences:
         lines += ["## NARRATIVE DIVERGENCES (score > 0.5)", ""]
@@ -184,7 +233,7 @@ def _build_prompt(
                 lines.append(f"  _{a['summary']}_")
         lines.append("")
 
-    if not divergences and not hub_entities and not anomalies:
+    if not divergences and not hub_entities and not anomalies and not recent_events:
         lines += [
             "## NOTE",
             "No significant signals found for this period.",
@@ -272,27 +321,30 @@ async def generate_brief(
     divergences = _query_divergences(conn, lookback_days)
     hub_entities = _query_hub_entities(conn)
     anomalies = _query_recent_anomalies(conn, lookback_days)
+    recent_events = _query_recent_events(conn, lookback_days)
 
     logger.info(
         f"BRIEF: {len(divergences)} divergences | "
         f"{len(hub_entities)} hub entities | "
-        f"{len(anomalies)} anomalies"
+        f"{len(anomalies)} anomalies | {len(recent_events)} recent events"
     )
 
-    messages = _build_prompt(divergences, hub_entities, anomalies, brief_date)
+    messages = _build_prompt(divergences, hub_entities, anomalies, recent_events, brief_date)
     content = await llm_client.complete(messages)
+
+    total_events = len(divergences) + len(anomalies) + len(recent_events)
 
     file_path = _save_brief_file(content, brief_date, briefs_dir)
     brief_id = _save_brief_db(
         conn,
         brief_date=brief_date,
         content=content,
-        event_count=len(divergences) + len(anomalies),
+        event_count=total_events,
         entity_count=len(hub_entities),
     )
 
     logger.success(
-        f"BRIEF: id={brief_id} | events={len(divergences) + len(anomalies)} | "
+        f"BRIEF: id={brief_id} | events={total_events} | "
         f"entities={len(hub_entities)} | file={file_path}"
     )
 
@@ -301,6 +353,6 @@ async def generate_brief(
         content=content,
         file_path=file_path,
         brief_id=brief_id,
-        event_count=len(divergences) + len(anomalies),
+        event_count=total_events,
         entity_count=len(hub_entities),
     )
