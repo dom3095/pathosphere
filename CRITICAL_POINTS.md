@@ -37,7 +37,7 @@ Aggiornare immediatamente quando emerge un nuovo punto. Rimuovere quando risolto
 
 ---
 
-## CP-004: Predictions v2 — separazione tipi mancante nel modello
+## CP-004: Predictions v2 — separazione tipi mancante nel modello — **RISOLTO 2026-07-05** (non marcato finora)
 
 **Contesto:** design v2 ha formalizzato scoring e tassonomia ma NON la separazione tra predizioni geopolitiche/politiche/sociali ed economiche. Il campo `prediction_type` non è stato aggiunto allo schema.
 
@@ -46,11 +46,11 @@ Aggiornare immediatamente quando emerge un nuovo punto. Rimuovere quando risolto
 - `prediction_type TEXT NOT NULL CHECK IN ('geopolitical','political','social','economic')` — granularità per filtri e calibrazione per tipo
 Relazione: `world` → prediction_type IN ('geopolitical','political','social'); `economic` → prediction_type='economic'. FK `trade_id` opzionale solo per `macro_area='economic'`.
 
-**Azione:** includere in `feat/predictions-v2`.
+**Verificato ora (2026-07-14)**: entrambe le colonne presenti in `pathosphere/db/schema.py::_MIGRATIONS` (righe ~419-422), incluse in `feat/predictions-v2` (PR #6, mergiata 2026-07-05) come previsto. Bookkeeping mai aggiornato in questo file finché non notato durante un audit generale — nessun lavoro mancante, solo la spunta.
 
 ---
 
-## CP-005: Predictions v2 — backward compat migration
+## CP-005: Predictions v2 — backward compat migration — **RISOLTO 2026-07-05** (non marcato finora)
 
 **Contesto:** nuove colonne (`outcome_eventual`, `outcome_on_time`, `resolved_date`, `origin_scope`, `impact_scope`, `time_adjusted_score`) e nuova tabella `prediction_domains`. Predizioni esistenti avranno queste colonne a NULL.
 
@@ -58,7 +58,7 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 **Impatto:** dati storici pre-v2 esclusi da `time_adjusted_score`; `brier_score` ancora disponibile per confronto.
 
-**Azione:** risolvere nell'implementazione `feat/predictions-v2`.
+**Verificato ora (2026-07-14)**: `prediction_domains` presente nello schema, backfill `outcome_eventual` da `outcome` legacy presente (`_MIGRATIONS` riga ~438). Stesso caso di CP-004 — implementato in `feat/predictions-v2`, mai marcato qui.
 
 ---
 
@@ -120,13 +120,11 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
-## CP-011: embed processa tutto il raw GDELT senza filtro a monte
+## CP-011: embed processa tutto il raw GDELT senza filtro a monte — **RISOLTO implicitamente** (side-effect CP-016, mai marcato)
 
 **Contesto:** `pathos embed` embedda TUTTI i `raw_documents` con `embedded=0` (`semantic/embedder.py`, query senza filtro rilevanza/età). Backfill GDELT 6 mesi → ~169k doc → 1-3+ ore su M1 CPU. Viola il principio "filtraggio aggressivo a monte": la ridondanza GDELT si paga in ore di embedding invece di essere tagliata prima.
 
-**Workaround:** commit per batch (32) → Ctrl+C sicuro, riprende dai residui `embedded=0`. Backfill grossi: lanciare di notte o in assenza. Progresso visibile solo via `sqlite3 data/pathosphere.db "SELECT sum(embedded=1), count(*) FROM raw_documents;"` (log batch è DEBUG).
-
-**Impatto:** ore di CPU per backfill lunghi; nel ciclo notturno incrementale (1 giorno di doc) impatto trascurabile. Fix futuro: filtro pre-embedding (keyword/QuadClass GDELT, dedup URL aggressiva) o embed limitato a finestra recente + progress log a INFO.
+**Verificato ora (2026-07-14)**: il fix CP-016 (`NON_PROSE_ORIGINS = ("gdelt", "comtrade")` in `embedder.py`) esclude GDELT/Comtrade dalla query di `embed_documents` — i doc GDELT non vengono più embeddati affatto, il problema descritto qui (ore di CPU su backfill GDELT) non si presenta più. Scritto prima di CP-016, mai riletto/marcato dopo. Il commit-per-batch (32) resta comunque una buona proprietà per il volume RSS/Comtrade rimasto.
 
 ---
 
@@ -145,7 +143,6 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 ---
 
 ## CP-013: stoplist Wikidata curata a mano — nuovi termini generici possono emergere
-## CP-012: stoplist Wikidata curata a mano — nuovi termini generici possono emergere
 
 **Contesto:** `GENERIC_ENTITY_STOPLIST` (`semantic/extract.py`, ~110 voci) blocca lookup Wikidata per nomi comuni/ruoli/demonimi ALL CAPS prodotti dal NER su testo GDELT (`CRIMINAL`, `MILITARY`, `MALE`…). Lista statica: termini generici nuovi (altre lingue, plurali mancanti) passano il filtro e consumano budget lookup.
 
@@ -155,15 +152,13 @@ Relazione: `world` → prediction_type IN ('geopolitical','political','social');
 
 ---
 
-## CP-014: entità "GDELT" — leak del prefisso titolo sintetico nel NER
+## CP-014: entità "GDELT" — leak del prefisso titolo sintetico nel NER — **RISOLTO implicitamente** (side-effect CP-016, mai marcato)
 
 **Contesto:** i titoli sintetici GDELT hanno formato `"GDELT: ACTOR → ACTOR2"` (`ingest/gdelt.py`). `_build_text` (`semantic/extract.py`) concatena title+body senza rimuovere il prefisso → il NER tagga la parola letterale `GDELT` come entità ORG/company su quasi ogni documento origin=gdelt. Scoperto in `notebooks/study_02_extract.ipynb`: **entità col maggior numero di mention in assoluto** — 128.082 documenti (73.5% dei doc origin=gdelt).
 
 **Impatto sul grafo:** in `notebooks/study_03_graph.ipynb`, il nodo `GDELT` ha grado 3.962/89.838 archi (4.4%) — hub artificiale, causa diretta più probabile della componente connessa gigante osservata (9.666/10.192 nodi, 94.8%). Inquina anche budget Wikidata (voce già stoplistata come "generica" solo se aggiunta a mano — non matcha `GENERIC_ENTITY_STOPLIST` attuale).
 
-**Workaround:** nessuno applicato (analisi as-is, nessun fix in questa sessione). Aggiungere `GDELT` a `GENERIC_ENTITY_STOPLIST` è un cerotto sul sintomo Wikidata, non risolve l'inquinamento di `document_entities`/`entity_links`.
-
-**Impatto:** alto — singolo artefatto che spiega la maggior parte dell'hairball nel grafo entità. Fix futuro: strip del prefisso `"GDELT: "` in `_build_text` prima del NER, oppure NER solo sul body per documenti origin=gdelt.
+**Verificato ora (2026-07-14)**: il "secondo follow-up" di CP-016 (vedi sotto) ha già esteso `NON_PROSE_ORIGINS` alla query candidati NER in `extract.py::extract_entities` — i doc `origin='gdelt'` non entrano più nel NER, quindi il leak del prefisso `"GDELT: "` non può più prodursi su documenti nuovi. Scritto prima di quel fix, mai riletto/marcato dopo. Il DB reale è stato anche ripulito da zero (reset GDELT completo, 2026-07-09, vedi CP-016) — nessun residuo storico noto.
 
 ---
 
