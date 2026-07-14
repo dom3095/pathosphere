@@ -292,7 +292,8 @@ def test_run_debate_full(tmp_db):
     mock_claude = MagicMock()
     mock_claude.complete = AsyncMock(return_value=_SAMPLE_SYNTHESIS)
 
-    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0):
+    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
         result = asyncio.run(
             run_debate(tmp_db, mock_qwen, mock_claude, brief_date="2026-06-23", n_theses=3)
         )
@@ -327,6 +328,97 @@ def test_run_debate_full(tmp_db):
     assert len(theses) == 4
     for t in theses:
         assert t["price_snapshot"] == pytest.approx(100.0)
+
+
+def test_run_debate_fundamentals_enrichment(tmp_db):
+    """CP-026-followup: debate-sourced theses get the same fundamentals
+    enrichment as `pathos thesis generate` — previously they never did."""
+    _insert_brief(tmp_db, "2026-06-23", "## Brief with signals")
+
+    from pathosphere.market.fundamentals import FundamentalsSnapshot
+
+    def _fake_snapshot(ticker: str):
+        return FundamentalsSnapshot(
+            ticker=ticker, quote_type="EQUITY", sector="Technology",
+            pe_trailing=30.0, altman_z=4.1, altman_zone="safe",
+            piotroski_f=7, piotroski_testable=9, data_quality="full",
+            fetched_at="2026-06-23T00:00:00+00:00",
+        )
+
+    mock_qwen = MagicMock()
+    mock_qwen.complete = AsyncMock(return_value=json.dumps(_SAMPLE_RESEARCH))
+    mock_claude = MagicMock()
+    # 1st call = synthesis JSON, 2nd = fundamentals review JSON
+    mock_claude.complete = AsyncMock(side_effect=[
+        _SAMPLE_SYNTHESIS,
+        json.dumps({"assessments": [{"thesis_id": 1, "assessment": "Supports the thesis."}]}),
+    ])
+
+    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot):
+        result = asyncio.run(
+            run_debate(tmp_db, mock_qwen, mock_claude, brief_date="2026-06-23", n_theses=3)
+        )
+
+    rows = tmp_db.execute(
+        "SELECT fundamentals_json FROM theses WHERE debate_id = ?", (result.debate_id,)
+    ).fetchall()
+    assert all(row["fundamentals_json"] is not None for row in rows)
+
+
+def test_run_debate_auto_open_high_confidence(tmp_db):
+    """Debate-sourced theses at/above the confidence threshold auto-open a
+    paper trade, same policy as `pathos thesis generate`."""
+    _insert_brief(tmp_db, "2026-06-23", "## Brief with signals")
+    from pathosphere.market.trading import init_portfolios
+
+    mock_qwen = MagicMock()
+    mock_qwen.complete = AsyncMock(return_value=json.dumps(_SAMPLE_RESEARCH))
+    mock_claude = MagicMock()
+    mock_claude.complete = AsyncMock(return_value=_SAMPLE_SYNTHESIS)
+
+    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+         patch("pathosphere.market.trading.fetch_price", return_value=100.0), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+        init_portfolios(tmp_db)
+        result = asyncio.run(
+            run_debate(
+                tmp_db, mock_qwen, mock_claude, brief_date="2026-06-23", n_theses=3,
+                auto_open_threshold=0.6,
+            )
+        )
+
+    # Primary thesis "TSMC supply shock" has confidence=0.60 (>= threshold);
+    # its alternative (0.30) and the other primaries do not.
+    assert len(result.thesis_result.auto_opened_ids) == 1
+    auto_id = result.thesis_result.auto_opened_ids[0]
+    row = tmp_db.execute("SELECT status FROM theses WHERE id = ?", (auto_id,)).fetchone()
+    assert row["status"] == "approved"
+
+
+def test_run_debate_auto_open_disabled(tmp_db):
+    _insert_brief(tmp_db, "2026-06-23", "## Brief with signals")
+    from pathosphere.market.trading import init_portfolios
+
+    mock_qwen = MagicMock()
+    mock_qwen.complete = AsyncMock(return_value=json.dumps(_SAMPLE_RESEARCH))
+    mock_claude = MagicMock()
+    mock_claude.complete = AsyncMock(return_value=_SAMPLE_SYNTHESIS)
+
+    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+         patch("pathosphere.market.trading.fetch_price", return_value=100.0), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+        init_portfolios(tmp_db)
+        result = asyncio.run(
+            run_debate(
+                tmp_db, mock_qwen, mock_claude, brief_date="2026-06-23", n_theses=3,
+                auto_open=False,
+            )
+        )
+
+    assert result.thesis_result.auto_opened_ids == []
+    rows = tmp_db.execute("SELECT status FROM theses WHERE debate_id = ?", (result.debate_id,)).fetchall()
+    assert all(r["status"] == "pending" for r in rows)
 
 
 def test_run_debate_no_brief_raises(tmp_db):

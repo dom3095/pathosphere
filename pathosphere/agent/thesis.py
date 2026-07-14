@@ -15,13 +15,11 @@ from datetime import date, timezone
 
 from loguru import logger
 
-from pathosphere.agent.approval import approve_thesis
-from pathosphere.agent.predictions import create_thesis_prediction, link_thesis_prediction_to_trade
+from pathosphere.agent.approval import approve_thesis_with_prediction, open_trade_and_link
 from pathosphere.config import get_settings
 from pathosphere.llm.client import LLMClient
 from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
 from pathosphere.market.prices import fetch_price
-from pathosphere.market.trading import open_agent_trade
 
 _N_DEFAULT = 3
 
@@ -283,9 +281,12 @@ def _maybe_auto_open(
 ) -> bool:
     """Auto-approve + auto-open a paper trade for a thesis at/above
     `threshold` confidence (virtual money — human reviews/closes after,
-    never a pre-trade gate for these). Mirrors the exact manual sequence of
-    `pathos thesis approve` + `pathos trade open`: approve_thesis →
-    create_thesis_prediction → open_agent_trade → link_thesis_prediction_to_trade.
+    never a pre-trade gate for these). Calls the exact same shared workflow
+    functions `pathos thesis approve` + `pathos trade open` call
+    (`approve_thesis_with_prediction`, `open_trade_and_link` in
+    `agent/approval.py`) — a single source of truth for both paths instead
+    of two hand-duplicated copies of the sequence (that duplication had
+    already caused the auto-open copy to silently skip ticker validation).
 
     approve_thesis commits on its own — if a later step fails (no
     portfolios initialized, price fetch failed...) the thesis is left
@@ -293,25 +294,24 @@ def _maybe_auto_open(
     state a manual `pathos thesis approve` followed by a failed `pathos
     trade open` would leave it in — `pathos trade open <id>` can complete
     it later. Returns True only on full success (approved AND traded).
+
+    `confidence` comes straight from unvalidated LLM JSON — json_mode is
+    a prompt instruction, not a schema, so a non-numeric value (e.g. the
+    model emits a string) is a realistic input, not a hypothetical one.
+    Comparing it directly against `threshold` would raise TypeError and
+    crash `generate_theses` after theses are already committed — the exact
+    failure mode the sibling JSON-refusal handling was built to avoid.
     """
-    if confidence is None or confidence < threshold:
+    if not isinstance(confidence, (int, float)) or confidence < threshold:
         return False
     try:
-        updated = approve_thesis(conn, thesis_id)
+        approve_thesis_with_prediction(conn, thesis_id)
     except (ValueError, sqlite3.Error) as exc:
         logger.warning(f"THESIS: auto-approve {thesis_id} failed — left pending: {exc}")
         return False
 
     try:
-        create_thesis_prediction(conn, updated)
-    except (ValueError, sqlite3.Error) as exc:
-        logger.warning(
-            f"THESIS: auto-open {thesis_id} — economic prediction not created: {exc}"
-        )
-
-    try:
-        trade = open_agent_trade(conn, thesis_id)
-        link_thesis_prediction_to_trade(conn, thesis_id, trade.agent_trade_id)
+        open_trade_and_link(conn, thesis_id)
     except (ValueError, sqlite3.Error) as exc:
         logger.warning(
             f"THESIS: {thesis_id} auto-approved (confidence={confidence}) but trade "

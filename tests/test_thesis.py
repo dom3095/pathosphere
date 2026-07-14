@@ -432,6 +432,21 @@ def test_maybe_auto_open_none_confidence_noop(tmp_db):
     assert _maybe_auto_open(tmp_db, thesis_id, confidence=None, threshold=0.6) is False
 
 
+def test_maybe_auto_open_non_numeric_confidence_does_not_crash(tmp_db):
+    """CP-028 review fix: json_mode is a prompt instruction, not a schema —
+    a non-numeric confidence from the LLM (e.g. a string) must not raise
+    TypeError comparing it against threshold. Must degrade like None, not
+    crash generate_theses after theses are already committed."""
+    t = {"title": "T", "causal_chain": [], "instrument": "USO"}
+    thesis_id = _save_thesis(tmp_db, t, price_snapshot=75.0)
+
+    opened = _maybe_auto_open(tmp_db, thesis_id, confidence="0.65", threshold=0.6)  # type: ignore[arg-type]
+
+    assert opened is False
+    row = tmp_db.execute("SELECT status FROM theses WHERE id = ?", (thesis_id,)).fetchone()
+    assert row["status"] == "pending"
+
+
 def test_maybe_auto_open_success(tmp_db):
     """At/above threshold + portfolios ready → approved, traded, prediction linked."""
     t = {
@@ -458,6 +473,29 @@ def test_maybe_auto_open_success(tmp_db):
         "SELECT * FROM predictions WHERE trade_id = ?", (trade["id"],)
     ).fetchone()
     assert pred is not None
+
+
+def test_maybe_auto_open_validates_ticker(tmp_db):
+    """CP-028 review fix: the auto-open path previously skipped ticker
+    validation entirely (unlike `pathos thesis approve`) — now uses the
+    shared approve_thesis_with_prediction(), which validates. A bad ticker
+    logs a warning but still approves+opens (same non-blocking policy)."""
+    t = {
+        "title": "T", "causal_chain": [], "instrument": "FAKEXYZ999", "direction": "long",
+        "horizon_days": 14, "invalidation": "n/a",
+    }
+    thesis_id = _save_thesis(tmp_db, t, price_snapshot=75.0)
+    mock_info = MagicMock()
+    mock_info.last_price = None
+
+    with patch("pathosphere.agent.approval.yf.Ticker") as mock_yf, \
+         patch("pathosphere.market.trading.fetch_price", return_value=75.0):
+        mock_yf.return_value.fast_info = mock_info
+        init_portfolios(tmp_db)
+        opened = _maybe_auto_open(tmp_db, thesis_id, confidence=0.65, threshold=0.6)
+
+    assert opened is True  # non-blocking: bad ticker warns, doesn't stop the flow
+    mock_yf.assert_called()  # validate_ticker was actually invoked
 
 
 def test_maybe_auto_open_degrades_without_portfolios(tmp_db):
