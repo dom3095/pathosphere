@@ -7,7 +7,7 @@ LLM abstraction with two backends:
 from __future__ import annotations
 
 import asyncio
-import json
+import re
 import subprocess
 from typing import Literal
 
@@ -64,9 +64,11 @@ class LLMClient:
             messages = _inject_json_system(messages)
 
         if self._backend == "claude":
-            return await self._complete_claude(messages)
+            raw = await self._complete_claude(messages)
         else:
-            return await self._complete_qwen(messages, model=model)
+            raw = await self._complete_qwen(messages, model=model)
+
+        return _strip_json_fence(raw) if json_mode else raw
 
     # ──────────────────────────────────────────────────────────────────────────
     # Claude via Agent SDK subprocess
@@ -123,6 +125,25 @@ class LLMClient:
 # Helpers
 
 
+_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+
+
+def _strip_json_fence(raw: str) -> str:
+    """Strip a wrapping ```json ... ``` (or bare ``` ... ```) code fence.
+
+    The json_mode system prompt explicitly says "no markdown fences", but
+    models don't reliably honour that (observed on the real thesis-generation
+    pipeline, CP-026) — every json_mode caller was doing its own
+    `json.loads(raw)` and crashing/degrading on a well-formed response the
+    model had merely wrapped in a fence. Centralized here so every current
+    and future json_mode caller gets clean JSON without repeating this.
+    No-op if there's no fence (returns the input stripped, unchanged shape).
+    """
+    stripped = raw.strip()
+    m = _JSON_FENCE_RE.match(stripped)
+    return m.group(1).strip() if m else stripped
+
+
 def _inject_json_system(messages: list[dict]) -> list[dict]:
     """Prepend or merge a JSON-enforcement system message."""
     if messages and messages[0].get("role") == "system":
@@ -154,10 +175,23 @@ def _messages_to_text(messages: list[dict]) -> str:
 def _run_claude_subprocess(prompt: str) -> str:
     """Run `claude -p PROMPT` synchronously and return stdout.
 
+    `--safe-mode` disables CLAUDE.md/hooks/skills/plugins for this call —
+    without it, the subprocess inherits this repo's CLAUDE.md (caveman-mode
+    tone instructions, coding-session framing) and produces contaminated
+    output for what should be a plain text completion (observed on the
+    2026-07-14 first real run: brief content prefixed/suffixed with
+    conversational meta-commentary — "saved to scratchpad", "tell me if you
+    want this wired into brief.py" — see CP-026 in CRITICAL_POINTS.md).
+    `--tools=` disables tool access so this stays a pure text completion,
+    never an agentic session with file/bash side effects. Deliberately NOT
+    `--bare`: that also skips OAuth/keychain auth (API-key only), which
+    would break this project's subscription-credit auth (no
+    ANTHROPIC_API_KEY set here by design — see CLAUDE.md LLM strategy).
+
     Raises RuntimeError if the process exits non-zero.
     """
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        ["claude", "-p", "--safe-mode", "--tools=", prompt],
         capture_output=True,
         text=True,
         timeout=300,

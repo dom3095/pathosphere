@@ -235,13 +235,51 @@ def test_generate_theses_no_brief_raises(tmp_db):
         asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2000-01-01"))
 
 
-def test_generate_theses_invalid_json_raises(tmp_db):
+def test_generate_theses_invalid_json_returns_zero_theses(tmp_db):
+    """Malformed/non-JSON output degrades to 'no theses proposed' instead of
+    crashing the pipeline (unattended `pathos loop` must survive this)."""
     _insert_brief(tmp_db, "2026-06-23", "## Brief")
     mock_client = MagicMock()
     mock_client.complete = AsyncMock(return_value="not valid json at all")
 
-    with pytest.raises(ValueError, match="invalid thesis JSON"):
-        asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2026-06-23"))
+    result = asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2026-06-23"))
+
+    assert result.theses_created == 0
+    assert result.watchlist_created == 0
+    assert result.thesis_ids == []
+    assert result.refusal_reason == "not valid json at all"
+
+
+def test_generate_theses_prose_refusal_preserved_as_reason(tmp_db):
+    """A model that explains in prose why it declined to propose theses
+    (thin signal, no-lookahead-bias concerns) is a legitimate outcome — the
+    explanation must survive in refusal_reason, not just be discarded."""
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    prose = (
+        "No theses proposed — insufficient event-level data this cycle. "
+        "Forcing 3 concrete theses would fabricate signal that doesn't exist."
+    )
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(return_value=prose)
+
+    result = asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2026-06-23"))
+
+    assert result.theses_created == 0
+    assert result.refusal_reason == prose
+
+
+def test_generate_theses_valid_json_has_no_refusal_reason(tmp_db):
+    """The normal success path must not set refusal_reason."""
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(return_value=_SAMPLE_LLM_RESPONSE)
+
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=100.0), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+        result = asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2026-06-23"))
+
+    assert result.theses_created > 0
+    assert result.refusal_reason is None
 
 
 def test_generate_theses_price_fetch_failure(tmp_db):

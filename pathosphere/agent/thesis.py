@@ -29,6 +29,11 @@ class ThesisResult:
     theses_created: int
     watchlist_created: int
     thesis_ids: list[int] = field(default_factory=list)
+    # Set when the LLM declined to return JSON theses (e.g. it judged the
+    # brief's signals too thin to ground a falsifiable thesis and explained
+    # why in prose instead). theses_created is 0 in that case — a legitimate
+    # "no theses today" outcome, not a pipeline failure. See CRITICAL_POINTS.md.
+    refusal_reason: str | None = None
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -286,9 +291,11 @@ async def generate_theses(
 
     Returns:
         ThesisResult with counts of created theses and watchlist items.
+        theses_created=0 with refusal_reason set means the LLM declined to
+        propose theses (thin signal) rather than a failure.
 
     Raises:
-        ValueError: If no brief exists for the given date, or LLM returns invalid JSON.
+        ValueError: If no brief exists for the given date.
     """
     if brief_date is None:
         brief_date = date.today().isoformat()
@@ -308,9 +315,23 @@ async def generate_theses(
         data = json.loads(raw)
         theses_data: list[dict] = data["theses"]
     except (json.JSONDecodeError, KeyError) as exc:
-        raise ValueError(
-            f"LLM returned invalid thesis JSON: {exc}\nRaw output: {raw[:500]}"
-        ) from exc
+        # The model can legitimately decline to fabricate theses from a thin
+        # brief (no divergences/events to ground a falsifiable claim) and
+        # explain why in prose instead of JSON — that's correct behaviour
+        # per the no-lookahead-bias principle, not a crash. Any other
+        # malformed-JSON case (real bug, truncated output, ...) surfaces the
+        # same way: 0 theses, reason preserved for a human to read, instead
+        # of an unhandled exception aborting `pathos loop`/`pathos cycle`.
+        logger.warning(
+            f"THESIS: LLM did not return theses JSON ({exc}) — "
+            f"treating as 0 theses proposed. Raw output: {raw[:2000]}"
+        )
+        return ThesisResult(
+            theses_created=0,
+            watchlist_created=0,
+            thesis_ids=[],
+            refusal_reason=raw[:2000],
+        )
 
     thesis_ids: list[int] = []
     watchlist_count = 0

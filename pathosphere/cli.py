@@ -1231,12 +1231,19 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
     ))
     conn.close()
 
-    click.echo(
-        f"\nTheses generated:\n"
-        f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
-        f"  Watchlist: +{result.watchlist_created} items\n"
-        f"  IDs      : {result.thesis_ids}"
-    )
+    if result.theses_created == 0 and result.refusal_reason:
+        click.echo(
+            "\nNo theses proposed — the model judged today's signals too thin "
+            "to ground a falsifiable thesis. Reasoning:\n"
+            f"{result.refusal_reason}"
+        )
+    else:
+        click.echo(
+            f"\nTheses generated:\n"
+            f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
+            f"  Watchlist: +{result.watchlist_created} items\n"
+            f"  IDs      : {result.thesis_ids}"
+        )
 
 
 @thesis.command("list")
