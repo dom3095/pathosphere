@@ -20,6 +20,7 @@ from pathosphere.config import get_settings
 from pathosphere.llm.client import LLMClient
 from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
 from pathosphere.market.prices import fetch_price
+from pathosphere.market.technicals import fetch_technicals, render_technicals_text
 
 _N_DEFAULT = 3
 
@@ -59,6 +60,7 @@ def _save_thesis(
     price_snapshot: float | None,
     debate_id: int | None = None,
     fundamentals_json: str | None = None,
+    technicals_json: str | None = None,
 ) -> int:
     causal_chain_doc = {
         "steps": t.get("causal_chain", []),
@@ -70,8 +72,9 @@ def _save_thesis(
         INSERT INTO theses (
             title, causal_chain, instrument, direction,
             horizon_days, invalidation, confidence, status,
-            sources_json, price_snapshot, debate_id, fundamentals_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+            sources_json, price_snapshot, debate_id, fundamentals_json,
+            technicals_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)
         """,
         (
             t.get("title", ""),
@@ -85,6 +88,7 @@ def _save_thesis(
             price_snapshot,
             debate_id,
             fundamentals_json,
+            technicals_json,
         ),
     )
     return cur.lastrowid  # type: ignore[return-value]
@@ -175,7 +179,7 @@ Return ONLY valid JSON, no markdown fences, no extra text:
     ]
 
 
-# ── fundamentals enrichment (context layer — never decides) ─────────────────
+# ── market-context enrichment (context layer — never decides) ───────────────
 
 def _fundamentals_doc(ticker: str | None, cache: dict) -> str | None:
     """JSON doc {snapshot, text} for *ticker*, or None if unavailable.
@@ -200,14 +204,38 @@ def _fundamentals_doc(ticker: str | None, cache: dict) -> str | None:
     return json.dumps(doc) if doc else None
 
 
-def _fundamentals_review_prompt(items: list[dict]) -> list[dict]:
+def _technicals_doc(ticker: str | None, cache: dict) -> str | None:
+    """JSON doc {snapshot, text} of price-action technicals for *ticker*.
+
+    Same caching/degradation contract as _fundamentals_doc. Covers
+    ETF/futures/FX instruments where fundamentals degrade to minimal —
+    price history exists for anything tradable.
+    """
+    if not ticker:
+        return None
+    if ticker not in cache:
+        snap = fetch_technicals(ticker)
+        if snap is None:
+            logger.warning(f"THESIS: technicals unavailable for {ticker}")
+            cache[ticker] = None
+        else:
+            cache[ticker] = {
+                "snapshot": snap.to_dict(),
+                "text": render_technicals_text(snap),
+            }
+    doc = cache[ticker]
+    return json.dumps(doc) if doc else None
+
+
+def _market_review_prompt(items: list[dict]) -> list[dict]:
     system = (
         "You are a financial analyst supporting a geopolitical intelligence desk. "
         "You provide CONTEXT only, never decisions: do not approve, reject or score "
-        "any thesis. For each thesis, assess in 2-3 sentences whether the company "
-        "fundamentals SUPPORT, CONTRADICT or are NEUTRAL for the thesis direction, "
-        "and flag any balance-sheet risk (e.g. distress-zone Z-score) the human "
-        "approver should weigh. If data quality is low, say so explicitly."
+        "any thesis. For each thesis, assess in 2-3 sentences whether the available "
+        "market context (company fundamentals and/or price-action technicals) "
+        "SUPPORTS, CONTRADICTS or is NEUTRAL for the thesis direction, and flag any "
+        "risk (e.g. distress-zone Z-score, extreme RSI, elevated volatility) the "
+        "human approver should weigh. If data quality is low, say so explicitly."
     )
     blocks = []
     for item in items:
@@ -217,17 +245,17 @@ def _fundamentals_review_prompt(items: list[dict]) -> list[dict]:
             f"{item['text']}"
         )
     joined = "\n\n".join(blocks)
-    user = f"""Assess the fundamentals context for each trading thesis below.
+    user = f"""Assess the market context for each trading thesis below.
 
 Return ONLY valid JSON, no markdown fences, no extra text:
 
 {{
   "assessments": [
-    {{"thesis_id": 1, "assessment": "2-3 sentence fundamentals assessment"}}
+    {{"thesis_id": 1, "assessment": "2-3 sentence market-context assessment"}}
   ]
 }}
 
-## THESES AND FUNDAMENTALS
+## THESES AND MARKET CONTEXT
 {joined}
 """
     return [
@@ -236,18 +264,20 @@ Return ONLY valid JSON, no markdown fences, no extra text:
     ]
 
 
-async def _run_fundamentals_review(
+async def _run_market_review(
     conn: sqlite3.Connection,
     llm_client: LLMClient,
     items: list[dict],
 ) -> int:
-    """One batched LLM call: per-thesis fundamentals assessment.
+    """One batched LLM call: per-thesis market-context assessment
+    (fundamentals + technicals together — still a single call per run).
 
-    Stores each assessment inside theses.fundamentals_json (key
-    'llm_assessment'). Returns number of theses annotated. Raises on
-    LLM/JSON failure — the caller catches and degrades.
+    Stores each assessment (key 'llm_assessment') inside
+    theses.fundamentals_json when present, else theses.technicals_json
+    (ETF/futures often have technicals only). Returns number of theses
+    annotated. Raises on LLM/JSON failure — the caller catches and degrades.
     """
-    messages = _fundamentals_review_prompt(items)
+    messages = _market_review_prompt(items)
     raw = await llm_client.complete(messages, json_mode=True)
     data = json.loads(raw)
     assessments = {
@@ -262,14 +292,22 @@ async def _run_fundamentals_review(
         if not text:
             continue
         row = conn.execute(
-            "SELECT fundamentals_json FROM theses WHERE id = ?", (item["thesis_id"],)
+            "SELECT fundamentals_json, technicals_json FROM theses WHERE id = ?",
+            (item["thesis_id"],),
         ).fetchone()
-        if row is None or not row["fundamentals_json"]:
+        if row is None:
             continue
-        doc = json.loads(row["fundamentals_json"])
+        target = (
+            "fundamentals_json" if row["fundamentals_json"]
+            else "technicals_json" if row["technicals_json"]
+            else None
+        )
+        if target is None:
+            continue
+        doc = json.loads(row[target])
         doc["llm_assessment"] = text
         conn.execute(
-            "UPDATE theses SET fundamentals_json = ? WHERE id = ?",
+            f"UPDATE theses SET {target} = ? WHERE id = ?",  # noqa: S608 — column name from fixed whitelist above
             (json.dumps(doc), item["thesis_id"]),
         )
         annotated += 1
@@ -334,6 +372,7 @@ async def generate_theses(
     brief_date: str | None = None,
     n: int = _N_DEFAULT,
     enrich_fundamentals: bool = True,
+    enrich_technicals: bool = True,
     auto_open: bool = True,
     auto_open_threshold: float | None = None,
 ) -> ThesisResult:
@@ -347,9 +386,12 @@ async def generate_theses(
         enrich_fundamentals: fetch fundamentals per proposed ticker and run one
                       batched LLM review pass (context annotation, never a
                       decision). Any failure degrades to plain theses.
+        enrich_technicals: fetch price-action technicals per proposed ticker;
+                      folded into the SAME batched review call as fundamentals
+                      (no extra LLM cost). Any failure degrades gracefully.
         auto_open:    Auto-approve + auto-open a paper trade for theses at/above
                       `auto_open_threshold` confidence, evaluated AFTER the
-                      fundamentals review pass so a contradicted thesis still
+                      market review pass so a contradicted thesis still
                       benefits from that context before opening. Virtual money —
                       human reviews/closes after, never a pre-trade gate for
                       these. Everything below threshold stays 'pending' as
@@ -403,6 +445,7 @@ async def generate_theses(
     thesis_ids: list[int] = []
     watchlist_count = 0
     fund_cache: dict[str, dict | None] = {}
+    tech_cache: dict[str, dict | None] = {}
     review_items: list[dict] = []
     auto_open_candidates: list[tuple[int, float | None]] = []
 
@@ -411,14 +454,25 @@ async def generate_theses(
             return None
         return _fundamentals_doc(ticker, fund_cache)
 
-    def _queue_review(thesis_id: int, t: dict, ticker: str | None, fund_json: str | None) -> None:
-        if fund_json:
+    def _enrich_tech(ticker: str | None) -> str | None:
+        if not enrich_technicals:
+            return None
+        return _technicals_doc(ticker, tech_cache)
+
+    def _queue_review(
+        thesis_id: int, t: dict, ticker: str | None,
+        fund_json: str | None, tech_json: str | None,
+    ) -> None:
+        texts = [
+            json.loads(doc)["text"] for doc in (fund_json, tech_json) if doc
+        ]
+        if texts:
             review_items.append({
                 "thesis_id": thesis_id,
                 "title": t.get("title", ""),
                 "ticker": ticker,
                 "direction": t.get("direction"),
-                "text": json.loads(fund_json)["text"],
+                "text": "\n\n".join(texts),
             })
 
     for t in theses_data[:n]:
@@ -427,11 +481,14 @@ async def generate_theses(
         if ticker and price is None:
             logger.warning(f"THESIS: price fetch failed for {ticker}")
         fund_json = _enrich(ticker)
+        tech_json = _enrich_tech(ticker)
 
-        thesis_id = _save_thesis(conn, t, price, fundamentals_json=fund_json)
+        thesis_id = _save_thesis(
+            conn, t, price, fundamentals_json=fund_json, technicals_json=tech_json
+        )
         thesis_ids.append(thesis_id)
         watchlist_count += _save_watchlist_items(conn, thesis_id, t.get("indicators", []))
-        _queue_review(thesis_id, t, ticker, fund_json)
+        _queue_review(thesis_id, t, ticker, fund_json, tech_json)
         auto_open_candidates.append((thesis_id, t.get("confidence")))
 
         logger.info(
@@ -445,24 +502,28 @@ async def generate_theses(
             # Reuse already-fetched price if same ticker
             alt_price = price if alt_ticker == ticker else fetch_price(alt_ticker) if alt_ticker else None
             alt_fund = _enrich(alt_ticker)
-            alt_id = _save_thesis(conn, alt, alt_price, fundamentals_json=alt_fund)
+            alt_tech = _enrich_tech(alt_ticker)
+            alt_id = _save_thesis(
+                conn, alt, alt_price, fundamentals_json=alt_fund, technicals_json=alt_tech
+            )
             thesis_ids.append(alt_id)
             watchlist_count += _save_watchlist_items(conn, alt_id, alt.get("indicators", []))
-            _queue_review(alt_id, alt, alt_ticker, alt_fund)
+            _queue_review(alt_id, alt, alt_ticker, alt_fund, alt_tech)
             auto_open_candidates.append((alt_id, alt.get("confidence")))
             logger.info(
                 f"THESIS: alt id={alt_id} | {alt.get('title', '')} | "
                 f"{alt_ticker} {alt.get('direction')}"
             )
 
-    # ── fundamentals review pass: ONE batched LLM call, degrades on failure ──
+    # ── market review pass (fundamentals + technicals together):
+    # ONE batched LLM call, degrades on failure ──
     if review_items:
         try:
-            annotated = await _run_fundamentals_review(conn, llm_client, review_items)
-            logger.info(f"THESIS: fundamentals review annotated {annotated} theses")
+            annotated = await _run_market_review(conn, llm_client, review_items)
+            logger.info(f"THESIS: market review annotated {annotated} theses")
         except Exception as exc:
             logger.warning(
-                f"THESIS: fundamentals review failed ({exc}) — theses saved without assessment"
+                f"THESIS: market review failed ({exc}) — theses saved without assessment"
             )
 
     conn.commit()
@@ -472,8 +533,8 @@ async def generate_theses(
         f"{watchlist_count} watchlist items"
     )
 
-    # ── auto-open pass: AFTER the fundamentals review so a thesis whose
-    # fundamentals contradict it still benefits from that context first ──
+    # ── auto-open pass: AFTER the market review so a thesis whose
+    # fundamentals/technicals contradict it still benefits from that context first ──
     auto_opened_ids: list[int] = []
     if auto_open:
         threshold = (

@@ -1,6 +1,26 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: backfill storico eventi (CP-027 parte 1) — branch `feat/historical-events-backfill`
+## Fase corrente: enrichment technicals (analisi finanziaria price-action) — branch `feat/stock-technicals`
+
+**2026-07-15 — modulo technicals implementato, integrato, testato:**
+
+- `market/technicals.py` — `fetch_technicals(ticker)` (1y daily yfinance): momentum 1w/1m/3m/6m/1y,
+  volatilità 21gg annualizzata, RSI-14 Wilder, distanze SMA 20/50/200, range 52w, max drawdown,
+  trend volume 21/63gg; `render_technicals_text()` template deterministico. Contratto degradazione
+  identico a fundamentals (None solo su fallimento totale, mai eccezioni). Descrittivo, MAI segnale.
+- Migration `theses.technicals_json` (JSON snapshot+testo, 1:1 con tesi, no-lookahead)
+- Integrato in `generate_theses` E `run_debate` (stessi helper condivisi, no drift): cache intra-run
+  separata, review LLM batch unificata "market review" (fundamentals+technicals stesso prompt —
+  **zero call LLM extra**), assessment in fundamentals_json con fallback technicals_json (ETF/future)
+- CLI: `pathos technicals <ticker>`, `--no-technicals` su generate+debate, sezione in `thesis show`
+- Test: +25 (22 unit technicals, 3 integrazione thesis) → **628 verdi**; ruff baseline invariata
+  (9 pre-esistenti, 0 nuove). Prova CLI reale via subagent: AAPL plausibile, ticker finto degrada, exit 1.
+
+**Prossima azione**: commit + push + PR branch `feat/stock-technicals`.
+
+---
+
+## Fase precedente: backfill storico eventi (CP-027 parte 1) — branch `feat/historical-events-backfill`
 
 **2026-07-14 notte (3ª sessione) — 4 ingestori storici implementati e testati:**
 

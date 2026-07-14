@@ -182,6 +182,7 @@ erDiagram
         TEXT sources_json "JSON array di URL"
         REAL price_snapshot "prezzo snapshot al momento generazione (no-lookahead)"
         TEXT fundamentals_json "JSON: snapshot ratio/Altman Z/Piotroski F + testo + llm_assessment (NULL se non disponibili)"
+        TEXT technicals_json "JSON: snapshot price-action (momentum/RSI/SMA/52w/drawdown) + testo + llm_assessment fallback (NULL se storico assente)"
         TEXT created_at "ISO 8601"
     }
 

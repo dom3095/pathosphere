@@ -1,6 +1,50 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-14 notte (3ª sessione) — NUOVO: backfill storico eventi (CP-027 parte eventi) su branch `feat/historical-events-backfill` (da `feat/fundamentals-analysis`), 603 test verdi. CP-029 ancora aperto: run debate id=4 lanciato dall'utente in background, esito da verificare.*
+*Aggiornato: 2026-07-15 — NUOVO: enrichment technicals (analisi finanziaria price-action) su branch `feat/stock-technicals` (da `feat/historical-events-backfill`), 628 test verdi. CP-029 ancora aperto: run debate id=4 lanciato dall'utente, esito da verificare.*
+
+## Sessione 2026-07-15 — enrichment technicals (branch `feat/stock-technicals`)
+
+Branch: `feat/stock-technicals` (creato da `feat/historical-events-backfill`, il più recente — su
+richiesta esplicita). Richiesta: "modulo di analisi finanziaria delle azioni in borsa, integrato
+nel flusso". I fondamentali (bilanci) esistevano già (PR #14) — costruita la metà mancante:
+**analisi price-action/tecnica**, complementare per design (i fondamentali valgono solo per
+EQUITY e degradano a minimal proprio su ETF/future/FX — BZ=F, ITA, FRO — dove invece lo storico
+prezzi esiste sempre).
+
+**Cosa è stato fatto**:
+- `pathosphere/market/technicals.py`: `fetch_technicals(ticker)` — 1 anno daily yfinance
+  (`auto_adjust=True`) → momentum 1w/1m/3m/6m/1y (offset giorni di borsa), volatilità 21gg
+  annualizzata, RSI-14 Wilder, distanze SMA 20/50/200, range 52w, max drawdown, rapporto volume
+  21/63gg; `data_quality` full≥200/partial≥60/minimal; `render_technicals_text()` template
+  deterministico (no LLM) con caveat "not a trading signal". Contratto degradazione identico a
+  fundamentals: None solo su fallimento totale (<2 barre), mai eccezioni. **Descrittivo, mai
+  decisionale** (principio "core = agent semantico, non quant" rispettato).
+- Migration `theses.technicals_json` (stesso razionale 1:1-snapshot di fundamentals_json).
+- Integrazione in ENTRAMBE le pipeline (`thesis.py::generate_theses` + `debate.py::_persist_theses`
+  che ne riusa gli helper — no drift): cache intra-run separata, `--no-technicals` indipendente
+  da `--no-fundamentals`.
+- **Review LLM unificata**: `_run_fundamentals_review` → `_run_market_review` — fundamentals +
+  technicals nello STESSO prompt batch, quindi **zero call LLM extra** rispetto a prima.
+  Assessment salvato in `fundamentals_json.llm_assessment`; fallback `technicals_json` quando i
+  fondamentali mancano (caso ETF/future) — prima quelle tesi non ricevevano alcun assessment.
+- CLI: `pathos technicals <ticker>` (ispezione manuale), sezione Technicals in `thesis show`.
+- Test: 22 unit (`tests/test_technicals.py`, yfinance mockato) + 3 integrazione in `test_thesis.py`
+  (technicals-only con fallback assessment, entrambi i layer con review unica, flag disabilitato);
+  patch `fetch_technicals` aggiunto a tutti i test esistenti di thesis/debate (evita rete in pytest).
+  **628 verdi** (era 603). Ruff: 9 violazioni pre-esistenti invariate, 0 nuove.
+- Prova reale via subagent: `pathos technicals AAPL` numeri plausibili (RSI 62, +15.4% su SMA200),
+  ticker inesistente degrada pulito con exit 1, `--no-technicals` presente in entrambi gli help.
+- Docs: wiki §8.8 + CLI ref, roadmap 3c, schema.md (colonna), LOOP_STATE, questo handoff.
+
+**Limiti dichiarati**: EOD only; RSI/SMA su orizzonti tesi 7-30gg sono contesto, non predizione
+(caveat nel testo renderizzato); stesso rate-limit yfinance dei fondamentali (fetch sequenziale,
+nessun retry v1); snapshot congelato alla generazione (coerente no-lookahead).
+
+**Prossima azione**: PR di questo branch. Poi: primo `thesis generate` reale con entrambi i layer
+(primo esercizio vero della market review unificata). Restano aperti: CP-029 (esito run debate
+id=4), backfill storico da lanciare (branch precedente), parte 2 CP-027 (serie storiche prezzi).
+
+---
 
 ## Sessione 2026-07-14 (3ª) — backfill storico eventi (CP-027 parte 1)
 

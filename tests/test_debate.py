@@ -333,7 +333,8 @@ def test_run_debate_full(tmp_db):
     mock_claude.complete = AsyncMock(return_value=_SAMPLE_SYNTHESIS)
 
     with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
-         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None), \
+         patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):
         result = asyncio.run(
             run_debate(tmp_db, mock_qwen, mock_claude, brief_date="2026-06-23", n_theses=3)
         )
@@ -395,7 +396,8 @@ def test_run_debate_fundamentals_enrichment(tmp_db):
     ])
 
     with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
-         patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot):
+         patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot), \
+         patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):
         result = asyncio.run(
             run_debate(tmp_db, mock_qwen, mock_claude, brief_date="2026-06-23", n_theses=3)
         )
@@ -419,7 +421,8 @@ def test_run_debate_auto_open_high_confidence(tmp_db):
 
     with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
          patch("pathosphere.market.trading.fetch_price", return_value=100.0), \
-         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None), \
+         patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):
         init_portfolios(tmp_db)
         result = asyncio.run(
             run_debate(
@@ -447,7 +450,8 @@ def test_run_debate_auto_open_disabled(tmp_db):
 
     with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
          patch("pathosphere.market.trading.fetch_price", return_value=100.0), \
-         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None), \
+         patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):
         init_portfolios(tmp_db)
         result = asyncio.run(
             run_debate(

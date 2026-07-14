@@ -1333,13 +1333,15 @@ def thesis() -> None:
               help="LLM backend override (default: from REASONING_MODEL in .env).")
 @click.option("--no-fundamentals", is_flag=True, default=False,
               help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+@click.option("--no-technicals", is_flag=True, default=False,
+              help="Skip technicals (price-action) enrichment.")
 @click.option("--no-auto-open", is_flag=True, default=False,
               help="Skip auto-approve+auto-open for high-confidence theses — "
                    "all theses stay 'pending' for manual approval.")
 @click.option("--auto-open-threshold", default=None, type=float,
               help="Confidence cutoff for auto-open (default: from settings, 0.6).")
 def thesis_generate(brief_date: str | None, n: int, model: str | None,
-                    no_fundamentals: bool, no_auto_open: bool,
+                    no_fundamentals: bool, no_technicals: bool, no_auto_open: bool,
                     auto_open_threshold: float | None) -> None:
     """Generate theses from today's brief (fast, single LLM call)."""
     import asyncio
@@ -1355,6 +1357,7 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
     result = asyncio.run(generate_theses(
         conn, llm_client, brief_date=brief_date, n=n,
         enrich_fundamentals=not no_fundamentals,
+        enrich_technicals=not no_technicals,
         auto_open=not no_auto_open,
         auto_open_threshold=auto_open_threshold,
     ))
@@ -1514,6 +1517,15 @@ def thesis_show(thesis_id: int) -> None:
         if assessment:
             click.echo(f"\n  [LLM assessment] {assessment}")
 
+    if "technicals_json" in thesis.keys() and thesis["technicals_json"]:
+        import json as _json
+        tech = _json.loads(thesis["technicals_json"])
+        click.echo("\n── Technicals ───────────────────────────────────────────")
+        click.echo(tech.get("text", "(no text)"))
+        assessment = tech.get("llm_assessment")
+        if assessment:
+            click.echo(f"\n  [LLM assessment] {assessment}")
+
     click.echo(f"{'═' * 70}\n")
 
 
@@ -1595,13 +1607,16 @@ def thesis_reject(thesis_id: int, reason: str) -> None:
               help="Number of primary theses to generate.")
 @click.option("--no-fundamentals", is_flag=True, default=False,
               help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+@click.option("--no-technicals", is_flag=True, default=False,
+              help="Skip technicals (price-action) enrichment.")
 @click.option("--no-auto-open", is_flag=True, default=False,
               help="Skip auto-approve+auto-open for high-confidence theses — "
                    "all theses stay 'pending' for manual approval.")
 @click.option("--auto-open-threshold", default=None, type=float,
               help="Confidence cutoff for auto-open (default: from settings, 0.6).")
 def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
-                  no_auto_open: bool, auto_open_threshold: float | None) -> None:
+                  no_technicals: bool, no_auto_open: bool,
+                  auto_open_threshold: float | None) -> None:
     """Generate theses via multi-persona debate (Qwen x13 + Claude x1).
 
     Pipeline:
@@ -1645,6 +1660,7 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
         run_debate(
             conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n,
             enrich_fundamentals=not no_fundamentals,
+            enrich_technicals=not no_technicals,
             auto_open=not no_auto_open,
             auto_open_threshold=auto_open_threshold,
         )
@@ -1686,6 +1702,32 @@ def fundamentals_cmd(ticker: str) -> None:
         raise SystemExit(1)
 
     click.echo("\n" + render_fundamentals_text(snap))
+    if snap.warnings:
+        click.echo("\nWarnings:")
+        for w in snap.warnings:
+            click.echo(f"  - {w}")
+    click.echo("")
+
+
+# ─── technicals ───────────────────────────────────────────────────────────────
+
+@cli.command("technicals")
+@click.argument("ticker")
+def technicals_cmd(ticker: str) -> None:
+    """Show price-action technicals for TICKER (momentum, RSI, SMAs, 52w range).
+
+    Manual inspection tool — same data the thesis pipeline attaches to each
+    proposed instrument. Works for ETF/futures/FX where fundamentals do not
+    apply. Degrades gracefully: missing data shown as n/d.
+    """
+    from pathosphere.market.technicals import fetch_technicals, render_technicals_text
+
+    snap = fetch_technicals(ticker)
+    if snap is None:
+        click.echo(f"No price history for '{ticker}' (bad ticker or yfinance unavailable).")
+        raise SystemExit(1)
+
+    click.echo("\n" + render_technicals_text(snap))
     if snap.warnings:
         click.echo("\nWarnings:")
         for w in snap.warnings:

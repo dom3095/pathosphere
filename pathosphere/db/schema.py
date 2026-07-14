@@ -486,6 +486,12 @@ _MIGRATIONS = [
     # already resolved to "no location" every run.
     "ALTER TABLE events ADD COLUMN geoloc_checked INTEGER NOT NULL DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS idx_events_geoloc_checked ON events(geoloc_checked)",
+    # technicals enrichment: JSON snapshot of price-action context (returns,
+    # volatility, RSI, SMA distances, 52w range, rendered text, optional LLM
+    # assessment) captured at thesis-generation time — same 1:1-with-thesis
+    # snapshot rationale as fundamentals_json. Covers ETF/futures/FX where
+    # fundamentals degrade to minimal. NULL = price history unavailable.
+    "ALTER TABLE theses ADD COLUMN technicals_json TEXT",
 ]
 
 
