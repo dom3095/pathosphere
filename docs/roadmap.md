@@ -204,11 +204,11 @@ dedicata con validazione preventiva (stesso pattern notebook-prima-del-codice us
 va infilato di corsa. Vedi anche la feature auto-open (Fase 3, sotto) per il contesto della
 discussione che ha originato questa idea.
 
-**Dipendenza non risolta**: questa fase presuppone di sapere QUANDO sono iniziate le situazioni note
-(Ucraina 2022-02-24, Crimea 2014...) — dato che oggi non esiste nel DB, che parte da quando l'ingest
-gira. Stessa lacuna blocca anche l'idea (discussa, non approvata) di correlazione storica
-eventi↔movimenti di borsa, che avrebbe bisogno di serie storiche prezzi mai persistite. Vedi
-**CP-027** in `CRITICAL_POINTS.md` — nessuna fonte scelta, nessuna azione presa, solo tracciato.
+**Dipendenza — parte RISOLTA 2026-07-14** (branch `feat/historical-events-backfill`): la fase
+presuppone di sapere QUANDO sono iniziate le situazioni note (Ucraina 2022-02-24, Crimea 2014...).
+Backfill eventi storici ora disponibile — `pathos ingest ucdp|who-don|reliefweb|econ-crises` (conflitti
+1989→, epidemie 1996→, disastri 1981→, crisi economiche) — vedi wiki.md §5.5. Resta aperta solo la
+parte 2 di **CP-027**: serie storiche prezzi/economiche (correlazione eventi↔borsa), mai persistite.
 
 ---
 
@@ -233,8 +233,8 @@ eventi↔movimenti di borsa, che avrebbe bisogno di serie storiche prezzi mai pe
 
 | Fonte | Motivo |
 |---|---|
-| ACLED, UCDP | Frequenza settimanale, parzialmente coperto da GDELT |
-| WHO DON, ProMED | Nessuna crisi sanitaria in corso nel MVP |
+| ACLED | Frequenza settimanale, parzialmente coperto da GDELT — UCDP invece incluso come backfill storico one-off (§5.5) |
+| ProMED | Nessuna crisi sanitaria in corso nel MVP — WHO DON invece incluso come backfill storico (§5.5) |
 | Cloudflare Radar | IODA già copre il segnale di blackout internet |
 | FRED (macro) | Utile per contesto, non critico per MVP semiconduttori |
 | OpenSky (traffico aereo) | Fuori scope per ora |
