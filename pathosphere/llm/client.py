@@ -125,22 +125,27 @@ class LLMClient:
 # Helpers
 
 
-_JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*\n?(.*?)\n?```\s*$", re.DOTALL)
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
 
 
 def _strip_json_fence(raw: str) -> str:
-    """Strip a wrapping ```json ... ``` (or bare ``` ... ```) code fence.
+    """Extract a ```json ... ``` (or bare ``` ... ```) fenced block from the
+    response, ignoring any prose before or after it.
 
-    The json_mode system prompt explicitly says "no markdown fences", but
-    models don't reliably honour that (observed on the real thesis-generation
-    pipeline, CP-026) — every json_mode caller was doing its own
-    `json.loads(raw)` and crashing/degrading on a well-formed response the
-    model had merely wrapped in a fence. Centralized here so every current
-    and future json_mode caller gets clean JSON without repeating this.
-    No-op if there's no fence (returns the input stripped, unchanged shape).
+    The json_mode system prompt explicitly says "no markdown fences" and "no
+    text outside the JSON structure", but models don't reliably honour
+    either (observed on the real thesis-generation pipeline, CP-026 —
+    including trailing prose AFTER the closing fence, e.g.
+    '```json\\n{...}\\n```\\nHope this helps!', which an
+    anchored-to-end-of-string match would miss). Searches for the first
+    fenced block anywhere in the string instead of anchoring the whole
+    string, so leading and trailing text around the fence are both
+    discarded. Centralized here so every current and future json_mode
+    caller gets clean JSON without repeating this. No-op if there's no
+    fence at all (returns the input stripped, unchanged shape).
     """
     stripped = raw.strip()
-    m = _JSON_FENCE_RE.match(stripped)
+    m = _JSON_FENCE_RE.search(stripped)
     return m.group(1).strip() if m else stripped
 
 

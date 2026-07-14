@@ -59,6 +59,19 @@ def test_strip_json_fence_multiline_body():
     assert json.loads(_strip_json_fence(raw)) == {"theses": [1, 2, 3]}
 
 
+def test_strip_json_fence_trailing_prose_after_closing_fence():
+    """CP-026 regression: an anchored end-of-string match missed this case —
+    the model adds a sentence after the closing fence despite instructions
+    not to add text outside the JSON structure."""
+    raw = '```json\n{"a": 1}\n```\nHope this helps!'
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
+def test_strip_json_fence_leading_and_trailing_prose():
+    raw = 'Sure, here is the JSON:\n```json\n{"a": 1}\n```\nLet me know if you need more.'
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
 def test_complete_claude_json_mode_strips_fence(monkeypatch):
     """Integration: LLMClient.complete(json_mode=True) must hand callers
     clean JSON even when the model wraps it in a fence despite instructions
