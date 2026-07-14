@@ -504,3 +504,37 @@ correggere.
 
 **Test**: 8 nuovi in `test_llm_client.py` (regression guard su flag subprocess + fence-stripping),
 554 totali verdi.
+
+---
+
+## CP-027: nessuna fonte di dati storici — eventi geopolitici pre-ingest e serie storiche prezzi (aperto, non iniziato)
+
+**Contesto (2026-07-14)**: due esigenze emerse in discussione con l'utente, entrambe bloccate dalla
+stessa lacuna strutturale — il progetto non persiste **nulla di storico** oltre a ciò che ingerisce
+giorno per giorno da quando gira. Non un bug, una fonte dati mai costruita.
+
+1. **Eventi geopolitici storici** — necessari per Fase 5 "situazioni" (`docs/roadmap.md`): per
+   riconoscere che la guerra Ucraina è iniziata il 2022-02-24, o distinguere Crimea 2014 da Golfo 1
+   vs Golfo 2, serve sapere quando sono iniziati — questi eventi non sono nel DB (che parte da quando
+   l'ingest ha iniziato a girare, molto dopo).
+2. **Serie storiche prezzi/economiche** — necessarie per l'idea (discussa, non approvata per ora)
+   di correlazione storica eventi↔movimenti di borsa: `market/prices.py::fetch_price` prende solo
+   l'ultimo close (finestra 5 giorni), nessuno storico salvato. Senza serie storica non si può
+   chiedere "cosa è successo al prezzo X nei giorni dopo l'evento Y accaduto 3 anni fa".
+
+**Non ancora iniziato — nessuna azione presa.** Fonti candidate da valutare quando si apre sessione
+dedicata (non decise, solo annotate):
+- Eventi storici: GDELT ha storico dal 1979 (stessa fonte già in uso per l'ingest corrente, query
+  su range di date passate); Wikidata (`start_date`/`P580` su entità conflitto) per ancoraggi
+  affidabili; ACLED/UCDP (oggi scope-out in roadmap per cadenza settimanale, ma potrebbero avere
+  dataset storici scaricabili one-off, cadenza non rilevante per uno storico statico)
+- Prezzi storici: `yfinance` stesso supporta `history(period="max")`/range di date esplicite — già
+  disponibile nella libreria già in uso, manca solo la persistenza (nuova tabella o Parquet, coerente
+  col principio già in CLAUDE.md "raw in Parquet è la fonte di verità ricostruibile")
+- Eventi economici: nessuna fonte gratuita ancora scelta — FRED è già previsto in CLAUDE.md come
+  fonte futura ("non incluso nell'MVP") e potrebbe coprire in parte, ma un calendario economico
+  vero e proprio (earnings, CPI/NFP release date) non ha candidato assegnato
+
+**Impatto**: basso ora — nessun blocco su lavoro corrente, entrambe le feature che ne dipendono
+(Fase 5 situazioni, correlazione eventi↔prezzi) sono già esplicitamente rimandate. Serve però essere
+tracciato per non perdere il filo quando si riprende in mano una delle due.

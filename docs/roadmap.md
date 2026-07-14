@@ -204,6 +204,12 @@ dedicata con validazione preventiva (stesso pattern notebook-prima-del-codice us
 va infilato di corsa. Vedi anche la feature auto-open (Fase 3, sotto) per il contesto della
 discussione che ha originato questa idea.
 
+**Dipendenza non risolta**: questa fase presuppone di sapere QUANDO sono iniziate le situazioni note
+(Ucraina 2022-02-24, Crimea 2014...) — dato che oggi non esiste nel DB, che parte da quando l'ingest
+gira. Stessa lacuna blocca anche l'idea (discussa, non approvata) di correlazione storica
+eventi↔movimenti di borsa, che avrebbe bisogno di serie storiche prezzi mai persistite. Vedi
+**CP-027** in `CRITICAL_POINTS.md` — nessuna fonte scelta, nessuna azione presa, solo tracciato.
+
 ---
 
 ## MVP verticale
