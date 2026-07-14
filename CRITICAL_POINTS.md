@@ -538,3 +538,85 @@ dedicata (non decise, solo annotate):
 **Impatto**: basso ora — nessun blocco su lavoro corrente, entrambe le feature che ne dipendono
 (Fase 5 situazioni, correlazione eventi↔prezzi) sono già esplicitamente rimandate. Serve però essere
 tracciato per non perdere il filo quando si riprende in mano una delle due.
+
+---
+
+## CP-028: code review pre-merge (8 angoli + verifica indipendente), 10 bug/gap trovati e risolti — **RISOLTO 2026-07-14**
+
+**Contesto**: prima del merge di `feat/fundamentals-analysis` (13+ commit, fundamentals+CP-008/010/
+012/022/025/026+auto-open), l'utente ha chiesto una code review vera invece di fidarsi solo di test+
+esecuzione reale. Eseguita review strutturata: 8 angoli di ricerca indipendenti (line-by-line,
+removed-behavior, cross-file tracer, reuse, simplification, efficiency, altitude, conventions
+CLAUDE.md) su `git diff main...HEAD`, poi verifica 1-voto per ogni candidato a bassa-confidenza
+(trovato da un solo angolo). 6 bug confermati, 1 plausibile, 3 di efficienza/manutenzione confermati
+per consenso multi-angolo. Tutti fixati su richiesta esplicita dell'utente ("fixerei tutto prima").
+
+**1. Crash TypeError su confidence non numerica** (`agent/thesis.py::_maybe_auto_open`) — il confronto
+`confidence < threshold` non validava il tipo prima di confrontare; un `confidence` LLM non numerico
+(json_mode è un'istruzione di prompt, non uno schema) sollevava `TypeError` non gestita **dopo** che
+le tesi erano già committate, esattamente il crash che il fix parallelo per il rifiuto JSON doveva
+evitare. Fix: `isinstance(confidence, (int, float))` prima del confronto.
+
+**2. Il ciclo automatico non usava il fix CP-022** (`cycle/orchestrator.py::_phase_extract`) — non
+chiamava mai `geolocate_rss_events()`, solo `pathos extract` manuale ce l'aveva. Fix: aggiunta la
+chiamata, stesso ordine del comando CLI (prima di `geocode_events`).
+
+**3. `pathos thesis debate` senza fundamentals/auto-open** (`agent/debate.py::_persist_theses`) —
+pipeline alternativa mai aggiornata insieme a `generate_theses`, divergeva in silenzio. Fix: riscritta
+per riusare le stesse funzioni private di `thesis.py` (`_fundamentals_doc`, `_run_fundamentals_review`,
+`_maybe_auto_open`) invece di reimplementarle — ora `async`, nuovi flag CLI `--no-fundamentals`/
+`--no-auto-open`/`--auto-open-threshold` su `pathos thesis debate`, pari a `thesis generate`.
+
+**4. Fence-stripping non gestiva testo dopo la chiusura** (`llm/client.py::_strip_json_fence`) — regex
+ancorata a fine-stringa mancava testo LLM dopo ` ``` ` (es. "...```\nHope this helps!"), riproducendo
+lo stesso crash che il fix di oggi per CP-026 doveva risolvere. Fix: `re.search` non ancorato invece
+di `re.match` ancorato — estrae il primo blocco fenced ovunque si trovi, ignora prosa prima/dopo.
+
+**5. Mismatch alias entità in geoloc RSS** (`semantic/extract.py::_rss_event_countries`) — mancava il
+filtro/risoluzione `canonical_entity_id` presente nella funzione gemella `compute_major_powers`.
+Verificato con dato reale: entità "turkey" (minuscolo, alias) vs "Turkey" (canonica) — mismatch
+case-sensitive che avrebbe fatto sfuggire un major power alla classificazione. Fix: self-join
+`JOIN entities canon ON canon.id = COALESCE(en.canonical_entity_id, en.id)`, stesso idiom già
+stabilito in `graph.py::build_entity_links`.
+
+**6. Auto-open saltava `validate_ticker`** (plausibile, non confermato al 100% — l'errore finale è
+comunque specifico, non generico come temuto) — il path manuale (`thesis approve`) validava il ticker
+prima di approvare, l'auto-open no. Fix: risolto insieme al punto 7 (vedi sotto).
+
+**7. `_maybe_auto_open` duplicava la sequenza approve+open del CLI** — stesso identico flusso
+(`approve_thesis`→`create_thesis_prediction`→`open_agent_trade`→`link_thesis_prediction_to_trade`)
+scritto due volte, una in `cli.py` (due comandi separati) e una in `thesis.py`. Fix combinato con #6:
+estratte `approve_thesis_with_prediction()` e `open_trade_and_link()` in `agent/approval.py` — unica
+fonte di verità usata sia da `pathos thesis approve`/`pathos trade open` sia da `_maybe_auto_open`,
+la prima ora include la validazione ticker che prima solo il path manuale aveva.
+
+**8. `get_connection()` rigirava tutte le migration ad ogni chiamata** — trovato indipendentemente da
+2 angoli (efficiency + cross-file): 6 chiamate per `pathos cycle`, una per ogni rerun della dashboard
+Streamlit (processo long-lived). Fix: cache per-processo (`_migrated_paths: set[Path]`) — un path già
+migrato in questo processo salta il giro di ~20 ALTER/CREATE idempotenti su connessioni successive.
+Nessun coordinamento cross-processo necessario (migration list additiva e idempotente).
+
+**9. `compute_major_powers()` ricalcolata due volte per run** — trovato indipendentemente da 3 angoli
+(simplification + efficiency + altitude): `pathos extract --geolocate-qwen` chiama sia
+`geolocate_rss_events` sia `geolocate_ambiguous_events_qwen`, ciascuna ricalcolava da zero la query
+più costosa del modulo. Fix: nuovo parametro opzionale `major_powers` su entrambe le funzioni;
+`compute_major_powers` (rinominata da `_compute_major_powers`, ora pubblica) calcolata una volta nel
+comando CLI e passata a entrambe.
+
+**10. `event_count` doppio conteggio nel brief** (cosmetico, confermato ma zero impatto funzionale —
+solo display in log/dashboard, nessuna logica ne dipende) — un evento presente sia in `divergences`
+sia in `recent_events` veniva contato due volte. Fix: dedup per `event_id`/`id` prima di sommare.
+
+**Verificato**: 579 test verdi (era 560 prima della review, +19: +11 dai fix di regressione
+(orchestrator geoloc, debate fundamentals/auto-open ×3, fence trailing-prose ×2, alias canonical,
+migration cache ×2, major_powers passthrough ×2, event_count dedup) + 8 test dedicati diretti per i
+punti 1/6/7 (TypeError guard su confidence stringa, validate_ticker verificato chiamato davvero con
+mock yfinance, `approve_thesis_with_prediction`/`open_trade_and_link` testate singolarmente:
+successo/ticker invalido/nessun ticker/stato non-pending/nessun portafoglio). Ruff pulito su tutti i
+file toccati (14 violazioni pre-esistenti sul resto del tree, invariate, verificate riga per riga
+come già presenti su `main` prima di questa sessione).
+
+**Metodo**: 8 subagent paralleli per la ricerca candidati, poi 7 subagent di verifica 1-voto
+indipendenti sui candidati a bassa confidenza (trovati da un solo angolo) — i 3 candidati trovati
+indipendentemente da 2-3 angoli diversi sono stati trattati come già verificati per consenso, senza
+ulteriore verifica dedicata.

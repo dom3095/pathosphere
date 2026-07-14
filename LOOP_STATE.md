@@ -1,6 +1,35 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: auto-open a soglia di confidence implementato (branch `feat/fundamentals-analysis`, PR #14)
+## Fase corrente: code review pre-merge completata, 10 bug/gap fixati (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 sera — Code review strutturata pre-merge (CP-028):**
+
+Utente ha chiesto "hai fatto code review? ci sono bug committati?" prima di mergiare PR #14. Fatta
+review con skill `/code-review --level high`: 8 angoli paralleli + verifica 1-voto sui candidati
+deboli. **10 problemi reali trovati** (6 confermati, 1 plausibile, 3 di efficienza per consenso
+multi-angolo), tutti fixati su richiesta esplicita ("fixerei tutto prima").
+
+Più gravi: crash TypeError post-commit in `_maybe_auto_open` (confidence non validata), ciclo
+automatico che non usava il fix CP-022 di oggi (`orchestrator.py` non chiamava mai
+`geolocate_rss_events`). Altri: `thesis debate` senza fundamentals/auto-open (ora riusa le funzioni
+di `thesis.py`), fence-stripping che non gestiva testo dopo la chiusura, mismatch alias entità in
+geoloc (verificato su dato reale "turkey"/"Turkey"), duplicazione approve+open CLI vs auto-open
+(estratte funzioni condivise in `agent/approval.py`, sistema anche gap validazione ticker), 2 fix
+efficienza (cache migration per-processo, major_powers calcolata una volta invece di due),
+doppio conteggio eventi nel brief (cosmetico).
+
+**Test**: 579 verdi (era 560, +19: +11 sui fix di regressione, +8 test dedicati diretti per i fix
+#1/#6/#7 — TypeError guard, validate_ticker chiamato davvero, approve_thesis_with_prediction/
+open_trade_and_link testate singolarmente). Ruff pulito, 14 violazioni pre-esistenti invariate.
+
+**Dettaglio**: CP-028 in `CRITICAL_POINTS.md`, sezione dedicata in `HANDOFF.md`.
+
+**Prossimo**: pronta per merge — nessun lavoro di codice noto in sospeso. Aspetta review umana su
+PR #14 (branch protection) + CI check `test` (ultimo controllo era `pending`, ricontrollare).
+
+---
+
+## Fase precedente: auto-open a soglia di confidence implementato (branch `feat/fundamentals-analysis`, PR #14)
 
 **2026-07-14 — Discussione utente su scope notizie + cadenza + autonomia → feature auto-open:**
 

@@ -1,6 +1,56 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-14 — auto-open a soglia di confidence implementato (branch `feat/fundamentals-analysis`, PR #14)*
+*Aggiornato: 2026-07-14 sera — code review pre-merge, 10 bug/gap trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)*
+
+## Code review pre-merge — 10 bug/gap trovati e risolti (2026-07-14 sera, branch `feat/fundamentals-analysis`, PR #14)
+
+**Perché**: prima di mergiare PR #14 (13+ commit di lavoro), l'utente ha chiesto esplicitamente "hai
+fatto code review? ci sono bug committati?" — non fidarsi solo di test+esecuzione reale. Invocata
+skill `/code-review --level high`: 8 angoli di ricerca indipendenti in parallelo (line-by-line,
+removed-behavior, cross-file tracer, reuse, simplification, efficiency, altitude, conventions
+CLAUDE.md) sul diff completo `main...HEAD`, poi verifica 1-voto dedicata per ogni candidato a bassa
+confidenza. Risultato: **6 bug confermati, 1 plausibile, 3 di efficienza/manutenzione confermati per
+consenso multi-angolo** — non solo debito cosmetico, bug funzionali reali su codice scritto nella
+stessa sessione. Utente ha chiesto di fixare tutto prima del merge: fatto.
+
+**I 2 più gravi** (entrambi colpivano feature costruite proprio oggi):
+1. **Crash post-commit**: `_maybe_auto_open` confrontava `confidence < threshold` senza validare il
+   tipo — un valore LLM non numerico faceva crashare `generate_theses` con `TypeError` non gestita
+   **dopo** che le tesi erano già salvate, lo stesso tipo di crash che il fix per il rifiuto JSON
+   (fatto prima nella stessa sessione) doveva prevenire.
+2. **Il ciclo automatico non usava il fix CP-022 di oggi**: `cycle/orchestrator.py::_phase_extract`
+   non chiamava mai `geolocate_rss_events()` — solo `pathos extract` manuale ce l'aveva. La
+   geolocalizzazione RSS costruita oggi non si sarebbe mai applicata in produzione automatica.
+
+**Altri 4 bug confermati**: `pathos thesis debate` (pipeline alternativa) non aveva mai fundamentals
+né auto-open — riscritta per riusare le stesse funzioni di `thesis.py` invece di reimplementarle,
+ora pari funzionalità; fence-stripping (fix di oggi per CP-026) non gestiva testo LLM dopo la fence
+di chiusura — regex cambiata da ancorata a ricerca; mismatch case-sensitive su alias entità nella
+geoloc RSS, verificato con dato reale nel DB (entità "turkey" minuscola); doppio conteggio eventi nel
+brief (cosmetico, solo display).
+
+**Duplicazione + gap validazione, risolti insieme**: `_maybe_auto_open` duplicava a mano la sequenza
+approve+open già scritta due volte nel CLI, E saltava la validazione ticker che il path manuale aveva
+— estratte `approve_thesis_with_prediction()`/`open_trade_and_link()` in `agent/approval.py`, unica
+fonte di verità ora usata da CLI e auto-open insieme.
+
+**2 fix di efficienza** (trovati per consenso da 2-3 angoli indipendenti, non verificati singolarmente
+ma corroborati): `get_connection()` rigirava tutte le ~20 migration ad ogni chiamata (6x per ciclo,
+1x per ogni rerun dashboard) — cache per-processo aggiunta; `compute_major_powers()` (rinominata da
+privata a pubblica) ricalcolata due volte nello stesso `pathos extract --geolocate-qwen` — ora
+calcolata una volta e passata a entrambe le funzioni che la usano.
+
+**Test**: 579 verdi (era 560 prima della review, +19: +11 dai fix di regressione, +8 test diretti
+dedicati per i punti 1/6/7 aggiunti a chiusura sessione — sotto). Ruff pulito sui file toccati (14 violazioni
+pre-esistenti sul resto del tree, verificate invariate rispetto a prima di questa sessione).
+
+**Dettaglio completo dei 10 punti**: CP-028 in `CRITICAL_POINTS.md`.
+
+**Nota di metodo**: 8 subagent paralleli per la ricerca (uno per angolo), poi subagent di verifica
+1-voto indipendenti sui candidati a bassa confidenza — nessuna verifica presa per buona senza
+controllo su file reali/dati reali del DB.
+
+---
 
 ## Auto-open a soglia di confidence (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
 
