@@ -91,6 +91,10 @@ Stato aggiornato: 2026-07-07.
   `theses.fundamentals_json` + 1 call LLM batch di review (annotazione, non decisione).
   Degrada senza bloccare; `--no-fundamentals` per saltare. CLI: `pathos fundamentals <ticker>`.
   SEC EDGAR rimandato a v2.
+- **Auto-open a soglia di confidence** (2026-07-14): tesi con `confidence ≥ 0.6` (configurabile,
+  `settings.auto_open_confidence_threshold`) auto-approvate e tradate subito dopo la review
+  fondamentali — soldi virtuali, revisione umana dopo invece di gate prima. Sotto soglia: flusso
+  manuale invariato. `--no-auto-open` / `--auto-open-threshold N` per override.
 
 ### 3d. Flusso approvazione CLI ✅
 
@@ -172,6 +176,33 @@ prodotto dati reali (0 righe al momento della prima verifica). Mappa/
 Narrazioni/Grafo entità già popolate con dati reali (8241 eventi, 9142
 entità, 749 divergenze). Verificata con `streamlit.testing.v1.AppTest` su
 tutte le 8 pagine contro il DB reale (nessuna eccezione).
+
+---
+
+## Fase 5 — Situazioni a lungo termine (pianificata, non iniziata)
+
+**Contesto (2026-07-14)**: il brief oggi lavora su due orizzonti — spot news (7gg, `_query_recent_events`
+CP-025) ed eventi fisici/divergenze. Nessuno cattura archi pluriennali (guerra Ucraina 2022-ongoing,
+Crimea 2014, ecc.) — una finestra a giorni fissi, per quanto allargata, tratta un conflitto lungo come
+la sua ultima settimana ("l'unghia del leone").
+
+**Design proposto** (discusso con l'utente, non ancora costruito):
+- Nuova tabella `situations` (label, `started_at`, `ended_at` NULL=ongoing, summary aggiornato
+  incrementalmente) + `situation_events` (link a eventi/`story_id`)
+- **Nessun backfill storico automatico** — il registro parte vuoto da quando il modulo viene
+  costruito, non pretende di sapere cos'è "la guerra di Crimea 2014" senza che qualcuno/qualcosa
+  gliel'abbia detto esplicitamente
+- Confini **semantici, non a giorni fissi**: al momento del brief, Claude giudica se una storia
+  recente appartiene a una situazione già tracciata (gli si passa label+summary brevi) o ne apre una
+  nuova — proposta LLM validabile/correggibile a mano, non merge cieco automatico (stessa cautela
+  imparata da CP-011/018/019/020/021: aggregazione automatica su similarità/entità condivise ha
+  già causato chain-collapse tre volte in questo progetto)
+- Brief risultante: sezione "SITUAZIONI IN CORSO" con arco temporale reale + ultimo sviluppo
+
+**Perché rimandato**: nuovo modulo (schema + logica + comando CLI), non un tweak — merita sessione
+dedicata con validazione preventiva (stesso pattern notebook-prima-del-codice usato per CP-022), non
+va infilato di corsa. Vedi anche la feature auto-open (Fase 3, sotto) per il contesto della
+discussione che ha originato questa idea.
 
 ---
 

@@ -1,6 +1,63 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-14 — primo ciclo reale eseguito, CP-025/CP-026 trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)*
+*Aggiornato: 2026-07-14 — auto-open a soglia di confidence implementato (branch `feat/fundamentals-analysis`, PR #14)*
+
+## Auto-open a soglia di confidence (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
+
+**Da dove nasce**: l'utente ha chiesto lo scope delle notizie passate all'LLM, poi ha sollevato due
+punti. Sulla cadenza: le tesi dovrebbero essere settimanali, non giornaliere ("a meno che non
+succeda l'apocalisse... se ci dovessero essere eventi enormi, mi aspetto che vengano intercettati").
+Verificato nel codice: già così — `thesis generate` non è mai nel loop automatico (`_phase_brief` in
+`cycle/orchestrator.py` rigenera solo il brief, mai le tesi), è sempre invocazione manuale. Ma
+l'utente ha aggiunto un punto più profondo: 7 giorni di lookback nel brief sono troppo pochi per un
+conflitto che dura mesi/anni ("basarsi sull'ultima settimana per Russia-Ucraina è come guardare
+l'unghia di un leone") — vuole confini **semantici** (1a guerra Golfo ≠ 2a ≠ Crimea 2014 ≠ Ucraina
+2022), non una finestra a giorni fissi comunque allargata. Discusso un design ("situazioni",
+tabella + link a eventi, popolata da giudizio LLM non merge automatico per evitare l'ennesimo
+chain-collapse) — **rimandato a sessione dedicata**, loggato in `docs/roadmap.md` Fase 5. Non
+costruito oggi.
+
+Sul secondo punto — "le tesi dovevano essere aperte in autonomia e poi, semmai, rifinite" — ho
+segnalato che questo contraddice testualmente CLAUDE.md ("Human-in-the-loop... Nessuna operazione
+autonoma", principio 2, marcato "non negoziabile"). L'utente ha chiarito: via di mezzo basata su
+**soglia di confidence**.
+
+**Implementato**: `config.py::auto_open_confidence_threshold` (default 0.6, calibrato sulle 7 tesi
+reali generate oggi prima di questo fix: Hormuz 0.62/0.65, tanker 0.55, difesa 0.58 — una soglia 0.6
+avrebbe aperto solo la tesi Hormuz primaria). `agent/thesis.py::_maybe_auto_open()` — dopo che ogni
+tesi (primaria + alternative) è salvata E dopo la review fondamentali batch (così una tesi che i
+fondamentali contraddicono beneficia comunque di quel contesto prima di aprire, non lo salta),
+per ogni candidato a/sopra soglia replica **esattamente** la sequenza manuale: `approve_thesis` →
+`create_thesis_prediction` → `open_agent_trade` → `link_thesis_prediction_to_trade`. Sotto soglia:
+comportamento invariato, resta `pending`.
+
+**Degrado esplicito**: se l'approvazione riesce ma l'apertura trade fallisce (es. portafogli non
+inizializzati, ticker senza prezzo), la tesi resta `approved` — **non torna `pending`** — stesso
+stato in cui finirebbe un flusso manuale con `approve` riuscito e `trade open` fallito separatamente;
+completabile dopo con `pathos trade open <id>`. Bug reale trovato e fixato durante lo sviluppo: la
+prima versione diceva nei log "left pending" quando in realtà lasciava `approved` — messaggio corretto
+prima del commit, non solo il comportamento.
+
+**CLI**: `--no-auto-open` (disattiva, tutto resta pending come da comportamento originale) e
+`--auto-open-threshold N` (override soglia) su `pathos thesis generate`.
+
+**CLAUDE.md aggiornato**: principio 2 ("Human-in-the-loop") riscritto per riflettere il comportamento
+reale — non più assoluto, ora esplicita la soglia e il fatto che vale solo per paper trading (soldi
+virtuali), mai per denaro reale.
+
+**Test**: 6 nuovi in `test_thesis.py` (unit su `_maybe_auto_open`: sotto soglia no-op, confidence
+None no-op, successo con portafogli pronti, degrado senza portafogli; integrazione su
+`generate_theses`: solo la tesi sopra soglia auto-aperta, flag disabilitato tiene tutto pending).
+560 test totali verdi (era 554). Ruff pulito (baseline 8 violazioni pre-esistenti, invariate). 6 test
+pre-esistenti aggiornati con `auto_open=False` esplicito dove testavano altro (fundamentals, price
+fetch) per non confondere i concern.
+
+**Non ancora esercitato su dati reali**: le 7 tesi generate oggi prima di questo fix restano tutte
+`pending` (generate col vecchio comportamento) — il prossimo `pathos thesis generate` reale sarà il
+primo a esercitare l'auto-open per davvero. Non ri-lanciato oggi per non consumare un'altra chiamata
+Claude reale solo per demo (il progetto ha un budget di 2-3 task di ragionamento/giorno).
+
+---
 
 ## Primo ciclo reale: `brief` → `thesis generate` (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
 

@@ -1,6 +1,39 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: primo ciclo reale completato — CP-025/CP-026 trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)
+## Fase corrente: auto-open a soglia di confidence implementato (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 — Discussione utente su scope notizie + cadenza + autonomia → feature auto-open:**
+
+Utente ha chiesto scope notizie passate all'LLM + sollevato 2 punti: (1) cadenza tesi dovrebbe essere
+settimanale, non giornaliera — confermato: già così di fatto (thesis generate mai nel loop
+automatico, solo manuale); ma 7gg di lookback nel brief è troppo poco per conflitti pluriennali
+("l'unghia del leone") — **discusso design "situazioni" a orizzonte semantico, non a giorni fissi,
+rimandato a sessione dedicata** (Fase 5 in roadmap.md, non iniziata, richiede cautela per rischio
+chain-collapse già visto 3 volte nel progetto). (2) "tesi aperte in autonomia, poi rifinite" —
+contraddiceva la regola scritta in CLAUDE.md ("nessuna operazione autonoma") — chiarito: soglia di
+confidence (0.6) decide auto-open vs pending manuale.
+
+**Implementato**: `pathosphere/agent/thesis.py` — `_maybe_auto_open()` replica esattamente la
+sequenza manuale (`approve_thesis` → `create_thesis_prediction` → `open_agent_trade` →
+`link_thesis_prediction_to_trade`), eseguita **dopo** la review fondamentali (una tesi contraddetta
+dai fondamentali beneficia comunque di quel contesto prima di aprire). Soglia in
+`config.py::auto_open_confidence_threshold` (default 0.6, calibrato sui dati reali di oggi). CLI:
+`--no-auto-open`, `--auto-open-threshold N`. Degrado: approvazione riuscita + apertura trade fallita
+→ resta `approved` (non torna `pending`), completabile dopo con `pathos trade open <id>`.
+
+**CLAUDE.md aggiornato** (principio 2, "Human-in-the-loop, con auto-open a soglia") — la regola
+scritta ora riflette il comportamento reale, non più "nessuna operazione autonoma" senza eccezioni.
+
+**Test**: 560 verdi (era 554, +6: `_maybe_auto_open` successo/fallimento/soglia + integrazione
+`generate_theses`). Ruff pulito (baseline 8 pre-esistenti invariate).
+
+**Prossimo**: prossimo `pathos thesis generate` reale eserciterà la feature per davvero (oggi le 7
+tesi esistenti restano tutte `pending`, generate prima di questo fix). Fase 5 "situazioni" quando si
+apre una sessione dedicata.
+
+---
+
+## Fase precedente: primo ciclo reale completato — CP-025/CP-026 trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)
 
 **2026-07-14 — Primo `pathos brief` → `pathos thesis generate` reale della storia del progetto:**
 

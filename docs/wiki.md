@@ -868,9 +868,22 @@ uv run pathos brief --dry-run              # solo conteggi, no LLM
 
 `price_snapshot` = prezzo EOD yfinance al momento della generazione (no-lookahead bias).
 
+**Auto-open a soglia di confidence (2026-07-14)**: dopo la review fondamentali (§8.6b — così una tesi
+contraddetta dai fondamentali beneficia comunque di quel contesto prima dell'apertura), ogni tesi con
+`confidence ≥ settings.auto_open_confidence_threshold` (default 0.6, in `config.py`) viene
+**auto-approvata e il paper trade aperto in autonomia** — stessa sequenza esatta del flusso manuale
+(`approve_thesis` → `create_thesis_prediction` → `open_agent_trade` → `link_thesis_prediction_to_trade`),
+soldi virtuali, l'umano rivede/chiude dopo invece di approvare prima. Sotto soglia: resta `pending`
+per approvazione manuale come sempre. Degrado: se l'approvazione riesce ma l'apertura trade fallisce
+(es. portafogli non inizializzati), la tesi resta `approved` ma non tradata — non torna `pending` —
+completabile dopo con `pathos trade open <id>`, stesso stato in cui finirebbe un flusso manuale con
+`approve` riuscito e `trade open` fallito. Disattivabile per singolo run: `--no-auto-open`; soglia
+override: `--auto-open-threshold N`.
+
 ### 8.4 Flusso approvazione — `pathosphere/agent/approval.py` ✅
 
-Human-in-the-loop: l'agent propone, l'utente decide.
+Human-in-the-loop **sotto la soglia di auto-open** (§8.3) — sopra soglia l'agent propone e apre, la
+revisione umana avviene dopo.
 
 ```bash
 uv run pathos thesis list                  # tesi pending (tabella: id/title/inst/dir/price/horizon/conf)
