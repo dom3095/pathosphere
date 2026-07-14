@@ -296,6 +296,34 @@ def test_complete_qwen_success():
     assert result == "Qwen says hello."
 
 
+def test_complete_qwen_uses_900s_timeout():
+    """CP-029: measured a real single research-prompt call at 318.7s (not the
+    46-113s seen for small classification prompts in CP-022) — 900s leaves
+    real margin for the larger divergence/critique prompts in the debate
+    pipeline, which is documented as a background-only command, not a
+    latency-sensitive path."""
+    client = LLMClient(backend="qwen-local")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    mock_resp.raise_for_status = MagicMock()
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(return_value=mock_resp)
+            mock_cls.return_value = mock_http
+
+            await client.complete([{"role": "user", "content": "hi"}])
+            return mock_cls
+
+    mock_cls = asyncio.run(run())
+    assert mock_cls.call_args.kwargs["timeout"] == 900
+
+
 def test_complete_qwen_custom_model():
     """model= override is passed through to the HTTP payload."""
     payloads: list[dict] = []

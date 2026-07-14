@@ -507,6 +507,96 @@ correggere.
 
 ---
 
+## CP-029: `pathos thesis debate` — non la concorrenza, è la velocità del modello, variabile e crescente nel tempo — **APERTO, in handoff** (non risolto — 2 tentativi reali falliti dopo il fix)
+
+**Contesto (2026-07-14)**: primo run reale di `pathos thesis debate` (mai lanciato prima d'ora — verificato,
+nessuna traccia nei log). Crashato allo Step 1 (research) con `httpx.ReadTimeout` dopo esattamente 120.0s
+(20:48:49 → 20:50:49). Ollama era attivo e raggiungibile (`curl localhost:11434/api/tags` OK) — non è
+CP-003 (server giù).
+
+**Prima ipotesi (parziale, poi smentita in parte)**: `run_debate()` lanciava le 6 analisi persona via
+`asyncio.gather`, tutte e 6 vere richieste HTTP concorrenti allo stesso `qwen3:4b` su Ollama — contraddice
+il vincolo hardware esplicito in CLAUDE.md ("un solo modello locale in memoria alla volta, mai due in
+parallelo"). Fix applicato su richiesta utente ("mandiamo le richieste a 2 a 2"): nuovo helper
+`_gather_in_batches()` (`agent/debate.py`) — batch di `QWEN_BATCH_SIZE=2`, un batch aspetta il precedente
+prima di partire. Timeout httpx per-chiamata alzato 120s→300s (`llm/client.py:103`). Test dedicati:
+`test_gather_in_batches_caps_concurrency`, `test_gather_in_batches_waits_for_batch_before_next`,
+`test_complete_qwen_uses_300s_timeout`.
+
+**Root cause vera, scoperta rilanciando il debate reale dopo il fix**: il fix sopra non basta — secondo run
+reale, timeout di nuovo a 300.0s esatti, anche a batch di 2. Misurata poi UNA sola chiamata Qwen isolata
+(zero concorrenza) con un prompt di ricerca realistico (brief 5771 char, prompt totale ~6000 char, risposta
+strutturata 6 campi incl. narrativa 2 paragrafi): **318.7 secondi**. I numeri di CP-022 (46-113s) erano per
+un prompt minuscolo (classificazione location da titolo, output 1 campo) — non rappresentativi del prompt
+di ricerca debate, molto più pesante da generare. **Il collo di bottiglia non è la concorrenza, è la
+velocità pura di qwen3:4b q4 su M1 8GB CPU-bound per questo tipo/dimensione di prompt.** Batch di 2 o
+esecuzione seriale non cambiano il tempo totale in modo determinante: anche seriale, 13 chiamate (6
+research + 1 divergence + 6 critique, quest'ultimo con contesto ancora più grande) × ~300-500s stimati ≈
+**60-90+ minuti totali** per un intero debate.
+
+**Impatto**: alto per la feature — `pathos thesis debate` (pipeline multi-prospettiva, principio "pluralità
+di prospettive" di CLAUDE.md) è tecnicamente funzionante ma **troppo lento per uso interattivo** su questo
+hardware; il fast path `pathos thesis generate` (1 sola chiamata Claude, nessun Qwen) resta l'unico percorso
+rapido oggi.
+
+**Decisione presa con l'utente**: non è un bug di codice risolvibile — è un limite strutturale
+hardware/modello per questo prompt. Scelta: **timeout+documentazione, nessuna riduzione di qualità**
+(scartate le opzioni "accorcia prompt"/"meno personas"/"modello più piccolo" — a costo di qualità
+dell'analisi, non necessarie per ora).
+
+**Fix finale**: timeout httpx per-chiamata Qwen alzato 300s→**900s** (`llm/client.py:103`, margine ~3x
+sopra i 318.7s misurati, per assorbire prompt ancora più grandi negli step successivi — divergence
+aggrega 6 analisi, critique include il contesto divergence). Docstring di `pathos thesis debate`
+(`cli.py`) aggiornata con avviso esplicito: comando SOLO background/overnight (`caffeinate -i uv run
+pathos thesis debate &`), mai interattivo — stesso pattern già adottato per `--geolocate-qwen` (CP-022).
+Nessuna modifica a prompt/numero personas/modello — qualità dell'analisi invariata, si accetta il costo
+tempo (60-90+ minuti/run) come caratteristica nota del comando, non un difetto da eliminare.
+
+**Verificato**: 582 test verdi (invariato rispetto al fix batching — `test_complete_qwen_uses_900s_timeout`
+sostituisce/rinomina la versione 300s, nessun test netto in più). Ruff pulito sui file toccati. Il
+fix del batching (`_gather_in_batches`, CP-029 fix 1) resta comunque corretto e testato — necessario ma
+non sufficiente da solo, la vera causa era la latenza per-chiamata non la concorrenza.
+
+**Secondo run reale con timeout 900s (2026-07-14 sera, id=3)**: partito 21:26:13. Step 1 research
+(batch di 2) completato con successo alle 22:03:20 — **~37 minuti per 6 chiamate**, nessun errore
+stavolta (conferma che il batching a 2 + timeout 900s risolve Step 1). Step 2 divergence (1 chiamata)
+completato alle 22:13:06 — 9:46 min, sotto soglia. **Step 3 critique è fallito di nuovo**,
+`httpx.ReadTimeout` esattamente a 900.0s (22:13:06→22:28:06).
+
+**Osservazione chiave che smentisce l'ipotesi "prompt più grande = più lento"**: il prompt di critique
+(`_critique_prompt`, `agent/debate.py:243`) è **più piccolo** del prompt di research — solo i 2 punti di
+divergenza (brevi) + la propria narrativa precedente, niente brief intero da 5771 caratteri. Eppure ha
+impiegato più di 900s, contro i ~370s/chiamata stimati per il research (più pesante) nello stesso run.
+**La latenza non dipende solo dalla dimensione del prompt — cresce con la durata della sessione**,
+coerente con la variabilità già documentata in CP-022 (46s vs 90-113s a seconda della pressione di
+memoria) ma qui il grado di variazione è molto più ampio (370s → 900s+ nello stesso run, stessa
+macchina, ~50 minuti dopo l'inizio). Ipotesi non verificate: throttling termico su M1 sotto carico CPU
+sostenuto, degrado memoria/swap accumulato, o interferenza di altri processi attivi nella sessione
+(Claude Code stesso, test pytest lanciati in parallelo durante l'attesa).
+
+**Nessun dato sporco**: `debates` id=1,2,3 tutte correttamente `status='failed'`, nessuna tesi/trade
+orfana (verificato via query diretta).
+
+**Conclusione onesta**: il fix "timeout+doc" del primo tentativo era prematuro — dichiarato risolto
+prima di una validazione end-to-end riuscita, poi smentito dal secondo run reale. **Non richiudere
+CP-029 come risolto finché un run completo (tutti e 4 gli step) non arriva a `status='complete'`.**
+
+**Opzioni non ancora scelte per il prossimo tentativo** (nessuna implementata in questa sessione —
+richiede decisione + tempo di validazione che non c'è più stasera):
+1. Timeout ancora più largo (es. 1800s) + **retry automatico 1 volta su `ReadTimeout`** per chiamata
+   (un timeout potrebbe essere un picco transitorio, non un limite duro — un singolo retry lo
+   distinguerebbe senza sommare grande complessità).
+2. Investigare la causa della crescita di latenza nel tempo (throttling? altri processi?) prima di
+   continuare a inseguire il numero di timeout — rilanciare a macchina totalmente scarica (nessun altro
+   processo, non durante una sessione Claude Code attiva) come test di controllo.
+3. Accettare il costo e lanciare overnight con margine molto ampio, monitorando `data/logs/` al mattino
+   invece di aspettare in sessione.
+
+**Azione**: rimandato a prossima sessione/lancio manuale dell'utente. Vedi `HANDOFF.md` per il prompt di
+ripresa.
+
+---
+
 ## CP-027: nessuna fonte di dati storici — eventi geopolitici pre-ingest e serie storiche prezzi (aperto, non iniziato)
 
 **Contesto (2026-07-14)**: due esigenze emerse in discussione con l'utente, entrambe bloccate dalla

@@ -100,7 +100,7 @@ class LLMClient:
 
         logger.debug(f"LLM/qwen → {url} model={mdl}")
 
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with httpx.AsyncClient(timeout=900) as client:
             try:
                 resp = await client.post(url, json=payload)
                 resp.raise_for_status()

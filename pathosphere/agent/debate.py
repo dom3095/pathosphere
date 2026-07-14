@@ -2,10 +2,10 @@
 Multi-persona debate pipeline for thesis generation.
 
 Pipeline (all Qwen except the final synthesis):
-  Step 1 — Research    (Qwen x6, parallel)  : each persona independently reads the brief
-  Step 2 — Divergence  (Qwen x1)            : identify 2-3 key disagreement points
-  Step 3 — Critique    (Qwen x6, parallel)  : each persona responds to divergence points
-  Step 4 — Synthesis   (Claude x1)          : generate theses informed by the debate
+  Step 1 — Research    (Qwen x6, batches of 2)  : each persona independently reads the brief
+  Step 2 — Divergence  (Qwen x1)                : identify 2-3 key disagreement points
+  Step 3 — Critique    (Qwen x6, batches of 2)  : each persona responds to divergence points
+  Step 4 — Synthesis   (Claude x1)              : generate theses informed by the debate
 
 All intermediate outputs are persisted to persona_analyses; final theses go to theses.
 """
@@ -498,6 +498,22 @@ async def _persist_theses(
 
 # ── public API ────────────────────────────────────────────────────────────────
 
+QWEN_BATCH_SIZE = 2  # Ollama on 8GB M1 holds one model in memory — cap concurrent local calls.
+
+
+async def _gather_in_batches(coros: list, batch_size: int = QWEN_BATCH_SIZE) -> list:
+    """Run coroutines in fixed-size concurrent batches, one batch at a time.
+
+    Firing all 6 persona calls at once against a single local Ollama instance
+    queues them internally and blows past the per-call HTTP timeout (CP-029).
+    """
+    results = []
+    for i in range(0, len(coros), batch_size):
+        batch = coros[i : i + batch_size]
+        results.extend(await asyncio.gather(*batch))
+    return results
+
+
 async def run_debate(
     conn: sqlite3.Connection,
     qwen_client: LLMClient,
@@ -540,13 +556,13 @@ async def run_debate(
     logger.info(f"DEBATE: id={debate_id}")
 
     try:
-        # ── Step 1: Research (parallel) ───────────────────────────────────────
-        logger.info("DEBATE: step 1 — research (6 personas, parallel)")
+        # ── Step 1: Research (batches of QWEN_BATCH_SIZE) ──────────────────────
+        logger.info(f"DEBATE: step 1 — research (6 personas, batches of {QWEN_BATCH_SIZE})")
         research_tasks = [
             _run_research(qwen_client, pk, pc, brief_content)
             for pk, pc in PERSONAS.items()
         ]
-        research_results = await asyncio.gather(*research_tasks)
+        research_results = await _gather_in_batches(research_tasks)
         analyses: dict[str, dict] = dict(research_results)
 
         for persona_key, analysis in analyses.items():
@@ -562,13 +578,13 @@ async def run_debate(
         for dp in divergence_points:
             logger.debug(f"  [{dp.get('id')}] {dp.get('title')}")
 
-        # ── Step 3: Critique (parallel) ───────────────────────────────────────
-        logger.info("DEBATE: step 3 — critique (6 personas, parallel)")
+        # ── Step 3: Critique (batches of QWEN_BATCH_SIZE) ───────────────────────
+        logger.info(f"DEBATE: step 3 — critique (6 personas, batches of {QWEN_BATCH_SIZE})")
         critique_tasks = [
             _run_critique(qwen_client, pk, pc, analyses[pk], divergence_points)
             for pk, pc in PERSONAS.items()
         ]
-        critique_results = await asyncio.gather(*critique_tasks)
+        critique_results = await _gather_in_batches(critique_tasks)
         critiques: dict[str, dict] = dict(critique_results)
 
         for persona_key, critique in critiques.items():

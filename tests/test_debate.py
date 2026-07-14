@@ -14,8 +14,10 @@ import pytest
 
 from pathosphere.agent.debate import (
     PERSONAS,
+    QWEN_BATCH_SIZE,
     DebateResult,
     _divergence_prompt,
+    _gather_in_batches,
     _load_brief,
     _research_prompt,
     _run_critique,
@@ -265,6 +267,44 @@ def test_run_synthesis_returns_theses():
     )
     assert len(theses) == 3
     assert theses[0]["instrument"] == "SOXX"
+
+
+# ── batching (CP-029) ─────────────────────────────────────────────────────────
+
+def test_gather_in_batches_caps_concurrency():
+    active = 0
+    max_active = 0
+
+    async def task(i):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return i
+
+    coros = [task(i) for i in range(6)]
+    results = asyncio.run(_gather_in_batches(coros))
+
+    assert results == list(range(6))
+    assert max_active <= QWEN_BATCH_SIZE
+
+
+def test_gather_in_batches_waits_for_batch_before_next():
+    order: list[str] = []
+
+    async def task(i):
+        order.append(f"start-{i}")
+        await asyncio.sleep(0.01)
+        order.append(f"end-{i}")
+        return i
+
+    coros = [task(i) for i in range(4)]
+    asyncio.run(_gather_in_batches(coros, batch_size=2))
+
+    # both tasks of batch 1 must end before batch 2 starts
+    assert order.index("end-0") < order.index("start-2")
+    assert order.index("end-1") < order.index("start-3")
 
 
 # ── integration test ──────────────────────────────────────────────────────────

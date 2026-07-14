@@ -1,6 +1,72 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: code review pre-merge completata, 10 bug/gap fixati (branch `feat/fundamentals-analysis`, PR #14)
+## Fase corrente: CP-029 ANCORA APERTO — 2 run reali falliti, in handoff (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 notte — Secondo run reale con timeout 900s, fallito di nuovo (id=3):**
+
+Dopo il fix "timeout 900s + doc" (sotto), rilanciato `pathos thesis debate` per validare davvero
+(l'utente ha chiesto esplicitamente "dobbiamo aspettare che finisca correttamente, no graceful fail").
+Partito 21:26:13. Step 1 research (batch 2) **riuscito** alle 22:03:20 (~37 min, 6 chiamate — batching
++ 900s regge qui). Step 2 divergence **riuscito** alle 22:13:06 (9:46 min). **Step 3 critique fallito**
+di nuovo, `ReadTimeout` esattamente a 900.0s.
+
+Scoperta che smentisce l'ipotesi precedente: il prompt di critique è **più piccolo** di quello di
+research (solo 2 divergenze brevi + narrativa propria, niente brief intero) — eppure più lento. La
+latenza non dipende solo dalla dimensione del prompt, **cresce con la durata della sessione** (~370s
+stimati a inizio run → 900s+ dopo ~50 minuti). Causa non verificata: throttling termico M1, degrado
+memoria, o interferenza di altri processi attivi (inclusa questa stessa sessione Claude Code). Nessun
+dato sporco (debate id=1,2,3 tutte `status='failed'` pulite).
+
+**Decisione utente**: non insistere oltre stasera. "Committa, prepara l'handoff, scrivi il prompt per
+il tuo collega e lancio io" — codice attuale (batching+900s) committato così com'è, CP-029 lasciato
+esplicitamente **aperto** (non risolto — la dichiarazione di "risolto" del fix precedente era prematura,
+corretta in `CRITICAL_POINTS.md`). Prossimo tentativo lanciato dall'utente stesso, non dall'agent.
+
+**Dettaglio + opzioni per il prossimo tentativo**: CP-029 in `CRITICAL_POINTS.md`. **Prompt di ripresa
+per la prossima sessione**: vedi `HANDOFF.md`, sezione in cima.
+
+---
+
+## Fase precedente: `pathos thesis debate` — primo tentativo di validazione, fix timeout+batching (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 sera — Primo run reale di `pathos thesis debate` (mai lanciato prima):**
+
+Utente ha chiesto "lancialo" per verificare se il debate funziona davvero (non solo test mockati).
+Crash reale al primo tentativo: `httpx.ReadTimeout` a 120.0s sullo Step 1 (research, 6 chiamate Qwen
+parallele contro un solo Ollama locale — viola il vincolo hardware CLAUDE.md "un modello alla volta").
+Registrato CP-029, nessun dato sporco creato (debate row marcata `failed` correttamente).
+
+Utente ha chiesto di mandare le chiamate **a 2 a 2** (batch, non tutte parallele). Implementato
+`_gather_in_batches()` in `agent/debate.py` (`QWEN_BATCH_SIZE=2`), timeout httpx 120s→300s. Rilanciato
+per verificare — **timeout di nuovo, stavolta a 300.0s esatti**. Misurata poi una singola chiamata
+Qwen isolata (zero concorrenza) con un prompt di ricerca realistico: **318.7 secondi**. Causa vera: non
+la concorrenza, la velocità pura di qwen3:4b q4 su M1 8GB per un prompt di questa dimensione (i 46-113s
+di CP-022 erano per un prompt minuscolo di classificazione, non rappresentativi).
+
+**Decisione presa con l'utente** (via AskUserQuestion): timeout+documentazione, nessuna riduzione di
+qualità (scartate le opzioni "prompt più corti"/"meno personas"/"modello più piccolo"). Fix finale:
+timeout 300s→**900s** (margine ~3x sopra i 318.7s misurati), docstring `pathos thesis debate` (`cli.py`)
+aggiornata con avviso esplicito "SOLO background/overnight, mai interattivo" + esempio
+`caffeinate -i uv run pathos thesis debate &` — stesso pattern già usato per `--geolocate-qwen`.
+
+**Test**: 582 verdi (invariato — nuovi test batching `test_gather_in_batches_caps_concurrency`,
+`test_gather_in_batches_waits_for_batch_before_next`, timeout rinominato
+`test_complete_qwen_uses_900s_timeout`). Ruff pulito, 7 violazioni pre-esistenti invariate.
+
+**Non testato end-to-end con timeout 900s** — nessun terzo run reale lanciato (costerebbe 60-90+
+minuti). Fix verificato per costruzione (timeout matematicamente sopra la latenza misurata) + unit test
+sul valore passato a `httpx.AsyncClient`, non da un run reale completo. Prossimo run reale (lanciato
+dall'utente, in background) è la prima validazione end-to-end vera.
+
+**Dettaglio**: CP-029 in `CRITICAL_POINTS.md`.
+
+**Prossimo**: se l'utente vuole, lanciare `pathos thesis debate` in background per la prima
+validazione end-to-end completa con timeout 900s. Altrimenti pronta per merge insieme al resto —
+nessun altro lavoro di codice noto in sospeso.
+
+---
+
+## Fase precedente: code review pre-merge completata, 10 bug/gap fixati (branch `feat/fundamentals-analysis`, PR #14)
 
 **2026-07-14 sera — Code review strutturata pre-merge (CP-028):**
 

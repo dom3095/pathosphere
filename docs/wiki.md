@@ -861,10 +861,15 @@ uv run pathos brief --dry-run              # solo conteggi, no LLM
 **Fast path** (`pathos thesis generate`): 1 Claude call → N tesi primarie + alternative. Ogni tesi: `title`, `causal_chain` (JSON), `instrument`, `direction`, `horizon_days`, `confidence`, `invalidation`, `watchlist_items`.
 
 **Debate pipeline** (`pathos thesis debate`): 4 step sequenziali:
-1. Research — 6 personas × Qwen (Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris)
+1. Research — 6 personas × Qwen (Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris), a batch di 2 (non tutte parallele — un solo modello Qwen in memoria su Ollama, CP-029)
 2. Divergence detection — Qwen identifica 2-3 disaccordi strutturali
-3. Critique — ogni persona risponde ai punti di divergenza (Qwen)
+3. Critique — ogni persona risponde ai punti di divergenza (Qwen), stesso batching di 2
 4. Synthesis — Claude genera tesi con `debate_context` (supporters/opponents)
+
+**LENTO (CP-029)**: ~5+ min/chiamata Qwen misurati su prompt reale (318.7s, non i 46-113s di un prompt
+di classificazione minuscolo) — 13 chiamate totali ⇒ **60-90+ minuti** end-to-end. Lanciare SOLO in
+background/overnight (`caffeinate -i uv run pathos thesis debate &`), mai interattivo. Preferire
+`pathos thesis generate` (fast path, 1 sola chiamata Claude) quando serve rapidità.
 
 `price_snapshot` = prezzo EOD yfinance al momento della generazione (no-lookahead bias).
 

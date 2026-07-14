@@ -1490,13 +1490,23 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
     """Generate theses via multi-persona debate (Qwen x13 + Claude x1).
 
     Pipeline:
-      1. Research   — 6 personas independently analyse the brief (Qwen, parallel)
+      1. Research   — 6 personas independently analyse the brief (Qwen, batches of 2)
       2. Divergence — detect 2-3 key disagreement points (Qwen)
-      3. Critique   — each persona responds to divergences (Qwen, parallel)
+      3. Critique   — each persona responds to divergences (Qwen, batches of 2)
       4. Synthesis  — Claude generates theses informed by the debate (Claude)
 
     Same fundamentals enrichment + confidence-threshold auto-open as
     `pathos thesis generate` — both pipelines share the same persistence path.
+
+    SLOW (CP-029): each Qwen call on this hardware runs ~5+ minutes for a
+    research/critique-sized prompt (measured: 318.7s single-call, no
+    concurrency). 13 Qwen calls total ⇒ expect 60-90+ minutes end to end.
+    Run this in the background, e.g.:
+
+        caffeinate -i uv run pathos thesis debate &
+
+    not interactively in a terminal you plan to keep using. Prefer
+    `pathos thesis generate` (single Claude call, no Qwen) for a fast path.
     """
     import asyncio
     from pathosphere.db.schema import get_connection
@@ -1514,7 +1524,7 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
         f"\nStarting debate for {brief_date or 'today'} | "
         f"personas: {', '.join(PERSONAS)} | n={n}"
     )
-    click.echo("Step 1/4 — Research (6 personas, parallel)...")
+    click.echo("Step 1/4 — Research (6 personas, batches of 2)...")
 
     result = asyncio.run(
         run_debate(

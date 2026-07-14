@@ -1,6 +1,85 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-14 sera — code review pre-merge, 10 bug/gap trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)*
+*Aggiornato: 2026-07-14 notte — CP-029 ANCORA APERTO: `pathos thesis debate` fallito 2 volte su run reali, in handoff per il prossimo tentativo (branch `feat/fundamentals-analysis`, PR #14)*
+
+## ⚠️ PROMPT DI RIPRESA — leggi questo per primo
+
+Contesto in una riga: `pathos thesis debate` (pipeline multi-persona, 13 chiamate Qwen locali) non ha
+mai completato un run reale con successo. 2 tentativi, 2 fallimenti diversi, entrambi con dati puliti
+(nessuna riga sporca nel DB). Codice attuale committato e testato (582 test verdi, unit-level) ma **non
+validato end-to-end** — questa è la parte che manca.
+
+**Cosa è già vero, non ridiscutere**:
+- Il batching a 2 (`_gather_in_batches`, `agent/debate.py`) funziona — Step 1 research l'ha superato
+  pulito nel secondo run (~37 min, 6 chiamate).
+- Il timeout è a 900s (`llm/client.py:103`) — non abbastanza: Step 3 critique ha comunque fatto
+  `ReadTimeout` esatto a 900.0s nel secondo run, nonostante un prompt più piccolo del research.
+- La causa non è (solo) la dimensione del prompt — la latenza per chiamata **cresce nel corso della
+  sessione** (stimata ~370s a inizio run, >900s dopo ~50 minuti). Causa non accertata: throttling
+  termico M1 sotto carico CPU sostenuto, o interferenza di altri processi attivi in parallelo
+  (inclusa una sessione Claude Code aperta contemporaneamente).
+
+**Prossimo tentativo raccomandato** (lanciato dall'utente, non dall'agent — vedi nota permessi sotto):
+```bash
+# Macchina il più scarica possibile: chiudi Jupyter/IDE pesanti, NON durante una sessione Claude Code attiva.
+caffeinate -i uv run pathos thesis debate > data/logs/debate_$(date +%Y%m%d_%H%M).log 2>&1 &
+# poi, per controllare più tardi senza restare in attesa:
+tail -f data/logs/debate_*.log
+```
+Se fallisce ANCORA con `ReadTimeout` anche a macchina scarica: la causa non è carico esterno, serve
+alzare il timeout molto oltre 900s (es. 1800s) e/o aggiungere un retry automatico per chiamata (vedi
+opzioni in `CRITICAL_POINTS.md` CP-029). Se invece completa con successo (`debates.status='complete'`,
+tesi salvate) — chiudere CP-029 come risolto per davvero stavolta, solo dopo conferma reale, non prima.
+
+**Verifica rapida esito**: `sqlite3 data/db/pathosphere.db "SELECT id, status FROM debates ORDER BY id DESC LIMIT 1;"`
+
+---
+
+## CP-029 — cronologia completa dei 2 tentativi falliti (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
+
+**Perché è partito**: controllando i punti critici aperti, l'utente ha notato che `pathos thesis
+debate` non era mai stato lanciato per davvero (solo test mockati) — ha chiesto di lanciarlo per
+verificare.
+
+**Tentativo 1** (id=1): crash a 120.0s, `httpx.ReadTimeout`. Causa apparente: 6 chiamate Qwen vere in
+parallelo (`asyncio.gather`) contro un solo Ollama locale — viola il vincolo hardware CLAUDE.md ("un
+modello alla volta"). Fix: batching a 2 (`_gather_in_batches()`), timeout 120s→300s.
+
+**Tentativo 2, prima verifica** (id=2, stessa sera): timeout di nuovo, a 300.0s esatti — il batching da
+solo non bastava. Misurata poi UNA chiamata Qwen isolata (zero concorrenza) con prompt di ricerca
+realistico: **318.7 secondi** — molto più dei 46-113s di CP-022 (prompt diverso, molto più piccolo).
+Fix: timeout 300s→900s, doc "solo background" nel comando.
+
+**Tentativo 2, riprova con timeout 900s** (id=3, stessa notte, su richiesta esplicita dell'utente di
+"aspettare che finisca correttamente, no graceful fail"): Step 1 research **riuscito** (~37 min). Step
+2 divergence **riuscito** (~10 min). **Step 3 critique fallito di nuovo**, `ReadTimeout` esatto a
+900.0s — nonostante il prompt di critique sia PIÙ PICCOLO di quello di research già completato con
+successo nello stesso run. Questo smentisce l'ipotesi "basta un timeout proporzionale alla dimensione
+del prompt": la latenza cresce con la durata della sessione, non (solo) con la dimensione della singola
+chiamata.
+
+**Nessun dato sporco in nessuno dei 3 tentativi** — `debates` id 1/2/3 tutte correttamente
+`status='failed'`, nessuna tesi/trade orfana (verificato via query diretta).
+
+**Decisione presa con l'utente**: non insistere oltre stasera con altri run da un'ora+. "Committa,
+prepara l'handoff, scrivi il prompt per il tuo collega e lancio io" — codice committato così com'è
+(batching + timeout 900s, entrambi necessari ma non sufficienti da soli), CP-029 lasciato esplicitamente
+**aperto**, non risolto — la dichiarazione di "risolto" scritta dopo il tentativo 2 era prematura,
+corretta qui e in `CRITICAL_POINTS.md` dopo il fallimento del tentativo 3.
+
+**Test**: 582 verdi (unit-level, mock — batching e timeout verificati per costruzione, non da un run
+reale riuscito). Ruff pulito, 7 violazioni pre-esistenti invariate.
+
+**Dettaglio + opzioni per il prossimo tentativo**: CP-029 in `CRITICAL_POINTS.md`.
+
+**Lezione di metodo (si ripete, terza volta in questa sessione)**: stesso pattern di CP-025/026 — codice
+testato solo con mock non aveva mai beccato questi bug reali (concorrenza, poi latenza-che-cresce-nel-
+tempo). Solo il run reale li ha esposti, e servono PIÙ di un run reale per validare qualcosa di
+strutturalmente lento e variabile: un singolo run riuscito non basta a dichiarare un fix definitivo se
+la causa reale non è stata isolata con certezza (qui: non sappiamo ancora SE il problema è throttling
+termico, interferenza di processi, o altro).
+
+---
 
 ## Code review pre-merge — 10 bug/gap trovati e risolti (2026-07-14 sera, branch `feat/fundamentals-analysis`, PR #14)
 
@@ -1023,9 +1102,13 @@ uv run pathos predict list --open --macro-area world --domain commercio
 uv run pathos predict calibration
 
 # Thesis / trading (v2: approve auto-crea predizione economic, trade open la aggancia)
+uv run pathos thesis generate      # fast path: 1 chiamata Claude, nessun Qwen — rapido
 uv run pathos thesis list
 uv run pathos thesis approve <id>
 uv run pathos thesis reject <id> --reason "..."
 uv run pathos trade open <thesis_id>
 uv run pathos portfolio status
+
+# Thesis via debate multi-persona (CP-029: LENTO, 60-90+ min — SOLO background)
+caffeinate -i uv run pathos thesis debate &
 ```
