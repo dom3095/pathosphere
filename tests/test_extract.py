@@ -9,7 +9,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -17,7 +17,7 @@ import pytest
 from pathosphere.semantic.extract import (
     _build_text,
     _classify_heuristic,
-    _compute_major_powers,
+    compute_major_powers,
     backfill_demonym_entities,
     backfill_organization_entities,
     canonicalize_location_entities,
@@ -1287,7 +1287,7 @@ def _attach_event_countries(conn, event_id: int, countries: list[str]) -> None:
 
 def _bump_country_doc_count(conn, name: str, n_docs: int) -> None:
     """Inflate a country's global distinct-document mention count (used by
-    _compute_major_powers), independent of any event linkage."""
+    compute_major_powers), independent of any event linkage."""
     eid = _get_or_create_location_entity(conn, name)
     for i in range(n_docs):
         doc_id = _insert_doc(conn, url=f"https://hub.example/{name}/{i}")
@@ -1352,9 +1352,43 @@ def test_compute_major_powers_top_n(tmp_db):
     _bump_country_doc_count(tmp_db, "China", 8)
     _bump_country_doc_count(tmp_db, "Cuba", 1)
 
-    majors = _compute_major_powers(tmp_db, top_n=2)
+    majors = compute_major_powers(tmp_db, top_n=2)
 
     assert majors == {"United States", "China"}
+
+
+def test_geolocate_rss_events_accepts_precomputed_major_powers(tmp_db):
+    """Efficiency fix: passing major_powers= skips the corpus-wide GROUP BY
+    entirely — `pathos extract --geolocate-qwen` computes it once and feeds
+    it to both geolocate_rss_events and geolocate_ambiguous_events_qwen
+    instead of running the same query twice in one invocation."""
+    ev = _insert_rss_event(tmp_db, title="US sanctions Cuba")
+    _attach_event_countries(tmp_db, ev, ["United States", "Cuba"])
+
+    with patch(
+        "pathosphere.semantic.extract.compute_major_powers"
+    ) as mock_compute:
+        result = geolocate_rss_events(tmp_db, major_powers={"United States"})
+
+    mock_compute.assert_not_called()
+    assert result.major_powers == ["United States"]
+    assert result.located == 1
+
+
+def test_geolocate_ambiguous_events_qwen_accepts_precomputed_major_powers(tmp_db):
+    ev = _insert_rss_event(tmp_db, title="US pressures Cuba via Venezuela")
+    _attach_event_countries(tmp_db, ev, ["United States", "Cuba", "Venezuela"])
+    qwen = _make_qwen_client(return_value=json.dumps({"location_country": "Cuba"}))
+
+    with patch(
+        "pathosphere.semantic.extract.compute_major_powers"
+    ) as mock_compute:
+        result = asyncio.run(
+            geolocate_ambiguous_events_qwen(tmp_db, qwen, major_powers={"United States"})
+        )
+
+    mock_compute.assert_not_called()
+    assert result.major_powers == ["United States"]
 
 
 def test_geolocate_rss_events_classifies_and_writes_location(tmp_db):
@@ -1414,6 +1448,35 @@ def test_geolocate_rss_events_is_idempotent_on_already_located(tmp_db):
     assert first.located == 1
     assert second.events_evaluated == 0  # nothing left with location_name IS NULL
     assert second.located == 0
+
+
+def test_rss_event_countries_resolves_alias_to_canonical_major_power(tmp_db):
+    """Regression: an RSS event mentioning only a lowercase alias entity
+    ('turkey') of a major power ('Turkey', canonical_entity_id-linked) must
+    still be recognized as mentioning that major power. Before the fix,
+    _rss_event_countries read the alias row's own (unsynced) name/
+    canonical_name instead of following canonical_entity_id, so 'turkey' !=
+    'Turkey' (case-sensitive) and the event misclassified as 2 minors
+    (ambiguous) instead of 1 major + 1 minor (located, target=minor).
+    Found on real production data (entity id 9653, 'turkey')."""
+    canon_id = _get_or_create_location_entity(tmp_db, "Turkey")
+    _bump_country_doc_count(tmp_db, "Turkey", 10)  # sole top-1 major power
+    tmp_db.execute(
+        "INSERT INTO entities (name, entity_type, canonical_entity_id) VALUES ('turkey', 'location', ?)",
+        (canon_id,),
+    )
+    tmp_db.commit()
+
+    ev = _insert_rss_event(tmp_db, title="Turkey earthquake response reaches Syria")
+    _attach_event_countries(tmp_db, ev, ["turkey", "Syria"])  # reuses the alias row by exact name
+
+    result = geolocate_rss_events(tmp_db, top_n_major_powers=1)
+
+    assert set(result.major_powers) == {"Turkey"}
+    assert result.located == 1
+    assert result.ambiguous == 0
+    row = tmp_db.execute("SELECT location_name FROM events WHERE id = ?", (ev,)).fetchone()
+    assert row["location_name"] == "Syria"
 
 
 # ─── CP-022: RSS event geolocation (Qwen fallback) ──────────────────────────

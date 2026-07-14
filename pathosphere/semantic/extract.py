@@ -819,7 +819,7 @@ class HeuristicGeolocateResult:
     major_powers: list[str] = field(default_factory=list)  # computed set, for logging/audit
 
 
-def _compute_major_powers(conn: sqlite3.Connection, top_n: int = MAJOR_POWERS_TOP_N) -> set[str]:
+def compute_major_powers(conn: sqlite3.Connection, top_n: int = MAJOR_POWERS_TOP_N) -> set[str]:
     """Data-driven "major power" set — the top-N country/location entities by
     distinct-document count in the whole corpus (not just RSS). A country
     that dominates the corpus is almost always commentator/actor, not the
@@ -861,15 +861,28 @@ def _classify_heuristic(countries: list[str], major_powers: set[str]) -> Heurist
 def _rss_event_countries(conn: sqlite3.Connection) -> dict[int, list[str]]:
     """event_id → ordered list of country/location entity names mentioned in
     its cluster's documents (with repeats — classify_heuristic dedups), for
-    RSS events still missing location_name (study_19, section 2)."""
+    RSS events still missing location_name (study_19, section 2).
+
+    Resolves aliases to their canonical entity before reading the display
+    name — same `COALESCE(canonical_entity_id, id)` idiom as
+    `semantic/graph.py::build_entity_links`. Reading `en.canonical_name`
+    directly on a possibly-aliased row (the previous approach) is wrong: only
+    the canonical row's own `canonical_name`/`name` is kept in sync by
+    `canonicalize_location_entities`, not every alias pointing to it — found
+    on real data (entity 'turkey' lowercase, alias of canonical 'Turkey'),
+    where the alias's own name diverges case-sensitively from the canonical
+    display name `compute_major_powers` (which already filters to canonical
+    rows only) would use for the same country.
+    """
     rows = conn.execute(
         """SELECT e.id AS event_id,
-                  COALESCE(en.canonical_name, en.name) AS country,
+                  COALESCE(canon.canonical_name, canon.name) AS country,
                   SUM(de.mentions) AS mentions
            FROM events e
            JOIN event_documents ed ON ed.event_id = e.id
            JOIN document_entities de ON de.document_id = ed.document_id
            JOIN entities en ON en.id = de.entity_id
+           JOIN entities canon ON canon.id = COALESCE(en.canonical_entity_id, en.id)
            WHERE e.origin = 'rss' AND e.location_name IS NULL
              AND en.entity_type IN ('location', 'country')
            GROUP BY e.id, country
@@ -882,7 +895,10 @@ def _rss_event_countries(conn: sqlite3.Connection) -> dict[int, list[str]]:
 
 
 def geolocate_rss_events(
-    conn: sqlite3.Connection, *, top_n_major_powers: int = MAJOR_POWERS_TOP_N
+    conn: sqlite3.Connection,
+    *,
+    top_n_major_powers: int = MAJOR_POWERS_TOP_N,
+    major_powers: set[str] | None = None,
 ) -> HeuristicGeolocateResult:
     """Step 1 (CP-022) — free, instant, no network. Derive `events.location_name`
     for `origin='rss'` events from the actor/target heuristic validated in
@@ -899,9 +915,18 @@ def geolocate_rss_events(
     Only writes to events still missing location_name → safe to call on every
     `pathos extract` run (idempotent, re-evaluates nothing already resolved).
     Does not touch geoloc_checked — that column is owned by the Qwen fallback.
+
+    `major_powers`: pass a precomputed set to skip the corpus-wide GROUP BY
+    in `compute_major_powers()` — `pathos extract --geolocate-qwen` runs this
+    function and `geolocate_ambiguous_events_qwen()` back-to-back in one
+    invocation; computing the identical set twice for the same snapshot was
+    wasted work on the module's most expensive query.
     """
     result = HeuristicGeolocateResult()
-    major_powers = _compute_major_powers(conn, top_n=top_n_major_powers)
+    major_powers = (
+        major_powers if major_powers is not None
+        else compute_major_powers(conn, top_n=top_n_major_powers)
+    )
     result.major_powers = sorted(major_powers)
 
     all_ids = [
@@ -1402,6 +1427,7 @@ async def geolocate_ambiguous_events_qwen(
     *,
     limit: int = 20,
     top_n_major_powers: int = MAJOR_POWERS_TOP_N,
+    major_powers: set[str] | None = None,
 ) -> QwenGeolocateResult:
     """Step 2 (CP-022) — Qwen3 4B local fallback for RSS events the free
     heuristic (geolocate_rss_events) left `ambiguous` (actor-via-target
@@ -1424,9 +1450,16 @@ async def geolocate_ambiguous_events_qwen(
     single call is logged and the loop continues to the next event
     (`--geolocate-qwen` never aborts on one bad call); that event's
     geoloc_checked stays 0 so it is retried on a future batch.
+
+    `major_powers`: same precomputed-set passthrough as `geolocate_rss_events`
+    — avoids recomputing the identical corpus-wide set within one
+    `pathos extract --geolocate-qwen` invocation.
     """
     result = QwenGeolocateResult()
-    major_powers = _compute_major_powers(conn, top_n=top_n_major_powers)
+    major_powers = (
+        major_powers if major_powers is not None
+        else compute_major_powers(conn, top_n=top_n_major_powers)
+    )
     result.major_powers = sorted(major_powers)
 
     rows = conn.execute(
