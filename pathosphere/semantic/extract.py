@@ -1,13 +1,19 @@
 """
 Entity extraction — Phase 2 (NER + geocoding + Wikidata linking).
 
-Three independent, resumable steps:
+Independent, resumable steps:
   1. extract_entities — spaCy multilingual NER (xx_ent_wiki_sm) on docs with
      embedded=1, is_duplicate=0, ner_done=0 → entities + document_entities
-  2. geocode_events   — Nominatim lookup for events with location_name and
+  2. geolocate_rss_events — CP-022 heuristic: derives events.location_name
+     for origin='rss' events (only geo-native ingestors wrote it before).
+     Free, instant, no network — always run before geocode_events.
+  3. geocode_events   — Nominatim lookup for events with location_name and
      lat NULL; 1 req/s, hits AND misses cached in geocode_cache
-  3. link_wikidata    — wbsearchentities QID lookup for entities not yet
+  4. link_wikidata    — wbsearchentities QID lookup for entities not yet
      checked → wikidata_qid + canonical_name
+  5. geolocate_ambiguous_events_qwen — CP-022 Qwen3 4B local fallback for the
+     'ambiguous' cases step 2 can't resolve. Slow (network+LLM per event) —
+     explicit opt-in batch, never run implicitly from extract_entities'ish flow.
 
 Memory: xx_ent_wiki_sm is ~30 MB; loaded only inside this phase, unloaded after.
 """
@@ -17,14 +23,17 @@ import json
 import sqlite3
 import time
 from collections import Counter
-from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import bleach
 import httpx
 from loguru import logger
 
 from pathosphere.semantic.embedder import NON_PROSE_ORIGINS
+
+if TYPE_CHECKING:
+    from pathosphere.llm.client import LLMClient
 
 NER_MODEL_NAME = "xx_ent_wiki_sm"
 MAX_NER_CHARS = 2000  # title + body head; bounds CPU per doc
@@ -151,6 +160,36 @@ NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 NOMINATIM_DELAY_S = 1.1  # usage policy: max 1 req/s
 WIKIDATA_URL = "https://www.wikidata.org/w/api.php"
 WIKIDATA_DELAY_S = 1.0  # Wikimedia anonymous rate limit: stay ~1 req/s
+
+# CP-022 (RSS event geolocation): how many top country/location entities
+# (by distinct-document count) count as "major powers" for the heuristic in
+# geolocate_rss_events(). Data-driven, not a hand-written list — recomputed
+# every run from the live corpus (study_19: natural step-down in the
+# distribution after the 8th country in the current corpus; India=88 docs to
+# Europe=71 drops off a "continent/bloc, not a state" cliff). NOTE: this is
+# not a stable list over time — as the corpus grows a country can enter or
+# leave the top-N, which can flip a past `located`/`ambiguous` classification
+# on re-run. See CP-022 in CRITICAL_POINTS.md.
+MAJOR_POWERS_TOP_N = 8
+
+# Qwen prompt for the ambiguous-case fallback (study_19, validated on the 2
+# real cases that motivated CP-022). Title-only — no document body needed.
+_GEOLOC_PROMPT_TMPL = """Analizza questo titolo di notizia geopolitica. Identifica:
+- location_country: il SINGOLO paese che è il bersaglio/luogo dell'evento (dove succede la cosa
+  principale). null se la notizia descrive una relazione tra grandi potenze senza un bersaglio
+  geografico specifico (es. trattativa USA-Iran, tensione USA-Cina).
+- actor_countries: paesi che agiscono/decidono/dichiarano (i soggetti attivi).
+- via_countries: paesi che sono solo strumento/tramite/mediatore, non il bersaglio.
+
+Esempio: "US pressures Cuba via Venezuela oil routes" ->
+{{"location_country": "Cuba", "actor_countries": ["United States"], "via_countries": ["Venezuela"]}}
+
+Esempio: "No final agreement on deal with US – Iran" ->
+{{"location_country": null, "actor_countries": ["United States", "Iran"], "via_countries": []}}
+
+Titolo: "{title}"
+
+Rispondi SOLO con il JSON: {{"location_country": ..., "actor_countries": [...], "via_countries": [...]}}"""
 
 # Generic common nouns / roles / demonyms that GDELT-derived NER surfaces in
 # ALL CAPS with huge mention counts. Linking them wastes the lookup budget and
@@ -763,6 +802,144 @@ def canonicalize_location_entities(conn: sqlite3.Connection) -> LocationCanonica
     return result
 
 
+@dataclass
+class HeuristicResult:
+    decision: str  # 'located' | 'skip_bilateral' | 'skip_none' | 'ambiguous'
+    location_country: str | None
+    reason: str
+
+
+@dataclass
+class HeuristicGeolocateResult:
+    events_evaluated: int = 0   # RSS events with >=1 location/country entity examined
+    located: int = 0            # location_name written
+    skip_bilateral: int = 0     # only major powers mentioned — no anchor
+    skip_none: int = 0          # no location/country entity at all
+    ambiguous: int = 0          # left for the Qwen fallback (geolocate_ambiguous_events_qwen)
+    major_powers: list[str] = field(default_factory=list)  # computed set, for logging/audit
+
+
+def _compute_major_powers(conn: sqlite3.Connection, top_n: int = MAJOR_POWERS_TOP_N) -> set[str]:
+    """Data-driven "major power" set — the top-N country/location entities by
+    distinct-document count in the whole corpus (not just RSS). A country
+    that dominates the corpus is almost always commentator/actor, not the
+    specific target of any one story (study_19, section 3)."""
+    rows = conn.execute(
+        """SELECT COALESCE(en.canonical_name, en.name) AS country,
+                  COUNT(DISTINCT de.document_id) AS n_docs
+           FROM document_entities de
+           JOIN entities en ON en.id = de.entity_id
+           WHERE en.entity_type IN ('location', 'country') AND en.canonical_entity_id IS NULL
+           GROUP BY country ORDER BY n_docs DESC LIMIT ?""",
+        (top_n,),
+    ).fetchall()
+    return {row["country"] for row in rows}
+
+
+def _classify_heuristic(countries: list[str], major_powers: set[str]) -> HeuristicResult:
+    """Actor/target role heuristic for a single event's mentioned countries
+    (study_19, section 4 — reference implementation, reused verbatim)."""
+    uniq = list(dict.fromkeys(countries))  # preserve order, dedup
+    majors = [c for c in uniq if c in major_powers]
+    minors = [c for c in uniq if c not in major_powers]
+
+    if not uniq:
+        return HeuristicResult("skip_none", None, "nessuna entità location")
+    if len(uniq) == 1:
+        return HeuristicResult("located", uniq[0], "unico paese menzionato")
+    if not minors:
+        return HeuristicResult("skip_bilateral", None, f"solo grandi potenze: {majors}")
+    if len(majors) <= 1 and len(minors) == 1:
+        return HeuristicResult(
+            "located", minors[0], f"1 major ({majors}) + 1 minor → minor = bersaglio"
+        )
+    return HeuristicResult(
+        "ambiguous", None, f"majors={majors} minors={minors} — bersaglio vs mezzo non distinguibile"
+    )
+
+
+def _rss_event_countries(conn: sqlite3.Connection) -> dict[int, list[str]]:
+    """event_id → ordered list of country/location entity names mentioned in
+    its cluster's documents (with repeats — classify_heuristic dedups), for
+    RSS events still missing location_name (study_19, section 2)."""
+    rows = conn.execute(
+        """SELECT e.id AS event_id,
+                  COALESCE(en.canonical_name, en.name) AS country,
+                  SUM(de.mentions) AS mentions
+           FROM events e
+           JOIN event_documents ed ON ed.event_id = e.id
+           JOIN document_entities de ON de.document_id = ed.document_id
+           JOIN entities en ON en.id = de.entity_id
+           WHERE e.origin = 'rss' AND e.location_name IS NULL
+             AND en.entity_type IN ('location', 'country')
+           GROUP BY e.id, country
+           ORDER BY e.id"""
+    ).fetchall()
+    grouped: dict[int, list[str]] = {}
+    for row in rows:
+        grouped.setdefault(row["event_id"], []).append(row["country"])
+    return grouped
+
+
+def geolocate_rss_events(
+    conn: sqlite3.Connection, *, top_n_major_powers: int = MAJOR_POWERS_TOP_N
+) -> HeuristicGeolocateResult:
+    """Step 1 (CP-022) — free, instant, no network. Derive `events.location_name`
+    for `origin='rss'` events from the actor/target heuristic validated in
+    `notebooks/study_19_rss_event_geolocation.ipynb`.
+
+    Bilateral/multilateral relations between major powers (US-Iran, US-Israel)
+    are intentionally left unlocated (skip_bilateral) — they aren't anchored
+    to a place. Single-country mentions and "1 major + 1 minor" (major=actor,
+    minor=target hypothesis) are written to location_name. Everything else
+    (actor-via-target patterns like "US pressures Cuba via Venezuela", 2+
+    majors, 2+ minors...) is left `ambiguous` for the Qwen fallback — this
+    function never calls the network or an LLM.
+
+    Only writes to events still missing location_name → safe to call on every
+    `pathos extract` run (idempotent, re-evaluates nothing already resolved).
+    Does not touch geoloc_checked — that column is owned by the Qwen fallback.
+    """
+    result = HeuristicGeolocateResult()
+    major_powers = _compute_major_powers(conn, top_n=top_n_major_powers)
+    result.major_powers = sorted(major_powers)
+
+    all_ids = [
+        row["id"] for row in conn.execute(
+            "SELECT id FROM events WHERE origin = 'rss' AND location_name IS NULL"
+        ).fetchall()
+    ]
+    result.events_evaluated = len(all_ids)
+    if not all_ids:
+        return result
+
+    grouped = _rss_event_countries(conn)  # only ids with >=1 location/country entity
+
+    with conn:
+        for event_id in all_ids:
+            r = _classify_heuristic(grouped.get(event_id, []), major_powers)
+            if r.decision == "located":
+                conn.execute(
+                    "UPDATE events SET location_name = ? WHERE id = ?",
+                    (r.location_country, event_id),
+                )
+                result.located += 1
+            elif r.decision == "skip_bilateral":
+                result.skip_bilateral += 1
+            elif r.decision == "skip_none":
+                result.skip_none += 1
+            else:
+                result.ambiguous += 1
+
+    logger.info(
+        f"RSS geolocation (heuristic): {result.events_evaluated} events evaluated | "
+        f"{result.located} located | {result.ambiguous} ambiguous | "
+        f"{result.skip_bilateral} skip_bilateral | {result.skip_none} skip_none | "
+        f"major_powers={result.major_powers}"
+    )
+    return result
+
+
 def _nominatim_lookup(
     client: httpx.Client, query: str, user_agent: str
 ) -> tuple[float, float, str] | None:
@@ -1191,3 +1368,147 @@ def repair_wikidata_type_conflicts(
 
     logger.info(f"Wikidata type-conflict repair: {fixed} canonical swaps")
     return fixed
+
+
+@dataclass
+class QwenGeolocateResult:
+    events_scanned: int = 0        # candidate events (location_name NULL, geoloc_checked=0)
+    resolved_by_heuristic: int = 0  # re-classified located/skip on this pass, no LLM call spent
+    qwen_calls: int = 0            # LLM calls actually made (bounded by `limit`)
+    qwen_located: int = 0          # LLM returned a location_country
+    qwen_no_location: int = 0      # LLM confirmed no anchor (bilateral/relational)
+    qwen_errors: int = 0           # call/parse failed — event left unchecked, retried next batch
+    major_powers: list[str] = field(default_factory=list)
+
+
+def _parse_qwen_geoloc_response(raw: str) -> str | None:
+    """Parse the Qwen JSON response; return location_country or None.
+    Raises ValueError on malformed JSON / unexpected shape (caller treats
+    that the same as a network failure — retried next batch, not permanent)."""
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"expected JSON object, got {type(data).__name__}")
+    loc = data.get("location_country")
+    if loc is None:
+        return None
+    if not isinstance(loc, str) or not loc.strip():
+        raise ValueError(f"unexpected location_country value: {loc!r}")
+    return loc.strip()
+
+
+async def geolocate_ambiguous_events_qwen(
+    conn: sqlite3.Connection,
+    llm_client: "LLMClient",
+    *,
+    limit: int = 20,
+    top_n_major_powers: int = MAJOR_POWERS_TOP_N,
+) -> QwenGeolocateResult:
+    """Step 2 (CP-022) — Qwen3 4B local fallback for RSS events the free
+    heuristic (geolocate_rss_events) left `ambiguous` (actor-via-target
+    patterns like "US pressures Cuba via Venezuela", 2+ major powers plus
+    minors...). NOT wired into `pathos extract`'s default flow: 46.7s/call
+    measured on an idle M1 8GB (study_19 measured 90-113s under memory
+    pressure from Jupyter+Ollama+IDE together — better idle, still slow).
+    ~1000 ambiguous events on the current corpus would take hours in series.
+    Explicit opt-in batch only — `pathos extract --geolocate-qwen [--limit N]`
+    — small default limit, resumable across runs, same shape as the rest of
+    this module's network-bound steps.
+
+    Only the event title is sent to the model (study_19 prompt template,
+    validated on the 2 real cases that motivated CP-022 — that's 2 samples,
+    not a statistical validation, see CRITICAL_POINTS.md CP-022).
+
+    Resumability: an event is marked geoloc_checked=1 once *examined*,
+    whether or not a location was found — "bilateral, no anchor" is a real
+    answer and must not be retried every night. A network/parse failure on a
+    single call is logged and the loop continues to the next event
+    (`--geolocate-qwen` never aborts on one bad call); that event's
+    geoloc_checked stays 0 so it is retried on a future batch.
+    """
+    result = QwenGeolocateResult()
+    major_powers = _compute_major_powers(conn, top_n=top_n_major_powers)
+    result.major_powers = sorted(major_powers)
+
+    rows = conn.execute(
+        """SELECT id, title FROM events
+           WHERE origin = 'rss' AND location_name IS NULL AND geoloc_checked = 0
+           ORDER BY id"""
+    ).fetchall()
+    result.events_scanned = len(rows)
+    if not rows:
+        return result
+
+    # Same country/location entities used by geolocate_rss_events, keyed by
+    # event id — re-classifying here catches events whose classification
+    # would now resolve for free (heuristic/corpus moved since the last
+    # `pathos extract` run) before spending an LLM call on them.
+    grouped = _rss_event_countries(conn)
+
+    logger.info(
+        f"RSS geolocation (Qwen fallback): {len(rows)} candidate events, "
+        f"budget {limit} LLM calls"
+    )
+
+    qwen_calls_made = 0
+    for row in rows:
+        event_id, title = row["id"], row["title"]
+        r = _classify_heuristic(grouped.get(event_id, []), major_powers)
+
+        if r.decision == "located":
+            with conn:
+                conn.execute(
+                    "UPDATE events SET location_name = ?, geoloc_checked = 1 WHERE id = ?",
+                    (r.location_country, event_id),
+                )
+            result.resolved_by_heuristic += 1
+            continue
+        if r.decision in ("skip_bilateral", "skip_none"):
+            with conn:
+                conn.execute(
+                    "UPDATE events SET geoloc_checked = 1 WHERE id = ?", (event_id,)
+                )
+            result.resolved_by_heuristic += 1
+            continue
+
+        # decision == "ambiguous" — the only case worth an LLM call
+        if qwen_calls_made >= limit:
+            continue  # budget exhausted this run; geoloc_checked stays 0, retried next batch
+
+        qwen_calls_made += 1
+        result.qwen_calls += 1
+        try:
+            raw = await llm_client.complete(
+                [{"role": "user", "content": _GEOLOC_PROMPT_TMPL.format(title=title)}],
+                json_mode=True,
+            )
+            location_country = _parse_qwen_geoloc_response(raw)
+        except Exception as exc:
+            logger.warning(f"RSS geoloc/Qwen failed for event {event_id} ({title!r}): {exc}")
+            result.qwen_errors += 1
+            continue  # geoloc_checked stays 0 — retried next batch
+
+        with conn:
+            if location_country:
+                conn.execute(
+                    "UPDATE events SET location_name = ?, geoloc_checked = 1 WHERE id = ?",
+                    (location_country, event_id),
+                )
+                result.qwen_located += 1
+            else:
+                conn.execute(
+                    "UPDATE events SET geoloc_checked = 1 WHERE id = ?", (event_id,)
+                )
+                result.qwen_no_location += 1
+
+        logger.info(
+            f"RSS geoloc/Qwen [{qwen_calls_made}/{limit}]: event {event_id} → "
+            f"{location_country or 'no anchor'}"
+        )
+
+    logger.info(
+        f"RSS geolocation (Qwen fallback) complete: {result.events_scanned} scanned | "
+        f"{result.resolved_by_heuristic} resolved by heuristic re-check | "
+        f"{result.qwen_calls} LLM calls ({result.qwen_located} located, "
+        f"{result.qwen_no_location} no anchor, {result.qwen_errors} errors)"
+    )
+    return result

@@ -54,6 +54,7 @@ Stato aggiornato: 2026-07-07.
 | Dedup semantica KNN (cosine ≥ 0.92, 72h) | `semantic/dedup.py` | `raw_documents.is_duplicate` | ✅ |
 | Clustering → eventi (union-find, soglia 0.85) | `semantic/cluster.py` | `events`, `event_documents` | ✅ |
 | NER multilingua (spaCy `xx_ent_wiki_sm`) | `semantic/extract.py` | `entities`, `document_entities` | ✅ |
+| Geolocalizzazione eventi RSS (euristica + fallback Qwen, CP-022) | `semantic/extract.py` | `events.location_name`, `events.geoloc_checked` | ✅ |
 | Geocoding (Nominatim, cache) | `semantic/extract.py` | `events.lat/lon`, `geocode_cache` | ✅ |
 | Wikidata entity linking (QID, canonical_name) | `semantic/extract.py` | `entities.wikidata_qid` | ✅ |
 | Grafo co-occorrenze | `semantic/graph.py` | `entity_links` | ✅ |

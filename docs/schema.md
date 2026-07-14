@@ -55,6 +55,7 @@ erDiagram
         REAL lat
         REAL lon
         TEXT resolved_at "ISO 8601 se chiuso"
+        INTEGER geoloc_checked "1=fallback Qwen (CP-022) ha esaminato questo evento"
         TEXT created_at "ISO 8601"
     }
 

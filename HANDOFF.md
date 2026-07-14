@@ -1,6 +1,81 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-13 ~ notte — CP-008/CP-010/CP-012 risolti (branch `feat/fundamentals-analysis`)*
+*Aggiornato: 2026-07-14 — CP-022 risolto (branch `feat/fundamentals-analysis`, PR #14)*
+
+## CP-022 risolto (2026-07-14, branch `feat/fundamentals-analysis`, PR #14)
+
+**Cosa**: `pathosphere/semantic/extract.py` — 2 nuove funzioni, implementano il design già
+validato in `notebooks/study_19_rss_event_geolocation.ipynb` (nessuna riprogettazione, solo
+implementazione):
+
+- `geolocate_rss_events()` — Step 1, euristica gratis/istantanea/no-rete. Per ogni evento
+  `origin='rss'` senza `location_name`, classifica le country-entity del cluster (major-power set
+  ricalcolato a runtime, top-8 per documenti distinti — non lista fissa) in `located` (scrive
+  `location_name`) / `skip_bilateral` (relazione tra grandi potenze, non ancorata) / `skip_none`
+  (nessuna entità) / `ambiguous` (per Step 2). Gira **sempre**, cablata in `pathos extract` PRIMA
+  di `geocode_events()` (invariata) — stesso comando, un flag in più nell'output, zero nuova
+  superficie CLI per l'uso comune.
+- `geolocate_ambiguous_events_qwen()` — Step 2, fallback Qwen3 4B locale per i casi `ambiguous`.
+  **Non** nel flusso di default — comando esplicito `pathos extract --geolocate-qwen
+  [--geoloc-limit N]` (default 20/run). Riprendibile via nuova colonna `events.geoloc_checked`
+  (migration idempotente in `_MIGRATIONS`): un evento è marcato esaminato appena ha risposta
+  definitiva (location o "nessun bersaglio" confermato), mai ririprovato; solo un fallimento di
+  rete/parsing lo lascia a 0 per retry al batch successivo. Prompt title-only già validato nel
+  notebook, riusato identico.
+
+**Latenza Qwen ri-misurata** (macchina scarica, solo Ollama attivo, no Jupyter/IDE insieme):
+**46.7s/chiamata** — meglio dei 90-113s del notebook sotto stress di memoria, ma sempre lento.
+Conferma la decisione presa nel notebook: batch esplicito piccolo, mai sincrono in `pathos extract`
+interattivo.
+
+**Eseguito sul DB reale** (solo Step 1 — Step 2 Qwen NON lanciato sul backlog storico completo,
+fuori scope, ~17h di chiamate seriali su 1324 eventi ambigui):
+
+| Decisione | N | % |
+|---|---|---|
+| `located` | 870 | 32% |
+| `ambiguous` | 1324 | 49% |
+| `skip_bilateral` | 74 | 3% |
+| `skip_none` | 421 | 16% |
+
+2689 eventi RSS totali valutati (corpus cresciuto rispetto al notebook — ingest continuato tra le
+sessioni). `MAJOR_POWERS` di questo run: China, India, Iran, Israel, Japan, Russia, Ukraine, United
+States.
+
+**Test**: 535 verdi (era 519, +16 in `test_extract.py`, tutto mockato, nessuna chiamata rete/Ollama
+reale in pytest). Ruff pulito sui file toccati (12 violazioni pre-esistenti in `extract.py`/
+`cli.py`/`test_extract.py`, invariate — F541/F841/E741 sparse, non introdotte da questo fix, fuori
+scope).
+
+**Valutazione critica (limiti reali)**:
+1. Euristica dipende dalla qualità NER a monte — rumore nel conteggio country-entity può spostare
+   un evento verso `ambiguous` o assegnare un `location_name` sbagliato.
+2. `MAJOR_POWERS` **non stabile nel tempo** — ricalcolato ogni run sul corpus corrente, un paese può
+   entrare/uscire dal top-8 man mano che il corpus cresce. Un evento già scritto non viene mai
+   sovrascritto, ma la classificazione teorica di uno stesso evento può differire se rivalutato in
+   futuro — da tenere a mente per audit storici, non un bug.
+3. Validazione Qwen resta a **2 campioni reali** (Cuba, Iran — quelli che hanno motivato
+   l'indagine). Non è validazione statistica — il batch va monitorato a campione quando gira su
+   volumi reali più grandi.
+4. **Backfill storico incompleto**: 1324 eventi `ambiguous` restano senza `location_name` finché
+   qualcuno non lancia ripetutamente `pathos extract --geolocate-qwen` (20/run default, ~17h totali
+   a 46.7s/call per smaltire tutto). Consigliato: `caffeinate -i uv run pathos extract
+   --geolocate-qwen --geoloc-limit 200` come batch notturno, ripetuto finché `ambiguous` non cala a
+   0 — stesso pattern di `pathos loop`.
+5. `geocode_events()` (Nominatim) invariata — riceve solo più `location_name` da geolocalizzare,
+   stesso rate-limit 1 req/s.
+
+**Nota di processo**: implementazione delegata a un subagent in background, interrotto **2 volte**
+da errori infrastrutturali (connessione chiusa a metà risposta, poi stallo 600s senza progresso) —
+non errori nel suo lavoro. Codice e test sono sopravvissuti intatti nel working tree (non
+committati) entrambe le volte; dopo il secondo stallo il completamento (CRITICAL_POINTS.md,
+LOOP_STATE.md, questa sezione, numeri reali sul DB, test finale, commit, push) è stato fatto
+direttamente in sessione principale invece di tentare una terza ripresa.
+
+**CRITICAL_POINTS.md**: CP-022 marcato RISOLTO con dettaglio + valutazione critica a 5 punti (stesso
+formato delle voci già chiuse).
+
+---
 
 ## CP-008 + CP-010 + CP-012 risolti (2026-07-13, notte, branch `feat/fundamentals-analysis`, PR #14)
 

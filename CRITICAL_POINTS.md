@@ -291,7 +291,7 @@ Verifica quantitativa: top-20 entità collegate a doc `origin='rss'` → 19/20 n
 
 ---
 
-## CP-022: eventi RSS non geolocalizzati — nessuno step deriva `location_name` (aperto, in validazione)
+## CP-022: eventi RSS non geolocalizzati — nessuno step deriva `location_name` — **RISOLTO 2026-07-14**
 
 **Contesto**: dashboard Streamlit (Fase 4) — utente nota che sulla mappa Cuba/Venezuela mostrano solo
 terremoti USGS, mai le notizie politiche/economiche pur presenti nel DB (15+ articoli Cuba, 15+
@@ -323,11 +323,61 @@ conteggio entità):
   velocità — improponibile interattivo, plausibile solo come batch notturno offline, stesso pattern
   di `pathos loop`).
 
-**Non ancora implementato**: nessuna modifica a `extract.py`. Prossimo passo: `geolocate_rss_events()`
-(euristica + fallback batch Qwen offline) chiamata da `pathos extract`, poi `geocode_events()`
-esistente invariato. Ollama installato ex-novo in questa sessione (`brew install ollama`, non
-presente prima) — verificare se debba restare un servizio permanente (`brew services start ollama`)
-o essere avviato solo durante il ciclo notturno.
+**Implementato** (`pathosphere/semantic/extract.py`, sessione 2026-07-14, branch `feat/fundamentals-analysis`):
+
+- **Step 1 — `geolocate_rss_events()`**: euristica gratis/istantanea/no-rete, gira sempre in
+  `pathos extract` PRIMA di `geocode_events()` (invariata). `MAJOR_POWERS` ricalcolato a runtime
+  (top-8 country/location entity per documenti distinti), non lista fissa.
+- **Step 2 — `geolocate_ambiguous_events_qwen()`**: fallback Qwen3 4B locale per i casi `ambiguous`,
+  **non** nel flusso di default — comando esplicito `pathos extract --geolocate-qwen [--geoloc-limit N]`
+  (default 20/run). Riprendibile via nuova colonna `events.geoloc_checked` (migration idempotente):
+  un evento è marcato esaminato appena ha una risposta definitiva (location trovata O "nessun
+  bersaglio" confermato), mai ririprovato; solo un fallimento di rete/JSON lascia `geoloc_checked=0`
+  per retry al batch successivo.
+
+**Latenza ri-misurata a macchina scarica** (nessun Jupyter/IDE aperti insieme, solo Ollama): **46.7s
+per chiamata singola** — meglio dei 90-113s originali sotto pressione di memoria, ma ancora lento
+(cold-start Qwen3 4B su 8GB M1). Conferma: batch esplicito piccolo, mai sincrono in `pathos extract`
+di default.
+
+**Eseguito sul DB reale** (solo Step 1 euristica — Step 2 Qwen NON eseguito sul backlog storico
+completo in questa sessione, fuori scope, ~1300 chiamate × 47s ≈ 17h):
+
+| Decisione | N | % |
+|---|---|---|
+| `located` (`location_name` scritto) | 870 | 32% |
+| `ambiguous` (in attesa di `--geolocate-qwen`) | 1324 | 49% |
+| `skip_bilateral` (solo grandi potenze, es. USA-Iran) | 74 | 3% |
+| `skip_none` (nessuna entità location) | 421 | 16% |
+
+Totale eventi RSS valutati: 2689 (il corpus è cresciuto rispetto ai 1996/1690 del notebook di
+validazione — ingest continuato tra le due sessioni). `MAJOR_POWERS` calcolato su questo run: China,
+India, Iran, Israel, Japan, Russia, Ukraine, United States.
+
+**Test**: 16 nuovi in `test_extract.py` (535 totali verdi), tutto mockato (nessuna chiamata rete/Ollama
+reale in pytest). Ruff pulito sui file toccati (12 violazioni pre-esistenti invariate, non introdotte
+da questo fix — F541/F841/E741 sparse in `extract.py`/`cli.py`/`test_extract.py`, fuori scope).
+
+**Valutazione critica (limiti reali, non nascosti)**:
+1. **L'euristica dipende dalla qualità del NER a monte** — rumore (nomi propri/date/frammenti taggati
+   come location) inquina il conteggio "minor" e può spingere un evento verso `ambiguous` invece che
+   `located`, o viceversa assegnare un `location_name` sbagliato se il rumore è l'unica entità location
+   di un evento altrimenti a 0 entità reali.
+2. **`MAJOR_POWERS` non è stabile nel tempo** — ricalcolato ogni run sul corpus corrente; un paese può
+   entrare/uscire dal top-8 man mano che il corpus cresce, il che significa che la classificazione
+   `located`/`ambiguous`/`skip_bilateral` di uno stesso evento **può cambiare se rieseguito** in futuro
+   (non è un problema di correttezza per un evento già scritto — `location_name` non viene mai
+   sovrascritto una volta popolato — ma va tenuto a mente per l'audit storico).
+3. **Validazione Qwen resta a 2 campioni reali** (quelli del notebook che hanno motivato l'indagine,
+   Cuba e Iran) — non è validazione statistica. Il batch va monitorato a campione quando gira per
+   davvero su volumi più grandi, non dato per corretto sulla fiducia del design.
+4. **Backfill storico non eseguito**: 1324 eventi `ambiguous` restano senza `location_name` finché
+   qualcuno non lancia `pathos extract --geolocate-qwen` ripetutamente (20/run default) — a 46.7s/call
+   sono ~17h di chiamate seriali per smaltire tutto il backlog attuale. Pattern consigliato: batch
+   notturno via `--geoloc-limit` più alto (es. 200-300) lanciato con `caffeinate -i`, non un singolo
+   giro interattivo.
+5. **`geocode_events()` invariata** (nessun rischio di regressione lì) — riceve semplicemente più
+   `location_name` da geolocalizzare via Nominatim, stesso rate-limit 1 req/s di prima.
 
 **Impatto**: basso/medio — non blocca nulla di esistente (dashboard già gestisce eventi non
 geolocalizzati mostrando solo quelli con lat/lon), ma la mappa sottorappresenta sistematicamente

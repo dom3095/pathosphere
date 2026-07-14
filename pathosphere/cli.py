@@ -941,9 +941,17 @@ def cluster(time_window_hours: int) -> None:
 @click.option("--repair-wikidata-types", is_flag=True, default=False,
               help="One-time network repair for QID conflicts resolved before "
                    "type-aware resolution existed (CP-018 #1).")
+@click.option("--geolocate-qwen", is_flag=True, default=False,
+              help="CP-022 Step 2: Qwen3 4B local fallback for RSS events the "
+                   "free heuristic left ambiguous. SLOW (~seconds/event, network "
+                   "to Ollama) — explicit opt-in batch, not run by default.")
+@click.option("--geoloc-limit", default=20, show_default=True,
+              help="Max Qwen calls per run for --geolocate-qwen (resumable "
+                   "across runs via events.geoloc_checked).")
 def extract(
     limit: int | None, max_lookups: int, skip_geocode: bool, skip_wikidata: bool,
     backfill_demonyms: bool, backfill_orgs: bool, repair_wikidata_types: bool,
+    geolocate_qwen: bool, geoloc_limit: int,
 ) -> None:
     """Run NER, geocode events, link entities to Wikidata."""
     from pathosphere.db.schema import get_connection
@@ -954,6 +962,7 @@ def extract(
         canonicalize_person_entities,
         extract_entities,
         geocode_events,
+        geolocate_rss_events,
         link_wikidata,
         purge_noise_entities,
         repair_wikidata_type_conflicts,
@@ -1000,6 +1009,15 @@ def extract(
         )
         click.echo(f"Wikidata type-conflict repair: {repaired} canonical swaps")
 
+    # CP-022 Step 1: free heuristic, no network — always runs so location_name
+    # is populated before geocode_events() (unchanged) picks it up below.
+    geoloc = geolocate_rss_events(conn)
+    click.echo(
+        f"RSS geolocation (heuristic): {geoloc.events_evaluated} events | "
+        f"{geoloc.located} located | {geoloc.ambiguous} ambiguous | "
+        f"{geoloc.skip_bilateral} skip_bilateral | {geoloc.skip_none} skip_none"
+    )
+
     if not skip_geocode:
         geo = geocode_events(
             conn,
@@ -1021,6 +1039,26 @@ def extract(
             f"Wikidata: {wd.qids_found} QIDs | {wd.entities_checked} checked | "
             f"{wd.conflicts} conflicts | {wd.stoplisted} stoplisted"
             + (" | RATE LIMITED" if wd.rate_limited else "")
+        )
+
+    if geolocate_qwen:
+        # CP-022 Step 2: explicit opt-in, slow (LLM call/event) — never part
+        # of the default flow above. Resumable via events.geoloc_checked.
+        import asyncio
+
+        from pathosphere.llm.client import LLMClient
+        from pathosphere.semantic.extract import geolocate_ambiguous_events_qwen
+
+        qwen_result = asyncio.run(
+            geolocate_ambiguous_events_qwen(
+                conn, LLMClient(backend="qwen-local"), limit=geoloc_limit,
+            )
+        )
+        click.echo(
+            f"RSS geolocation (Qwen fallback): {qwen_result.events_scanned} scanned | "
+            f"{qwen_result.qwen_calls} LLM calls ({qwen_result.qwen_located} located, "
+            f"{qwen_result.qwen_no_location} no anchor, {qwen_result.qwen_errors} errors) | "
+            f"{qwen_result.resolved_by_heuristic} resolved by heuristic re-check"
         )
 
     conn.close()

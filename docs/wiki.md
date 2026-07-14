@@ -676,13 +676,15 @@ Due step indipendenti e riprendibili:
 **File:** `pathosphere/semantic/extract.py`  
 **Comando:** `uv run pathos extract`
 
-Tre step indipendenti e riprendibili:
+Step indipendenti e riprendibili:
 
 | Step | Funzione | Output tabelle |
 |---|---|---|
 | NER (spaCy `xx_ent_wiki_sm`) | `extract_entities` | `entities` + `document_entities` |
+| Geolocalizzazione RSS — euristica (CP-022) | `geolocate_rss_events` | `events.location_name` |
 | Geocoding (Nominatim) | `geocode_events` | `events.lat/lon` + `geocode_cache` |
 | Wikidata QID | `link_wikidata` | `entities.wikidata_qid` + `canonical_name` |
+| Geolocalizzazione RSS — fallback Qwen (CP-022, opt-in) | `geolocate_ambiguous_events_qwen` | `events.location_name` + `events.geoloc_checked` |
 
 **Parametri:**
 
@@ -692,10 +694,23 @@ Tre step indipendenti e riprendibili:
 | `--max-lookups` | 50 | Budget lookup Nominatim + Wikidata per run |
 | `--skip-geocode` | off | Salta Nominatim (solo NER + Wikidata) |
 | `--skip-wikidata` | off | Salta Wikidata (solo NER + geocoding) |
+| `--geolocate-qwen` | off | Attiva lo Step 2 Qwen (vedi sotto) — lento, opt-in esplicito |
+| `--geoloc-limit` | 20 | Budget chiamate Qwen per run (`--geolocate-qwen`), riprendibile |
 
 **NER:** modello `xx_ent_wiki_sm` (~30 MB), multilingua. Label map: `PER→person`, `ORG→company`, `LOC→location`, `MISC→other`. Ogni doc viene troncato a 2000 caratteri (title + body head). Flag `ner_done=1` segna i doc già processati → riprendibile.
 
-**Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup).
+**Geolocalizzazione RSS (CP-022):** solo gli ingestor geo-nativi (USGS/FIRMS/PortWatch) scrivono `location_name` dal dato grezzo — nulla lo derivava per eventi `origin='rss'` clusterizzati (0/1996 prima del fix). Due step, validati in `notebooks/study_19_rss_event_geolocation.ipynb`:
+
+- **Step 1 — euristica** (`geolocate_rss_events`, gratis, istantanea, nessuna rete, gira sempre in `pathos extract` prima di `geocode_events`): per ogni evento RSS senza `location_name`, prende le entità `location`/`country` menzionate nei documenti del cluster e applica una regola attore/bersaglio sul set "grandi potenze" — calcolato **a runtime**, non una lista fissa: le top-8 country/location entity per numero di documenti distinti nel corpus (`_compute_major_powers`, soglia sul gradino naturale della distribuzione osservato nel notebook).
+  - 0 paesi menzionati → `skip_none` (nessuna azione)
+  - 1 solo paese → `located`, scrive `location_name`
+  - 2+ paesi, tutti "grande potenza" → `skip_bilateral` (relazione USA-Iran ecc., non ancorata a un luogo — nessuna azione)
+  - 1 major + 1 minor → `located` sul minor (ipotesi: major = attore, minor = bersaglio)
+  - Tutto il resto (1 major + 2+ minor, 2+ major + minor...) → `ambiguous`, lasciato per lo Step 2
+  - Sul DB reale in questa sessione: vedi CP-022 in `CRITICAL_POINTS.md` per i numeri esatti di classificazione.
+- **Step 2 — fallback Qwen locale** (`geolocate_ambiguous_events_qwen`, **non** nel flusso di default di `pathos extract` — comando esplicito `pathos extract --geolocate-qwen [--geoloc-limit N]`): per gli eventi `ambiguous`, un prompt title-only a Qwen3 4B via `LLMClient(backend="qwen-local")` (`json_mode=True`) chiede `location_country`/`actor_countries`/`via_countries` e distingue bersaglio-tramite-terzo-paese (es. "USA→Cuba via Venezuela" → Cuba) e relazioni bilaterali senza bersaglio (→ null, nessuna scrittura). **Lento** — 46.7s/chiamata misurato a macchina scarica (era 90-113s nel notebook sotto pressione di memoria) — quindi batch esplicito con budget piccolo (`--geoloc-limit`, default 20), non sincrono nel flusso interattivo. Riprendibile via `events.geoloc_checked`: un evento è marcato `1` appena *esaminato* (location trovata o "nessun bersaglio" confermato — entrambe risposte definitive, mai ririprovate), resta `0` solo su fallimento di rete/JSON malformato (log warning, batch continua, evento ritentato al prossimo run).
+
+**Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup). Invariato da CP-022 — riceve `location_name` già popolato dallo Step 1/2 sopra.
 
 **Wikidata:** `wbsearchentities` API per entità ordinate per `mentions DESC` (priorità alle più citate). Rate: 1 req/s (`WIKIDATA_DELAY_S`), delay rispettato anche su errore. Su HTTP 429 il run si interrompe subito (le entità restanti restano `wikidata_checked=0` → ritentate al ciclo successivo). Stoplist `GENERIC_ENTITY_STOPLIST` (~110 nomi comuni/ruoli/demonimi es. `CRIMINAL`, `MILITARY`, `MALE`): marcati `wikidata_checked=1` senza lookup (e QID legacy sbagliati azzerati), così il budget va a entità vere. Conflict on `UNIQUE(wikidata_qid)` gestito: marca `wikidata_checked=1` senza sovrascrivere (merge futura work).
 
@@ -722,7 +737,7 @@ INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF
 |---|---|---|---|
 | `INGEST` | `_phase_ingest` | `pathos ingest gdelt/rss/…` | Scarica GDELT (+ anomalie Goldstein CP-016) + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS/IODA |
 | `EMBED` | `_phase_embed` | `pathos embed` | Embedding e5-small + dedup semantica KNN |
-| `EXTRACT` | `_phase_extract` | `pathos extract` | NER (spaCy) + geocoding Nominatim + Wikidata QID |
+| `EXTRACT` | `_phase_extract` | `pathos extract` | NER (spaCy) + geolocalizzazione RSS euristica (CP-022) + geocoding Nominatim + Wikidata QID |
 | `CLUSTER` | `_phase_cluster` | `pathos cluster` | Union-find clustering → eventi |
 | `GRAPH` | `_phase_graph` | `pathos graph` | Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences |
 | `BRIEF` | `_phase_brief` | `pathos brief` | Genera brief mattutino + tesi (Claude SDK) |

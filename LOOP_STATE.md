@@ -1,6 +1,36 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: CP-008/CP-010/CP-012 risolti (branch `feat/fundamentals-analysis`, PR #14)
+## Fase corrente: CP-022 geoloc RSS risolto (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 — CP-022 implementato (euristica + fallback Qwen), eseguito sul DB reale (solo Step 1):**
+
+`geolocate_rss_events()` (euristica gratis, sempre attiva in `pathos extract` prima di
+`geocode_events`) + `geolocate_ambiguous_events_qwen()` (fallback Qwen3 4B, opt-in esplicito
+`--geolocate-qwen --geoloc-limit N`, riprendibile via nuova colonna `events.geoloc_checked`).
+Latenza Qwen ri-misurata a macchina scarica: 46.7s/call (era 90-113s nel notebook sotto stress).
+
+Eseguito Step 1 sul DB reale: 2689 eventi RSS valutati → 870 `located` (32%), 1324 `ambiguous`
+(49%, in attesa di `--geolocate-qwen`), 74 `skip_bilateral`, 421 `skip_none`. Step 2 (Qwen) NON
+eseguito sul backlog storico completo (fuori scope questa sessione, ~17h di chiamate seriali) —
+prossimo passo consigliato: batch notturno `caffeinate -i uv run pathos extract --geolocate-qwen
+--geoloc-limit 200` ripetuto finché `ambiguous` non scende a 0.
+
+Test: 535 verdi (era 519, +16). Ruff pulito sui file toccati (12 violazioni pre-esistenti
+invariate). CP-022 marcato RISOLTO in `CRITICAL_POINTS.md` con valutazione critica a 5 punti
+(dipendenza da qualità NER, instabilità `MAJOR_POWERS` nel tempo, validazione Qwen a 2 campioni,
+backfill storico non completato, `geocode_events()` invariata).
+
+Nota di processo: implementazione fatta da subagent in background, interrotto 2 volte da errori
+infra (connessione caduta, poi stallo 600s) — non errori logici. Codice/test recuperati intatti
+dal working tree entrambe le volte (mai persi), completamento doc+commit+push fatto a mano.
+
+**Prossimo**: batch Qwen storico (~1324 eventi ambigui) quando comodo, non urgente (mappa dashboard
+già migliorata da 870 nuovi eventi geolocalizzati). Oppure: merge PR #14 (fundamentals + CP-008/010/
+012/022 tutti insieme) → primo `thesis generate` reale.
+
+---
+
+## Fase precedente: CP-008/CP-010/CP-012 risolti (branch `feat/fundamentals-analysis`, PR #14)
 
 **2026-07-13 ~ notte — 3 critical point chiusi (indipendenti, 1 giro):**
 

@@ -5,21 +5,27 @@ NER uses a MockNer (no spaCy model load); network steps use mock httpx
 transports — no real requests at test time.
 """
 
+import asyncio
 import hashlib
 import json
 import sqlite3
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
 
 from pathosphere.semantic.extract import (
     _build_text,
+    _classify_heuristic,
+    _compute_major_powers,
     backfill_demonym_entities,
     backfill_organization_entities,
     canonicalize_location_entities,
     canonicalize_person_entities,
     extract_entities,
     geocode_events,
+    geolocate_ambiguous_events_qwen,
+    geolocate_rss_events,
     link_wikidata,
     purge_noise_entities,
     repair_wikidata_type_conflicts,
@@ -1235,3 +1241,326 @@ def test_purge_noise_entities_is_idempotent(tmp_db):
 
     assert first == 1
     assert second == 0
+
+
+# ─── CP-022: RSS event geolocation (heuristic) ──────────────────────────────
+
+
+def _insert_rss_event(conn, *, title: str = "Event", origin: str = "rss") -> int:
+    cur = conn.execute(
+        "INSERT INTO events (title, first_seen, last_seen, origin) "
+        "VALUES (?, '2026-07-01', '2026-07-01', ?)",
+        (title, origin),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _get_or_create_location_entity(conn, name: str) -> int:
+    """Unlike _insert_entity (plain INSERT, blows up on repeat names), country
+    entities here are shared across many events/docs — need get-or-create."""
+    row = conn.execute(
+        "SELECT id FROM entities WHERE name = ? AND entity_type = 'location'", (name,)
+    ).fetchone()
+    if row:
+        return row["id"]
+    return _insert_entity(conn, name, entity_type="location")
+
+
+def _attach_event_countries(conn, event_id: int, countries: list[str]) -> None:
+    """Create one document, link it into the event's cluster, tag it with
+    the given location entities (reuses existing entity rows by name so
+    global major-power document counts accumulate across calls)."""
+    doc_id = _insert_doc(conn, url=f"https://x.com/ev{event_id}")
+    conn.execute(
+        "INSERT INTO event_documents (event_id, document_id) VALUES (?, ?)",
+        (event_id, doc_id),
+    )
+    for name in countries:
+        eid = _get_or_create_location_entity(conn, name)
+        conn.execute(
+            "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 1)",
+            (doc_id, eid),
+        )
+    conn.commit()
+
+
+def _bump_country_doc_count(conn, name: str, n_docs: int) -> None:
+    """Inflate a country's global distinct-document mention count (used by
+    _compute_major_powers), independent of any event linkage."""
+    eid = _get_or_create_location_entity(conn, name)
+    for i in range(n_docs):
+        doc_id = _insert_doc(conn, url=f"https://hub.example/{name}/{i}")
+        conn.execute(
+            "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 1)",
+            (doc_id, eid),
+        )
+    conn.commit()
+
+
+def test_classify_heuristic_no_countries_is_skip_none():
+    r = _classify_heuristic([], {"United States"})
+    assert r.decision == "skip_none"
+    assert r.location_country is None
+
+
+def test_classify_heuristic_single_country_is_located():
+    r = _classify_heuristic(["Cuba"], {"United States"})
+    assert r.decision == "located"
+    assert r.location_country == "Cuba"
+
+
+def test_classify_heuristic_dedups_repeated_country():
+    r = _classify_heuristic(["Cuba", "Cuba", "Cuba"], {"United States"})
+    assert r.decision == "located"
+    assert r.location_country == "Cuba"
+
+
+def test_classify_heuristic_all_majors_is_skip_bilateral():
+    r = _classify_heuristic(
+        ["United States", "Iran"], {"United States", "Iran", "China"}
+    )
+    assert r.decision == "skip_bilateral"
+    assert r.location_country is None
+
+
+def test_classify_heuristic_one_major_one_minor_targets_minor():
+    r = _classify_heuristic(["United States", "Cuba"], {"United States", "China"})
+    assert r.decision == "located"
+    assert r.location_country == "Cuba"
+
+
+def test_classify_heuristic_one_major_two_minors_is_ambiguous():
+    """The Cuba/Venezuela case that motivated CP-022: actor-via-target
+    pattern isn't distinguishable by count alone."""
+    r = _classify_heuristic(
+        ["United States", "Cuba", "Venezuela"], {"United States", "China"}
+    )
+    assert r.decision == "ambiguous"
+    assert r.location_country is None
+
+
+def test_classify_heuristic_two_majors_one_minor_is_ambiguous():
+    r = _classify_heuristic(
+        ["United States", "China", "Venezuela"], {"United States", "China"}
+    )
+    assert r.decision == "ambiguous"
+
+
+def test_compute_major_powers_top_n(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+    _bump_country_doc_count(tmp_db, "Cuba", 1)
+
+    majors = _compute_major_powers(tmp_db, top_n=2)
+
+    assert majors == {"United States", "China"}
+
+
+def test_geolocate_rss_events_classifies_and_writes_location(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+
+    ev_single = _insert_rss_event(tmp_db, title="Cuba earthquake solidarity")
+    _attach_event_countries(tmp_db, ev_single, ["Cuba"])
+
+    ev_bilateral = _insert_rss_event(tmp_db, title="US-China trade talks")
+    _attach_event_countries(tmp_db, ev_bilateral, ["United States", "China"])
+
+    ev_major_minor = _insert_rss_event(tmp_db, title="US sanctions Cuba")
+    _attach_event_countries(tmp_db, ev_major_minor, ["United States", "Cuba"])
+
+    ev_ambiguous = _insert_rss_event(tmp_db, title="US pressures Cuba via Venezuela")
+    _attach_event_countries(
+        tmp_db, ev_ambiguous, ["United States", "China", "Venezuela"]
+    )
+
+    ev_no_entities = _insert_rss_event(tmp_db, title="No countries mentioned here")
+
+    ev_non_rss = _insert_rss_event(tmp_db, title="USGS earthquake", origin="usgs")
+    _attach_event_countries(tmp_db, ev_non_rss, ["Japan"])
+
+    result = geolocate_rss_events(tmp_db, top_n_major_powers=2)
+
+    assert result.events_evaluated == 5  # ev_non_rss excluded (origin != 'rss')
+    assert result.located == 2
+    assert result.skip_bilateral == 1
+    assert result.ambiguous == 1
+    assert result.skip_none == 1
+    assert set(result.major_powers) == {"United States", "China"}
+
+    rows = {
+        r["id"]: r["location_name"]
+        for r in tmp_db.execute("SELECT id, location_name FROM events")
+    }
+    assert rows[ev_single] == "Cuba"
+    assert rows[ev_bilateral] is None
+    assert rows[ev_major_minor] == "Cuba"
+    assert rows[ev_ambiguous] is None
+    assert rows[ev_no_entities] is None
+    assert rows[ev_non_rss] is None  # untouched — not origin='rss'
+
+
+def test_geolocate_rss_events_is_idempotent_on_already_located(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+
+    ev = _insert_rss_event(tmp_db, title="Cuba earthquake solidarity")
+    _attach_event_countries(tmp_db, ev, ["Cuba"])
+
+    first = geolocate_rss_events(tmp_db, top_n_major_powers=2)
+    second = geolocate_rss_events(tmp_db, top_n_major_powers=2)
+
+    assert first.located == 1
+    assert second.events_evaluated == 0  # nothing left with location_name IS NULL
+    assert second.located == 0
+
+
+# ─── CP-022: RSS event geolocation (Qwen fallback) ──────────────────────────
+
+
+def _make_qwen_client(*, side_effect=None, return_value=None) -> MagicMock:
+    client = MagicMock()
+    if side_effect is not None:
+        client.complete = AsyncMock(side_effect=side_effect)
+    else:
+        client.complete = AsyncMock(return_value=return_value)
+    return client
+
+
+def test_qwen_fallback_resolves_ambiguous_location(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+    ev = _insert_rss_event(tmp_db, title="US pressures Cuba via Venezuela")
+    _attach_event_countries(tmp_db, ev, ["United States", "China", "Venezuela"])
+
+    client = _make_qwen_client(
+        return_value=json.dumps(
+            {"location_country": "Cuba", "actor_countries": ["United States"], "via_countries": ["Venezuela"]}
+        )
+    )
+
+    result = asyncio.run(
+        geolocate_ambiguous_events_qwen(tmp_db, client, limit=5, top_n_major_powers=2)
+    )
+
+    assert result.qwen_calls == 1
+    assert result.qwen_located == 1
+    row = tmp_db.execute(
+        "SELECT location_name, geoloc_checked FROM events WHERE id = ?", (ev,)
+    ).fetchone()
+    assert row["location_name"] == "Cuba"
+    assert row["geoloc_checked"] == 1
+
+
+def test_qwen_fallback_records_no_anchor_without_retry(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+    ev = _insert_rss_event(tmp_db, title="No final agreement on deal with US – Iran")
+    _attach_event_countries(tmp_db, ev, ["United States", "China", "Iran"])
+
+    client = _make_qwen_client(
+        return_value=json.dumps(
+            {"location_country": None, "actor_countries": ["United States", "Iran"], "via_countries": []}
+        )
+    )
+
+    result = asyncio.run(
+        geolocate_ambiguous_events_qwen(tmp_db, client, limit=5, top_n_major_powers=2)
+    )
+
+    assert result.qwen_calls == 1
+    assert result.qwen_no_location == 1
+    row = tmp_db.execute(
+        "SELECT location_name, geoloc_checked FROM events WHERE id = ?", (ev,)
+    ).fetchone()
+    assert row["location_name"] is None
+    assert row["geoloc_checked"] == 1  # examined, no anchor — never retried
+
+
+def test_qwen_fallback_respects_limit_and_is_resumable(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+    events = []
+    for i in range(3):
+        ev = _insert_rss_event(tmp_db, title=f"ambiguous event {i}")
+        _attach_event_countries(tmp_db, ev, ["United States", "China", f"Minor{i}"])
+        events.append(ev)
+
+    client = _make_qwen_client(
+        return_value=json.dumps({"location_country": "X", "actor_countries": [], "via_countries": []})
+    )
+
+    result = asyncio.run(
+        geolocate_ambiguous_events_qwen(tmp_db, client, limit=1, top_n_major_powers=2)
+    )
+
+    assert result.qwen_calls == 1
+    checked = [
+        r["geoloc_checked"] for r in tmp_db.execute(
+            "SELECT geoloc_checked FROM events WHERE id IN (?, ?, ?) ORDER BY id", events
+        )
+    ]
+    assert sum(checked) == 1  # only 1 event examined this batch, other 2 left for next run
+
+
+def test_qwen_fallback_call_failure_leaves_event_unchecked(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+    ev = _insert_rss_event(tmp_db, title="ambiguous event")
+    _attach_event_countries(tmp_db, ev, ["United States", "China", "Minor"])
+
+    client = _make_qwen_client(side_effect=RuntimeError("Cannot reach Ollama"))
+
+    result = asyncio.run(
+        geolocate_ambiguous_events_qwen(tmp_db, client, limit=5, top_n_major_powers=2)
+    )
+
+    assert result.qwen_errors == 1
+    row = tmp_db.execute(
+        "SELECT location_name, geoloc_checked FROM events WHERE id = ?", (ev,)
+    ).fetchone()
+    assert row["location_name"] is None
+    assert row["geoloc_checked"] == 0  # left for retry, not a permanent answer
+
+
+def test_qwen_fallback_malformed_json_leaves_event_unchecked(tmp_db):
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+    ev = _insert_rss_event(tmp_db, title="ambiguous event")
+    _attach_event_countries(tmp_db, ev, ["United States", "China", "Minor"])
+
+    client = _make_qwen_client(return_value="not json at all")
+
+    result = asyncio.run(
+        geolocate_ambiguous_events_qwen(tmp_db, client, limit=5, top_n_major_powers=2)
+    )
+
+    assert result.qwen_errors == 1
+    row = tmp_db.execute(
+        "SELECT geoloc_checked FROM events WHERE id = ?", (ev,)
+    ).fetchone()
+    assert row["geoloc_checked"] == 0
+
+
+def test_qwen_fallback_skips_llm_call_when_heuristic_now_resolves(tmp_db):
+    """Bilateral-only event sitting unchecked (e.g. from before geolocate_rss_events
+    last ran) should be marked checked without ever calling the LLM."""
+    _bump_country_doc_count(tmp_db, "United States", 10)
+    _bump_country_doc_count(tmp_db, "China", 8)
+    ev = _insert_rss_event(tmp_db, title="US-China trade talks")
+    _attach_event_countries(tmp_db, ev, ["United States", "China"])
+
+    client = _make_qwen_client(return_value=json.dumps({"location_country": None}))
+
+    result = asyncio.run(
+        geolocate_ambiguous_events_qwen(tmp_db, client, limit=5, top_n_major_powers=2)
+    )
+
+    client.complete.assert_not_called()
+    assert result.resolved_by_heuristic == 1
+    row = tmp_db.execute(
+        "SELECT location_name, geoloc_checked FROM events WHERE id = ?", (ev,)
+    ).fetchone()
+    assert row["location_name"] is None
+    assert row["geoloc_checked"] == 1

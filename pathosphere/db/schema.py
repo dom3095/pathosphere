@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS events (
     lat             REAL,
     lon             REAL,
     resolved_at     TEXT,
+    geoloc_checked  INTEGER NOT NULL DEFAULT 0, -- 1 after Qwen geoloc fallback examined this event (CP-022)
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -476,6 +477,15 @@ _MIGRATIONS = [
     # not a dedicated table. NULL = fundamentals unavailable (expected for
     # non-US/small-cap/ETF instruments).
     "ALTER TABLE theses ADD COLUMN fundamentals_json TEXT",
+    # geoloc_checked (CP-022): distinguishes "not yet examined by the Qwen
+    # geolocation fallback" (0) from "examined, no target location found"
+    # (1, location_name stays NULL) for RSS events the cheap heuristic in
+    # geolocate_rss_events() left ambiguous or skip_bilateral/skip_none. Same
+    # not-yet/done convention as raw_documents.ner_done/dedup_checked — needed
+    # so geolocate_ambiguous_events_qwen() doesn't re-call the LLM on events
+    # already resolved to "no location" every run.
+    "ALTER TABLE events ADD COLUMN geoloc_checked INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_events_geoloc_checked ON events(geoloc_checked)",
 ]
 
 
