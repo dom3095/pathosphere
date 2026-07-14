@@ -4,6 +4,7 @@ Tests for SQLite schema: init, tables, sqlite-vec.
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -109,6 +110,39 @@ def test_get_connection_auto_migrates_pre_v2_db(tmp_path: Path):
         assert "canonical_entity_id" in cols
     finally:
         conn.close()
+
+
+def test_get_connection_only_migrates_once_per_process_per_path(tmp_path: Path):
+    """Efficiency fix: migrate_db()'s full statement sweep must not re-run on
+    every get_connection() call for an already-migrated path in this
+    process — cycle/orchestrator.py opens 6 connections per `pathos cycle`
+    run, and the Streamlit dashboard opens one per page rerun."""
+    db_path = tmp_path / "repeat.db"
+    init_db(db_path)
+
+    with patch("pathosphere.db.schema.migrate_db") as mock_migrate:
+        conn1 = get_connection(db_path)
+        conn2 = get_connection(db_path)
+        conn1.close()
+        conn2.close()
+
+    mock_migrate.assert_not_called()  # already in _migrated_paths from init_db()
+
+
+def test_get_connection_migrates_each_new_path_once(tmp_path: Path):
+    """A different db_path not yet seen this process must still be migrated
+    on its first connection — the cache is per-path, not global."""
+    import pathosphere.db.schema as schema_module
+
+    db_path = tmp_path / "fresh_path.db"
+
+    with patch.object(schema_module, "migrate_db", wraps=schema_module.migrate_db) as mock_migrate:
+        conn1 = get_connection(db_path)
+        conn2 = get_connection(db_path)
+        conn1.close()
+        conn2.close()
+
+    assert mock_migrate.call_count == 1
 
 
 # ─────────────────────────────────────────────────────────────

@@ -499,6 +499,20 @@ def migrate_db(conn: sqlite3.Connection) -> None:
             pass  # column or index already exists
 
 
+# CP-010 follow-up: get_connection() below runs migrate_db() on every call,
+# not just `pathos db init` — necessary the FIRST time a process opens a
+# given db_path (a pulled DB with new columns must not crash), but repeating
+# the full ~20-statement execute+commit+except sweep on every call is pure
+# no-op cost once a path is known-migrated for this process. Reviewed as an
+# efficiency finding: cycle/orchestrator.py opens 6 connections per
+# `pathos cycle` run, and the Streamlit dashboard opens a fresh connection
+# on every page rerun (long-lived process, many reruns). Per-process cache
+# only — a concurrent process still migrates once on its own first call,
+# which is correct (no cross-process coordination needed for an idempotent,
+# additive-only migration list).
+_migrated_paths: set[Path] = set()
+
+
 def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -512,9 +526,12 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     # CP-010: migrate on every connection, not just `pathos db init` — a pulled
     # DB with pre-existing tables but missing new columns must not crash with
     # "no such column" on the first query that touches them. Idempotent
-    # (migrate_db swallows "already exists" OperationalError) and cheap for a
-    # local CLI tool, so no-op cost on the common case (already-migrated DB).
-    migrate_db(conn)
+    # (migrate_db swallows "already exists" OperationalError). Cached per
+    # resolved path so repeat connections in the same process skip the sweep.
+    resolved = db_path.resolve()
+    if resolved not in _migrated_paths:
+        migrate_db(conn)
+        _migrated_paths.add(resolved)
     return conn
 
 
