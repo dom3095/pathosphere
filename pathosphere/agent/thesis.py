@@ -15,9 +15,13 @@ from datetime import date, timezone
 
 from loguru import logger
 
+from pathosphere.agent.approval import approve_thesis
+from pathosphere.agent.predictions import create_thesis_prediction, link_thesis_prediction_to_trade
+from pathosphere.config import get_settings
 from pathosphere.llm.client import LLMClient
 from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
 from pathosphere.market.prices import fetch_price
+from pathosphere.market.trading import open_agent_trade
 
 _N_DEFAULT = 3
 
@@ -34,6 +38,12 @@ class ThesisResult:
     # why in prose instead). theses_created is 0 in that case — a legitimate
     # "no theses today" outcome, not a pipeline failure. See CRITICAL_POINTS.md.
     refusal_reason: str | None = None
+    # thesis_ids auto-approved + opened as a paper trade because confidence
+    # was >= settings.auto_open_confidence_threshold (virtual money — human
+    # reviews/closes after, not a pre-trade gate). Everything else stays
+    # 'pending' for manual `pathos thesis approve`, same as before this
+    # policy existed.
+    auto_opened_ids: list[int] = field(default_factory=list)
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -268,6 +278,53 @@ async def _run_fundamentals_review(
     return annotated
 
 
+def _maybe_auto_open(
+    conn: sqlite3.Connection, thesis_id: int, confidence: float | None, threshold: float
+) -> bool:
+    """Auto-approve + auto-open a paper trade for a thesis at/above
+    `threshold` confidence (virtual money — human reviews/closes after,
+    never a pre-trade gate for these). Mirrors the exact manual sequence of
+    `pathos thesis approve` + `pathos trade open`: approve_thesis →
+    create_thesis_prediction → open_agent_trade → link_thesis_prediction_to_trade.
+
+    approve_thesis commits on its own — if a later step fails (no
+    portfolios initialized, price fetch failed...) the thesis is left
+    'approved' but not traded, NOT reverted to 'pending'. That's the same
+    state a manual `pathos thesis approve` followed by a failed `pathos
+    trade open` would leave it in — `pathos trade open <id>` can complete
+    it later. Returns True only on full success (approved AND traded).
+    """
+    if confidence is None or confidence < threshold:
+        return False
+    try:
+        updated = approve_thesis(conn, thesis_id)
+    except (ValueError, sqlite3.Error) as exc:
+        logger.warning(f"THESIS: auto-approve {thesis_id} failed — left pending: {exc}")
+        return False
+
+    try:
+        create_thesis_prediction(conn, updated)
+    except (ValueError, sqlite3.Error) as exc:
+        logger.warning(
+            f"THESIS: auto-open {thesis_id} — economic prediction not created: {exc}"
+        )
+
+    try:
+        trade = open_agent_trade(conn, thesis_id)
+        link_thesis_prediction_to_trade(conn, thesis_id, trade.agent_trade_id)
+    except (ValueError, sqlite3.Error) as exc:
+        logger.warning(
+            f"THESIS: {thesis_id} auto-approved (confidence={confidence}) but trade "
+            f"NOT opened — retry via `pathos trade open {thesis_id}`: {exc}"
+        )
+        return False
+
+    logger.success(
+        f"THESIS: {thesis_id} auto-opened (confidence={confidence:.2f} >= {threshold})"
+    )
+    return True
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 async def generate_theses(
@@ -277,6 +334,8 @@ async def generate_theses(
     brief_date: str | None = None,
     n: int = _N_DEFAULT,
     enrich_fundamentals: bool = True,
+    auto_open: bool = True,
+    auto_open_threshold: float | None = None,
 ) -> ThesisResult:
     """Generate and persist trading theses from today's morning brief.
 
@@ -288,6 +347,14 @@ async def generate_theses(
         enrich_fundamentals: fetch fundamentals per proposed ticker and run one
                       batched LLM review pass (context annotation, never a
                       decision). Any failure degrades to plain theses.
+        auto_open:    Auto-approve + auto-open a paper trade for theses at/above
+                      `auto_open_threshold` confidence, evaluated AFTER the
+                      fundamentals review pass so a contradicted thesis still
+                      benefits from that context before opening. Virtual money —
+                      human reviews/closes after, never a pre-trade gate for
+                      these. Everything below threshold stays 'pending' as
+                      before this policy existed.
+        auto_open_threshold: confidence cutoff (default: settings value, 0.6).
 
     Returns:
         ThesisResult with counts of created theses and watchlist items.
@@ -337,6 +404,7 @@ async def generate_theses(
     watchlist_count = 0
     fund_cache: dict[str, dict | None] = {}
     review_items: list[dict] = []
+    auto_open_candidates: list[tuple[int, float | None]] = []
 
     def _enrich(ticker: str | None) -> str | None:
         if not enrich_fundamentals:
@@ -364,6 +432,7 @@ async def generate_theses(
         thesis_ids.append(thesis_id)
         watchlist_count += _save_watchlist_items(conn, thesis_id, t.get("indicators", []))
         _queue_review(thesis_id, t, ticker, fund_json)
+        auto_open_candidates.append((thesis_id, t.get("confidence")))
 
         logger.info(
             f"THESIS: id={thesis_id} | {t.get('title', '')} | "
@@ -380,6 +449,7 @@ async def generate_theses(
             thesis_ids.append(alt_id)
             watchlist_count += _save_watchlist_items(conn, alt_id, alt.get("indicators", []))
             _queue_review(alt_id, alt, alt_ticker, alt_fund)
+            auto_open_candidates.append((alt_id, alt.get("confidence")))
             logger.info(
                 f"THESIS: alt id={alt_id} | {alt.get('title', '')} | "
                 f"{alt_ticker} {alt.get('direction')}"
@@ -402,8 +472,24 @@ async def generate_theses(
         f"{watchlist_count} watchlist items"
     )
 
+    # ── auto-open pass: AFTER the fundamentals review so a thesis whose
+    # fundamentals contradict it still benefits from that context first ──
+    auto_opened_ids: list[int] = []
+    if auto_open:
+        threshold = (
+            auto_open_threshold
+            if auto_open_threshold is not None
+            else get_settings().auto_open_confidence_threshold
+        )
+        for thesis_id, confidence in auto_open_candidates:
+            if _maybe_auto_open(conn, thesis_id, confidence, threshold):
+                auto_opened_ids.append(thesis_id)
+        if auto_opened_ids:
+            logger.success(f"THESIS: {len(auto_opened_ids)} auto-opened as paper trades")
+
     return ThesisResult(
         theses_created=len(thesis_ids),
         watchlist_created=watchlist_count,
         thesis_ids=thesis_ids,
+        auto_opened_ids=auto_opened_ids,
     )

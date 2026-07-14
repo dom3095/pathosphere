@@ -1212,8 +1212,14 @@ def thesis() -> None:
               help="LLM backend override (default: from REASONING_MODEL in .env).")
 @click.option("--no-fundamentals", is_flag=True, default=False,
               help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+@click.option("--no-auto-open", is_flag=True, default=False,
+              help="Skip auto-approve+auto-open for high-confidence theses — "
+                   "all theses stay 'pending' for manual approval.")
+@click.option("--auto-open-threshold", default=None, type=float,
+              help="Confidence cutoff for auto-open (default: from settings, 0.6).")
 def thesis_generate(brief_date: str | None, n: int, model: str | None,
-                    no_fundamentals: bool) -> None:
+                    no_fundamentals: bool, no_auto_open: bool,
+                    auto_open_threshold: float | None) -> None:
     """Generate theses from today's brief (fast, single LLM call)."""
     import asyncio
     from pathosphere.db.schema import get_connection
@@ -1228,6 +1234,8 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
     result = asyncio.run(generate_theses(
         conn, llm_client, brief_date=brief_date, n=n,
         enrich_fundamentals=not no_fundamentals,
+        auto_open=not no_auto_open,
+        auto_open_threshold=auto_open_threshold,
     ))
     conn.close()
 
@@ -1238,10 +1246,15 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
             f"{result.refusal_reason}"
         )
     else:
+        auto_line = (
+            f"\n  Auto-opened: {len(result.auto_opened_ids)} {result.auto_opened_ids}"
+            if result.auto_opened_ids else "\n  Auto-opened: 0"
+        )
         click.echo(
             f"\nTheses generated:\n"
             f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
             f"  Watchlist: +{result.watchlist_created} items\n"
+            f"{auto_line}\n"
             f"  IDs      : {result.thesis_ids}"
         )
 

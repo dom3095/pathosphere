@@ -17,10 +17,12 @@ from pathosphere.agent.thesis import (
     ThesisResult,
     _build_prompt,
     _load_brief,
+    _maybe_auto_open,
     _save_thesis,
     _save_watchlist_items,
     generate_theses,
 )
+from pathosphere.market.trading import init_portfolios
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -198,6 +200,9 @@ def test_save_watchlist_items(tmp_db):
 # ── integration test ──────────────────────────────────────────────────────────
 
 def test_generate_theses_full(tmp_db):
+    """auto_open=False here — this test covers the general generation
+    pipeline (persistence, watchlist, causal chain), not the auto-open
+    policy, which has its own dedicated tests below."""
     _insert_brief(tmp_db, "2026-06-23", "## Morning brief\nSome signals.")
 
     mock_client = MagicMock()
@@ -206,7 +211,7 @@ def test_generate_theses_full(tmp_db):
     with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
         result = asyncio.run(
-            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3, auto_open=False)
         )
 
     # 3 primaries + 1 alternative (thesis 1) = 4 total
@@ -276,7 +281,7 @@ def test_generate_theses_valid_json_has_no_refusal_reason(tmp_db):
 
     with patch("pathosphere.agent.thesis.fetch_price", return_value=100.0), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
-        result = asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2026-06-23"))
+        result = asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2026-06-23", auto_open=False))
 
     assert result.theses_created > 0
     assert result.refusal_reason is None
@@ -290,7 +295,7 @@ def test_generate_theses_price_fetch_failure(tmp_db):
     with patch("pathosphere.agent.thesis.fetch_price", return_value=None), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
         result = asyncio.run(
-            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3, auto_open=False)
         )
 
     assert result.theses_created == 4
@@ -336,7 +341,7 @@ def test_generate_theses_with_fundamentals(tmp_db):
     with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot):
         result = asyncio.run(
-            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3, auto_open=False)
         )
 
     assert result.theses_created == 4
@@ -359,7 +364,7 @@ def test_generate_theses_fundamentals_review_failure_degrades(tmp_db):
     with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot):
         result = asyncio.run(
-            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3, auto_open=False)
         )
 
     # Review failed → theses still saved, snapshot present, no assessment
@@ -378,7 +383,7 @@ def test_generate_theses_fundamentals_fetch_none_skips_review(tmp_db):
     with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
         result = asyncio.run(
-            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3)
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3, auto_open=False)
         )
 
     # No fundamentals → single LLM call (no review pass), NULL column
@@ -398,8 +403,128 @@ def test_generate_theses_enrich_disabled(tmp_db):
         asyncio.run(
             generate_theses(
                 tmp_db, mock_client, brief_date="2026-06-23", n=3,
-                enrich_fundamentals=False,
+                enrich_fundamentals=False, auto_open=False,
             )
         )
 
     mock_fund.assert_not_called()
+
+
+# ── auto-open (confidence-threshold policy) ────────────────────────────────────
+
+def test_maybe_auto_open_below_threshold_noop(tmp_db):
+    """Below-threshold confidence never touches the DB — thesis stays as-is."""
+    t = {"title": "T", "causal_chain": [], "instrument": "USO"}
+    thesis_id = _save_thesis(tmp_db, t, price_snapshot=75.0)
+
+    opened = _maybe_auto_open(tmp_db, thesis_id, confidence=0.55, threshold=0.6)
+
+    assert opened is False
+    row = tmp_db.execute("SELECT status FROM theses WHERE id = ?", (thesis_id,)).fetchone()
+    assert row["status"] == "pending"
+
+
+def test_maybe_auto_open_none_confidence_noop(tmp_db):
+    """Missing confidence (LLM omitted the field) never auto-opens."""
+    t = {"title": "T", "causal_chain": [], "instrument": "USO"}
+    thesis_id = _save_thesis(tmp_db, t, price_snapshot=75.0)
+
+    assert _maybe_auto_open(tmp_db, thesis_id, confidence=None, threshold=0.6) is False
+
+
+def test_maybe_auto_open_success(tmp_db):
+    """At/above threshold + portfolios ready → approved, traded, prediction linked."""
+    t = {
+        "title": "T", "causal_chain": [], "instrument": "USO", "direction": "long",
+        "horizon_days": 14, "invalidation": "n/a",
+    }
+    thesis_id = _save_thesis(tmp_db, t, price_snapshot=75.0)
+
+    with patch("pathosphere.market.trading.fetch_price", return_value=75.0):
+        init_portfolios(tmp_db)
+        opened = _maybe_auto_open(tmp_db, thesis_id, confidence=0.65, threshold=0.6)
+
+    assert opened is True
+    row = tmp_db.execute("SELECT status FROM theses WHERE id = ?", (thesis_id,)).fetchone()
+    assert row["status"] == "approved"
+
+    trade = tmp_db.execute(
+        "SELECT * FROM trades WHERE thesis_id = ? AND ticker = 'USO'", (thesis_id,)
+    ).fetchone()
+    assert trade is not None
+    assert trade["direction"] == "buy"
+
+    pred = tmp_db.execute(
+        "SELECT * FROM predictions WHERE trade_id = ?", (trade["id"],)
+    ).fetchone()
+    assert pred is not None
+
+
+def test_maybe_auto_open_degrades_without_portfolios(tmp_db):
+    """Portfolios not initialized: approve succeeds (committed independently),
+    trade open fails — thesis ends 'approved' but not traded, not 'pending'
+    (same state a manual approve + failed `trade open` would leave), and the
+    function reports failure (not counted in auto_opened_ids upstream)."""
+    t = {
+        "title": "T", "causal_chain": [], "instrument": "USO", "direction": "long",
+        "horizon_days": 14, "invalidation": "n/a",
+    }
+    thesis_id = _save_thesis(tmp_db, t, price_snapshot=75.0)
+
+    opened = _maybe_auto_open(tmp_db, thesis_id, confidence=0.65, threshold=0.6)
+
+    assert opened is False
+    row = tmp_db.execute("SELECT status FROM theses WHERE id = ?", (thesis_id,)).fetchone()
+    assert row["status"] == "approved"
+    assert tmp_db.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 0
+
+
+def test_generate_theses_auto_opens_high_confidence_theses(tmp_db):
+    """Integration: end-to-end generate_theses with portfolios ready — only
+    the thesis at/above threshold (0.65) gets auto-opened; the 0.50/0.55/0.25
+    ones stay pending, matching the manual-approval path they'd otherwise take."""
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(return_value=_SAMPLE_LLM_RESPONSE)
+
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
+         patch("pathosphere.market.trading.fetch_price", return_value=75.50), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+        init_portfolios(tmp_db)
+        result = asyncio.run(
+            generate_theses(
+                tmp_db, mock_client, brief_date="2026-06-23", n=3,
+                auto_open_threshold=0.6,
+            )
+        )
+
+    assert len(result.auto_opened_ids) == 1
+    auto_id = result.auto_opened_ids[0]
+
+    rows = {r["id"]: r["status"] for r in tmp_db.execute("SELECT id, status FROM theses")}
+    assert rows[auto_id] == "approved"
+    pending_ids = [tid for tid, status in rows.items() if tid != auto_id]
+    assert all(rows[tid] == "pending" for tid in pending_ids)
+
+    trades = tmp_db.execute("SELECT thesis_id FROM trades WHERE thesis_id IS NOT NULL").fetchall()
+    assert {t["thesis_id"] for t in trades} == {auto_id}
+
+
+def test_generate_theses_auto_open_flag_disabled(tmp_db):
+    """--no-auto-open (auto_open=False): every thesis stays pending even
+    with portfolios ready and a high-confidence thesis present."""
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(return_value=_SAMPLE_LLM_RESPONSE)
+
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=75.50), \
+         patch("pathosphere.market.trading.fetch_price", return_value=75.50), \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None):
+        init_portfolios(tmp_db)
+        result = asyncio.run(
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3, auto_open=False)
+        )
+
+    assert result.auto_opened_ids == []
+    rows = tmp_db.execute("SELECT status FROM theses").fetchall()
+    assert all(r["status"] == "pending" for r in rows)
