@@ -22,16 +22,15 @@ from loguru import logger
 
 from pathosphere.agent.thesis import (
     ThesisResult,
-    _fundamentals_doc,
+    _MarketEnrichment,
     _maybe_auto_open,
+    _price_snapshot,
     _run_market_review,
     _save_thesis,
     _save_watchlist_items,
-    _technicals_doc,
 )
 from pathosphere.config import get_settings
 from pathosphere.llm.client import LLMClient
-from pathosphere.market.prices import fetch_price
 
 # ── persona catalogue ─────────────────────────────────────────────────────────
 
@@ -416,44 +415,15 @@ async def _persist_theses(
     feature set again (it previously had neither fundamentals nor auto-open)."""
     thesis_ids: list[int] = []
     watchlist_count = 0
-    fund_cache: dict[str, dict | None] = {}
-    tech_cache: dict[str, dict | None] = {}
-    review_items: list[dict] = []
+    enrichment = _MarketEnrichment(enrich_fundamentals, enrich_technicals)
     auto_open_candidates: list[tuple[int, float | None]] = []
-
-    def _enrich(ticker: str | None) -> str | None:
-        if not enrich_fundamentals:
-            return None
-        return _fundamentals_doc(ticker, fund_cache)
-
-    def _enrich_tech(ticker: str | None) -> str | None:
-        if not enrich_technicals:
-            return None
-        return _technicals_doc(ticker, tech_cache)
-
-    def _queue_review(
-        thesis_id: int, t: dict, ticker: str | None,
-        fund_json: str | None, tech_json: str | None,
-    ) -> None:
-        texts = [
-            json.loads(doc)["text"] for doc in (fund_json, tech_json) if doc
-        ]
-        if texts:
-            review_items.append({
-                "thesis_id": thesis_id,
-                "title": t.get("title", ""),
-                "ticker": ticker,
-                "direction": t.get("direction"),
-                "text": "\n\n".join(texts),
-            })
 
     for t in theses_data[:n]:
         ticker = t.get("instrument")
-        price = fetch_price(ticker) if ticker else None
+        fund_json, tech_json = enrichment.docs(ticker)
+        price = _price_snapshot(ticker, tech_json)
         if ticker and price is None:
             logger.warning(f"DEBATE: price fetch failed for {ticker}")
-        fund_json = _enrich(ticker)
-        tech_json = _enrich_tech(ticker)
 
         # Embed debate_context into causal_chain JSON
         t.setdefault("causal_chain", [])
@@ -463,7 +433,7 @@ async def _persist_theses(
         )
         thesis_ids.append(thesis_id)
         watchlist_count += _save_watchlist_items(conn, thesis_id, t.get("indicators", []))
-        _queue_review(thesis_id, t, ticker, fund_json, tech_json)
+        enrichment.queue_review(thesis_id, t, ticker, fund_json, tech_json)
         auto_open_candidates.append((thesis_id, t.get("confidence")))
 
         logger.info(
@@ -473,22 +443,21 @@ async def _persist_theses(
 
         for alt in t.get("alternatives", []):
             alt_ticker = alt.get("instrument")
-            alt_price = price if alt_ticker == ticker else (fetch_price(alt_ticker) if alt_ticker else None)
-            alt_fund = _enrich(alt_ticker)
-            alt_tech = _enrich_tech(alt_ticker)
+            alt_fund, alt_tech = enrichment.docs(alt_ticker)
+            alt_price = price if alt_ticker == ticker else _price_snapshot(alt_ticker, alt_tech)
             alt_id = _save_thesis(
                 conn, alt, alt_price, debate_id=debate_id,
                 fundamentals_json=alt_fund, technicals_json=alt_tech,
             )
             thesis_ids.append(alt_id)
             watchlist_count += _save_watchlist_items(conn, alt_id, alt.get("indicators", []))
-            _queue_review(alt_id, alt, alt_ticker, alt_fund, alt_tech)
+            enrichment.queue_review(alt_id, alt, alt_ticker, alt_fund, alt_tech)
             auto_open_candidates.append((alt_id, alt.get("confidence")))
             logger.info(f"DEBATE: alt id={alt_id} | {alt.get('title', '')} | {alt_ticker}")
 
-    if review_items:
+    if enrichment.review_items:
         try:
-            annotated = await _run_market_review(conn, llm_client, review_items)
+            annotated = await _run_market_review(conn, llm_client, enrichment.review_items)
             logger.info(f"DEBATE: market review annotated {annotated} theses")
         except Exception as exc:
             logger.warning(

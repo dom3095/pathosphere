@@ -32,12 +32,14 @@ import pandas as pd
 import yfinance as yf
 from loguru import logger
 
-# trading-day offsets for the momentum ladder
-_RETURN_WINDOWS = {"1w": 5, "1m": 21, "3m": 63, "6m": 126, "1y": 252}
+# trading-day offsets for the momentum ladder (1y is the full window instead —
+# a fixed 252 offset would never be covered by a "1y" yfinance fetch)
+_RETURN_WINDOWS = {"1w": 5, "1m": 21, "3m": 63, "6m": 126}
 
 _RSI_PERIOD = 14
 _VOL_WINDOW = 21          # ~1 trading month
 _TRADING_DAYS_YEAR = 252
+_FULL_YEAR_BARS = 240     # ~1 trading year, tolerant of market holidays
 _SMA_WINDOWS = (20, 50, 200)
 
 
@@ -90,16 +92,22 @@ def _trailing_return(close: pd.Series, bars_back: int) -> float | None:
 
 
 def _rsi(close: pd.Series, period: int = _RSI_PERIOD) -> float | None:
-    """RSI with Wilder smoothing. None if fewer than period+1 bars."""
+    """RSI with Wilder smoothing. None if fewer than period+1 bars.
+
+    A perfectly flat series (zero gains AND zero losses — halted/illiquid
+    listing) has no defined RSI: returning 100 there would feed a fake
+    'max overbought' reading into the review prompt, so it degrades to None.
+    """
     if len(close) <= period:
         return None
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(alpha=1 / period, adjust=False).mean()
+    last_gain = float(gain.iloc[-1])
     last_loss = float(loss.iloc[-1])
     if last_loss == 0:
-        return 100.0
-    rs = float(gain.iloc[-1]) / last_loss
+        return 100.0 if last_gain > 0 else None
+    rs = last_gain / last_loss
     return round(100 - 100 / (1 + rs), 1)
 
 
@@ -181,9 +189,9 @@ def fetch_technicals(ticker: str) -> TechnicalsSnapshot | None:
     snap.return_1m = _trailing_return(close, _RETURN_WINDOWS["1m"])
     snap.return_3m = _trailing_return(close, _RETURN_WINDOWS["3m"])
     snap.return_6m = _trailing_return(close, _RETURN_WINDOWS["6m"])
-    # a "1y" period rarely yields exactly 252 bars — use the full window
-    # when it is close enough to a year to be honest about the label
-    if snap.bars >= 200:
+    # a "1y" period rarely yields exactly 252 bars — use the full window,
+    # but only when it is close enough to a year to be honest about the label
+    if snap.bars >= _FULL_YEAR_BARS:
         snap.return_1y = float(close.iloc[-1] / close.iloc[0] - 1) if close.iloc[0] else None
 
     snap.volatility_21d = _annualized_vol(close)
@@ -207,6 +215,11 @@ def fetch_technicals(ticker: str) -> TechnicalsSnapshot | None:
 
     if snap.bars >= 200:
         snap.data_quality = "full"
+        if snap.bars < _FULL_YEAR_BARS:
+            snap.warnings.append(
+                f"{snap.bars} daily bars (< ~1 trading year) — 1y return unavailable, "
+                "high/low/drawdown cover this shorter window"
+            )
     elif snap.bars >= 60:
         snap.data_quality = "partial"
         snap.warnings.append(
@@ -264,9 +277,11 @@ def render_technicals_text(snap: TechnicalsSnapshot) -> str:
         f"Trend: price vs SMA20 {_fmt_pct(snap.vs_sma_20)}, "
         f"SMA50 {_fmt_pct(snap.vs_sma_50)}, SMA200 {_fmt_pct(snap.vs_sma_200)}"
     )
+    # honest label: "52w" only when the window actually covers ~a year
+    range_label = "52w" if snap.bars >= _FULL_YEAR_BARS else f"{snap.bars}-bar window"
     range_line = (
-        f"Range: {_fmt_pct(snap.pct_from_52w_high)} from 52w high, "
-        f"{_fmt_pct(snap.pct_above_52w_low)} above 52w low; "
+        f"Range: {_fmt_pct(snap.pct_from_52w_high)} from {range_label} high, "
+        f"{_fmt_pct(snap.pct_above_52w_low)} above {range_label} low; "
         f"max drawdown (window) {_fmt_pct(snap.max_drawdown_1y)}"
     )
     volume = (

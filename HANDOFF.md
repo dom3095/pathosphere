@@ -40,9 +40,26 @@ prezzi esiste sempre).
 (caveat nel testo renderizzato); stesso rate-limit yfinance dei fondamentali (fetch sequenziale,
 nessun retry v1); snapshot congelato alla generazione (coerente no-lookahead).
 
-**Prossima azione**: PR di questo branch. Poi: primo `thesis generate` reale con entrambi i layer
-(primo esercizio vero della market review unificata). Restano aperti: CP-029 (esito run debate
-id=4), backfill storico da lanciare (branch precedente), parte 2 CP-027 (serie storiche prezzi).
+**Code review post-PR (stessa sessione, `/code-review --level high`)**: gli 8 finder subagent
+sono falliti per limite sessione (reset 4:10) — review completata INLINE nel thread principale
+(meno profonda di 8 agent indipendenti; opzionale rilanciarla a quota resettata). 5 finding,
+nessun bug bloccante, **tutti fixati su richiesta utente** (2° commit su PR #16):
+1. RSI serie piatta → era 100 (finto overbought per titoli sospesi/illiquidi) → ora None
+2. Closures `_enrich/_enrich_tech/_queue_review` duplicate thesis↔debate (stessa classe di
+   drift CP-028) → estratta `_MarketEnrichment` in thesis.py, riusata da debate.py
+3. Doppio download yfinance (fetch_price 5d + technicals 1y) → `_price_snapshot()` riusa il
+   last close dei technicals (stesso close EOD auto-adjusted), fallback fetch_price;
+   `fetch_price` non più importato in debate.py
+4. Voce morta `"1y": 252` in `_RETURN_WINDOWS` → rimossa (1y = intera finestra)
+5. Label "1y"/"52w" su finestre 200-239 barre → soglia `_FULL_YEAR_BARS=240`: sotto, 1y=None,
+   warning esplicito, testo dice "N-bar window" invece di "52w"
+Test: **631 verdi** (+3: RSI flat, finestra corta full-quality, prezzo riusato/no seconda call).
+Ruff: 3 violazioni pre-esistenti sui file toccati, 0 nuove.
+
+**Prossima azione**: PR #16 in review/merge. Poi: primo `thesis generate` reale con entrambi i
+layer (primo esercizio vero della market review unificata). Restano aperti: CP-029 (esito run
+debate id=4), backfill storico da lanciare (branch precedente), parte 2 CP-027 (serie storiche
+prezzi — parzialmente coperta ora dal fetch 1y dei technicals, ma non persistita).
 
 ---
 

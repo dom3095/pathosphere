@@ -332,7 +332,7 @@ def test_run_debate_full(tmp_db):
     mock_claude = MagicMock()
     mock_claude.complete = AsyncMock(return_value=_SAMPLE_SYNTHESIS)
 
-    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=100.0), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None), \
          patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):
         result = asyncio.run(
@@ -395,7 +395,7 @@ def test_run_debate_fundamentals_enrichment(tmp_db):
         json.dumps({"assessments": [{"thesis_id": 1, "assessment": "Supports the thesis."}]}),
     ])
 
-    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=100.0), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", side_effect=_fake_snapshot), \
          patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):
         result = asyncio.run(
@@ -419,7 +419,7 @@ def test_run_debate_auto_open_high_confidence(tmp_db):
     mock_claude = MagicMock()
     mock_claude.complete = AsyncMock(return_value=_SAMPLE_SYNTHESIS)
 
-    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=100.0), \
          patch("pathosphere.market.trading.fetch_price", return_value=100.0), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None), \
          patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):
@@ -448,7 +448,7 @@ def test_run_debate_auto_open_disabled(tmp_db):
     mock_claude = MagicMock()
     mock_claude.complete = AsyncMock(return_value=_SAMPLE_SYNTHESIS)
 
-    with patch("pathosphere.agent.debate.fetch_price", return_value=100.0), \
+    with patch("pathosphere.agent.thesis.fetch_price", return_value=100.0), \
          patch("pathosphere.market.trading.fetch_price", return_value=100.0), \
          patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None), \
          patch("pathosphere.agent.thesis.fetch_technicals", return_value=None):

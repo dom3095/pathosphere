@@ -512,6 +512,27 @@ def test_generate_theses_technicals_disabled(tmp_db):
     mock_tech.assert_not_called()
 
 
+def test_generate_theses_price_reused_from_technicals(tmp_db):
+    """The technicals snapshot already carries the last EOD close — the
+    pipeline must NOT make a second yfinance call just for price_snapshot."""
+    _insert_brief(tmp_db, "2026-06-23", "## Brief")
+    mock_client = MagicMock()
+    mock_client.complete = AsyncMock(side_effect=[_SAMPLE_LLM_RESPONSE, _REVIEW_RESPONSE])
+
+    with patch("pathosphere.agent.thesis.fetch_price") as mock_price, \
+         patch("pathosphere.agent.thesis.fetch_fundamentals", return_value=None), \
+         patch("pathosphere.agent.thesis.fetch_technicals", side_effect=_fake_tech_snapshot):
+        result = asyncio.run(
+            generate_theses(tmp_db, mock_client, brief_date="2026-06-23", n=3, auto_open=False)
+        )
+
+    mock_price.assert_not_called()
+    assert result.theses_created == 4
+    rows = tmp_db.execute("SELECT price_snapshot FROM theses").fetchall()
+    for row in rows:
+        assert row["price_snapshot"] == pytest.approx(75.5)  # last_close from technicals
+
+
 # ── auto-open (confidence-threshold policy) ────────────────────────────────────
 
 def test_maybe_auto_open_below_threshold_noop(tmp_db):

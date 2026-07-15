@@ -98,6 +98,10 @@ Stato aggiornato: 2026-07-07.
   ("market review": fundamentals+technicals nello stesso prompt batch — zero call extra);
   assessment in fundamentals_json, fallback technicals_json. Descrittivo, mai segnale.
   `--no-technicals` per saltare. CLI: `pathos technicals <ticker>`. Wiki §8.8.
+  Post code-review (stessa sessione): stato enrichment condiviso `_MarketEnrichment`
+  (thesis+debate, no closures duplicate), price_snapshot riusa il last close dei
+  technicals (1 sola history call/ticker), RSI piatto → None, label "52w"/"1y" onesta
+  sotto 240 barre.
 - **Auto-open a soglia di confidence** (2026-07-14): tesi con `confidence ≥ 0.6` (configurabile,
   `settings.auto_open_confidence_threshold`) auto-approvate e tradate subito dopo la review
   fondamentali — soldi virtuali, revisione umana dopo invece di gate prima. Sotto soglia: flusso

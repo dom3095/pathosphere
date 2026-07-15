@@ -1053,8 +1053,10 @@ decisionale** — nessun segnale buy/sell, niente soglie.
 **Cosa calcola** (`fetch_technicals(ticker) → TechnicalsSnapshot | None`,
 1 anno di barre daily EOD yfinance, `auto_adjust=True`):
 - Momentum: rendimenti 1w/1m/3m/6m/1y (offset in giorni di borsa: 5/21/63/126;
-  1y = intera finestra, solo se ≥200 barre)
-- Volatilità 21gg annualizzata; **RSI(14)** con smoothing Wilder
+  1y = intera finestra, solo se ≥240 barre ≈ vero anno di borsa — sotto, il
+  testo etichetta il range come "N-bar window" invece di "52w", con warning)
+- Volatilità 21gg annualizzata; **RSI(14)** con smoothing Wilder (serie piatta
+  — titolo sospeso/illiquido — → None, non un finto 100 overbought)
 - Distanza prezzo da SMA 20/50/200 (frazione, None se finestra non coperta)
 - Range 52w: % da massimo, % sopra minimo; **max drawdown** nella finestra
 - Volume: rapporto media 21gg / media 63gg (None per FX/indici senza volume)
@@ -1067,14 +1069,19 @@ fallimento totale (<2 barre); storico corto → campi None + warnings; mai
 eccezioni. **No-lookahead by construction**: solo barre EOD fino al fetch,
 snapshot congelato alla generazione tesi, mai aggiornato.
 
-**Aggancio in `generate_theses` e `run_debate`**: ogni ticker proposto riceve
-`fetch_technicals` (cache intra-run separata da quella fundamentals);
-snapshot+testo in `theses.technicals_json`. La review LLM batch è ora una
+**Aggancio in `generate_theses` e `run_debate`**: stato condiviso
+`_MarketEnrichment` (thesis.py — cache per layer + coda review, riusato
+identico da debate.py: niente closures duplicate, no drift tra pipeline).
+Snapshot+testo in `theses.technicals_json`. La review LLM batch è una
 **"market review" unica** (fundamentals + technicals nello stesso prompt —
 **zero call LLM extra** rispetto a prima): l'assessment finisce in
 `fundamentals_json.llm_assessment` se presente, altrimenti in
 `technicals_json.llm_assessment` (caso ETF/future senza fondamentali).
-Disattivabile con `--no-technicals` (indipendente da `--no-fundamentals`).
+**Riuso prezzo**: `_price_snapshot()` prende il last close già scaricato dai
+technicals (stesso close EOD auto-adjusted di `fetch_price`) — una sola
+chiamata history yfinance per ticker; fallback `fetch_price` se technicals
+disattivati/assenti. Disattivabile con `--no-technicals` (indipendente da
+`--no-fundamentals`).
 
 **Ispezione manuale**: `pathos technicals TICKER`. In `pathos thesis show`
 sezione Technicals dopo Fundamentals.

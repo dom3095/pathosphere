@@ -59,6 +59,12 @@ def test_rsi_needs_period_plus_one_bars():
     assert _rsi(close) is None
 
 
+def test_rsi_flat_series_is_undefined():
+    """Zero gains AND zero losses (halted/illiquid listing) — RSI has no
+    meaning; 100 would fake a max-overbought reading in the review prompt."""
+    assert _rsi(pd.Series([100.0] * 30)) is None
+
+
 def test_rsi_mixed_series_in_bounds():
     closes = [100 + (3 if i % 2 else -2) * (i % 5) for i in range(60)]
     rsi = _rsi(pd.Series([float(c) for c in closes]))
@@ -149,6 +155,23 @@ def test_fetch_full_history():
     assert snap.max_drawdown_1y == pytest.approx(0.0)
     assert snap.rsi_14 == 100.0
     assert snap.volume_ratio_21_63 == pytest.approx(1.0)
+
+
+def test_fetch_full_quality_but_short_of_a_year():
+    """200-239 bars: quality 'full' but the window is honestly NOT a year —
+    no '1y' return, explicit warning, range labelled by window size."""
+    closes = [100.0 + i * 0.1 for i in range(210)]
+    with patch("pathosphere.market.technicals.yf.Ticker",
+               return_value=_mock_ticker(_hist(closes))):
+        snap = fetch_technicals("SHORTYR")
+
+    assert snap is not None
+    assert snap.data_quality == "full"
+    assert snap.return_1y is None
+    assert any("1 trading year" in w for w in snap.warnings)
+    text = render_technicals_text(snap)
+    assert "52w" not in text
+    assert "210-bar window" in text
 
 
 def test_fetch_partial_history():

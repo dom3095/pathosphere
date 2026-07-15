@@ -227,6 +227,59 @@ def _technicals_doc(ticker: str | None, cache: dict) -> str | None:
     return json.dumps(doc) if doc else None
 
 
+class _MarketEnrichment:
+    """Per-run market-context state (caches + review queue), shared by
+    `generate_theses` and `debate._persist_theses` so the two pipelines
+    can't drift apart again (the pre-CP-028 drift started exactly as three
+    hand-copied closures)."""
+
+    def __init__(self, enrich_fundamentals: bool, enrich_technicals: bool):
+        self.enrich_fundamentals = enrich_fundamentals
+        self.enrich_technicals = enrich_technicals
+        self._fund_cache: dict[str, dict | None] = {}
+        self._tech_cache: dict[str, dict | None] = {}
+        self.review_items: list[dict] = []
+
+    def docs(self, ticker: str | None) -> tuple[str | None, str | None]:
+        """(fundamentals_json, technicals_json) for *ticker*, honouring the
+        per-layer enable flags. Cached per ticker within the run."""
+        fund = _fundamentals_doc(ticker, self._fund_cache) if self.enrich_fundamentals else None
+        tech = _technicals_doc(ticker, self._tech_cache) if self.enrich_technicals else None
+        return fund, tech
+
+    def queue_review(
+        self, thesis_id: int, t: dict, ticker: str | None,
+        fund_json: str | None, tech_json: str | None,
+    ) -> None:
+        texts = [json.loads(doc)["text"] for doc in (fund_json, tech_json) if doc]
+        if texts:
+            self.review_items.append({
+                "thesis_id": thesis_id,
+                "title": t.get("title", ""),
+                "ticker": ticker,
+                "direction": t.get("direction"),
+                "text": "\n\n".join(texts),
+            })
+
+
+def _price_snapshot(ticker: str | None, tech_json: str | None) -> float | None:
+    """Decision-time price for *ticker*.
+
+    Reuses the last close already downloaded by the technicals fetch — the
+    same auto-adjusted EOD close `fetch_price` would return from its own
+    5d history call — to avoid a second yfinance request per ticker (Yahoo
+    rate limits are a documented degradation risk). Falls back to
+    `fetch_price` when technicals are disabled or unavailable.
+    """
+    if not ticker:
+        return None
+    if tech_json:
+        last_close = json.loads(tech_json)["snapshot"].get("last_close")
+        if isinstance(last_close, (int, float)) and last_close:
+            return float(last_close)
+    return fetch_price(ticker)
+
+
 def _market_review_prompt(items: list[dict]) -> list[dict]:
     system = (
         "You are a financial analyst supporting a geopolitical intelligence desk. "
@@ -444,51 +497,22 @@ async def generate_theses(
 
     thesis_ids: list[int] = []
     watchlist_count = 0
-    fund_cache: dict[str, dict | None] = {}
-    tech_cache: dict[str, dict | None] = {}
-    review_items: list[dict] = []
+    enrichment = _MarketEnrichment(enrich_fundamentals, enrich_technicals)
     auto_open_candidates: list[tuple[int, float | None]] = []
-
-    def _enrich(ticker: str | None) -> str | None:
-        if not enrich_fundamentals:
-            return None
-        return _fundamentals_doc(ticker, fund_cache)
-
-    def _enrich_tech(ticker: str | None) -> str | None:
-        if not enrich_technicals:
-            return None
-        return _technicals_doc(ticker, tech_cache)
-
-    def _queue_review(
-        thesis_id: int, t: dict, ticker: str | None,
-        fund_json: str | None, tech_json: str | None,
-    ) -> None:
-        texts = [
-            json.loads(doc)["text"] for doc in (fund_json, tech_json) if doc
-        ]
-        if texts:
-            review_items.append({
-                "thesis_id": thesis_id,
-                "title": t.get("title", ""),
-                "ticker": ticker,
-                "direction": t.get("direction"),
-                "text": "\n\n".join(texts),
-            })
 
     for t in theses_data[:n]:
         ticker = t.get("instrument")
-        price = fetch_price(ticker) if ticker else None
+        fund_json, tech_json = enrichment.docs(ticker)
+        price = _price_snapshot(ticker, tech_json)
         if ticker and price is None:
             logger.warning(f"THESIS: price fetch failed for {ticker}")
-        fund_json = _enrich(ticker)
-        tech_json = _enrich_tech(ticker)
 
         thesis_id = _save_thesis(
             conn, t, price, fundamentals_json=fund_json, technicals_json=tech_json
         )
         thesis_ids.append(thesis_id)
         watchlist_count += _save_watchlist_items(conn, thesis_id, t.get("indicators", []))
-        _queue_review(thesis_id, t, ticker, fund_json, tech_json)
+        enrichment.queue_review(thesis_id, t, ticker, fund_json, tech_json)
         auto_open_candidates.append((thesis_id, t.get("confidence")))
 
         logger.info(
@@ -499,16 +523,15 @@ async def generate_theses(
 
         for alt in t.get("alternatives", []):
             alt_ticker = alt.get("instrument")
+            alt_fund, alt_tech = enrichment.docs(alt_ticker)
             # Reuse already-fetched price if same ticker
-            alt_price = price if alt_ticker == ticker else fetch_price(alt_ticker) if alt_ticker else None
-            alt_fund = _enrich(alt_ticker)
-            alt_tech = _enrich_tech(alt_ticker)
+            alt_price = price if alt_ticker == ticker else _price_snapshot(alt_ticker, alt_tech)
             alt_id = _save_thesis(
                 conn, alt, alt_price, fundamentals_json=alt_fund, technicals_json=alt_tech
             )
             thesis_ids.append(alt_id)
             watchlist_count += _save_watchlist_items(conn, alt_id, alt.get("indicators", []))
-            _queue_review(alt_id, alt, alt_ticker, alt_fund, alt_tech)
+            enrichment.queue_review(alt_id, alt, alt_ticker, alt_fund, alt_tech)
             auto_open_candidates.append((alt_id, alt.get("confidence")))
             logger.info(
                 f"THESIS: alt id={alt_id} | {alt.get('title', '')} | "
@@ -517,9 +540,9 @@ async def generate_theses(
 
     # ── market review pass (fundamentals + technicals together):
     # ONE batched LLM call, degrades on failure ──
-    if review_items:
+    if enrichment.review_items:
         try:
-            annotated = await _run_market_review(conn, llm_client, review_items)
+            annotated = await _run_market_review(conn, llm_client, enrichment.review_items)
             logger.info(f"THESIS: market review annotated {annotated} theses")
         except Exception as exc:
             logger.warning(

@@ -18,6 +18,12 @@
 
 **Prossima azione**: commit + push + PR branch `feat/stock-technicals`.
 
+**Aggiornamento post code-review (stessa sessione)**: PR #16 aperta. `/code-review --level high`
+(inline, subagent falliti per limite sessione): 5 finding, 0 bloccanti, tutti fixati —
+RSI piatto→None, `_MarketEnrichment` condiviso thesis/debate, `_price_snapshot()` riusa last
+close technicals (1 history call/ticker), dict entry morta rimossa, label 52w/1y onesta
+(soglia 240 barre). **631 test verdi**, ruff 0 nuove violazioni. PR #16 aggiornata col 2° commit.
+
 ---
 
 ## Fase precedente: backfill storico eventi (CP-027 parte 1) — branch `feat/historical-events-backfill`
