@@ -134,6 +134,34 @@ def _query_recent_events(conn: sqlite3.Connection, lookback_days: int) -> list[d
     return [dict(r) for r in rows]
 
 
+def _query_active_scenarios(conn: sqlite3.Connection) -> list[dict]:
+    """Return active conflict scenario sets with their current probability
+    distribution, so the brief reads new signals against the standing
+    assessments (and can suggest which scenario they favor).
+
+    Wrapped defensively: on a DB created before the scenario migration ran
+    the query would fail — an empty section, not a dead brief, is correct.
+    """
+    try:
+        sets = conn.execute(
+            """
+            SELECT id, country, country_name, horizon_date, summary
+            FROM scenario_sets WHERE status = 'active'
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    out = []
+    for s in sets:
+        scenarios = conn.execute(
+            "SELECT label, title, probability FROM scenarios WHERE set_id = ? ORDER BY label",
+            (s["id"],),
+        ).fetchall()
+        out.append({**dict(s), "scenarios": [dict(r) for r in scenarios]})
+    return out
+
+
 def _query_recent_anomalies(
     conn: sqlite3.Connection, lookback_days: int
 ) -> list[dict]:
@@ -164,6 +192,7 @@ def _build_prompt(
     anomalies: list[dict],
     recent_events: list[dict],
     brief_date: str,
+    active_scenarios: list[dict] | None = None,
 ) -> list[dict]:
     """Construct the chat-message list to send to the LLM."""
     system = (
@@ -182,9 +211,26 @@ def _build_prompt(
         "For each high-divergence event explain what the narrative gap implies.",
         "For hub entities flag any strategic significance of their centrality.",
         "For anomalies hypothesize the most likely cause and downstream impact.",
+        "If active conflict scenarios are listed, note which scenario today's",
+        "signals favor or undercut (do NOT re-assign probabilities here).",
         "End with a **SYNTHESIS** section: 2-3 key takeaways and watchlist updates.",
         "",
     ]
+
+    if active_scenarios:
+        lines += ["## ACTIVE CONFLICT SCENARIOS (standing assessments)", ""]
+        for s in active_scenarios:
+            dist = " | ".join(
+                f"[{sc['label']}] {sc['title']} p={sc['probability']:.2f}"
+                for sc in s["scenarios"]
+            )
+            lines.append(
+                f"- **Set {s['id']} — {s['country_name'] or s['country']}** "
+                f"(horizon {s['horizon_date']}): {dist}"
+            )
+            if s.get("summary"):
+                lines.append(f"  _{s['summary']}_")
+        lines.append("")
 
     if recent_events:
         lines += ["## RECENT EVENTS (top by source coverage)", ""]
@@ -322,14 +368,19 @@ async def generate_brief(
     hub_entities = _query_hub_entities(conn)
     anomalies = _query_recent_anomalies(conn, lookback_days)
     recent_events = _query_recent_events(conn, lookback_days)
+    active_scenarios = _query_active_scenarios(conn)
 
     logger.info(
         f"BRIEF: {len(divergences)} divergences | "
         f"{len(hub_entities)} hub entities | "
-        f"{len(anomalies)} anomalies | {len(recent_events)} recent events"
+        f"{len(anomalies)} anomalies | {len(recent_events)} recent events | "
+        f"{len(active_scenarios)} active scenario sets"
     )
 
-    messages = _build_prompt(divergences, hub_entities, anomalies, recent_events, brief_date)
+    messages = _build_prompt(
+        divergences, hub_entities, anomalies, recent_events, brief_date,
+        active_scenarios=active_scenarios,
+    )
     content = await llm_client.complete(messages)
 
     # Dedup by event_id before counting: an RSS event can appear in both

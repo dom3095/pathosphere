@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # real thesis-generate run (0.62/0.58/0.55 observed confidences).
     auto_open_confidence_threshold: float = 0.6
 
+    # Conflict scenario forecasting (agent/scenarios.py): horizon of each
+    # scenario set and how many top hotspots one `pathos scenario generate`
+    # run covers (one Claude call per hotspot — sized for the 2-3 reasoning
+    # tasks/day budget).
+    scenario_horizon_days: int = 90
+    scenario_max_hotspots: int = 2
+
     @field_validator("log_level")
     @classmethod
     def log_level_upper(cls, v: str) -> str:

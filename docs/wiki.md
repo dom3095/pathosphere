@@ -199,12 +199,17 @@ pathosphere/
 ├── llm/
 │   └── client.py       LLMClient: Claude SDK + Qwen-local (Ollama). OpenAI-compatible. ✅
 ├── agent/
-│   ├── brief.py        Brief mattutino: divergenze + anomalie → Claude → briefs. ✅
+│   ├── brief.py        Brief mattutino: divergenze + anomalie + scenari attivi → Claude → briefs. ✅
 │   ├── thesis.py       Generatore tesi fast path (1 Claude call). ✅
 │   ├── debate.py       Pipeline debate 4-step (Qwen×13 + Claude×1). ✅
+│   ├── scenarios.py    Previsione scenari di conflitto: triage hotspot → dossier → ACH (Claude). ✅
+│   ├── predictions.py  Predizioni v2 (world/economic, Brier + time-adjusted). ✅
 │   └── approval.py     Approvazione/rifiuto tesi: list, show, approve, reject. ✅
 └── market/
-    └── prices.py       fetch_price(ticker) via yfinance EOD. ✅
+    ├── prices.py       fetch_price(ticker) via yfinance EOD. ✅
+    ├── fundamentals.py Snapshot fondamentali (ratio, Altman Z, Piotroski F). ✅
+    ├── technicals.py   Snapshot price-action (momentum, RSI, SMA, 52w). ✅
+    └── trading.py      Paper trading EOD (agent/random/benchmark). ✅
 ```
 
 ### 3.3 Flusso dati
@@ -256,8 +261,10 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 | `narrative_divergences` | 100-5k | Divergenza narrativa per blocco geopolitico |
 | `entities` | 500-10k | Paesi, aziende, commodity, infrastrutture |
 | `entity_links` | 1k-50k | Grafo relazioni (depends_on, supplies, sanctions…) |
-| `watchlist_items` | 10-200 | Indicatori osservabili per scenario (ACH) |
+| `watchlist_items` | 10-200 | Indicatori osservabili (ACH) — parent: `thesis_id` O `scenario_id` |
 | `theses` | 10-500 | Tesi con catena causale, strumento, invalidazione |
+| `scenario_sets` | 1-2/run | Set di scenari di conflitto per paese: dossier congelato, key assumptions, orizzonte |
+| `scenarios` | 3-4/set | Scenari MECE con probabilità, ACH ratings, invalidazione, link 1:1 a `predictions` |
 | `trades` | 50-2k | Paper trading (prezzo registrato alla DECISIONE) |
 | `portfolios` | 3 | agent · random · benchmark |
 | `predictions` | 20-500 | Anticipazioni non finanziarie (calibrazione Tetlock) |
@@ -1092,6 +1099,81 @@ nel testo lo dichiara; yfinance stesso rate-limit dei fondamentali.
 
 ---
 
+### 8.9 Previsione scenari di conflitto — `pathosphere/agent/scenarios.py` ✅
+
+**Pipeline analitica strutturata in stile ufficio di intelligence** (2026-07-16).
+Metodologia ancorata allo stato dell'arte: triage numerico ispirato a
+[ACLED CAST](https://acleddata.com/methodology/cast-methodology) /
+[VIEWS](https://viewsforecasting.org/) (feature di escalation su finestre vs
+baseline), ragionamento con **Analysis of Competing Hypotheses** (Heuer) +
+Key Assumptions Check + Indicators & Warnings, aggiornamento probabilistico
+stile superforecaster (Tetlock). Il triage numerico è SOLO selezione
+dell'attenzione (principio "l'LLM vede solo il meglio" + "core agentico, non
+quant"): la previsione vera è il ragionamento di Claude, misurato dal motore
+predictions v2 esistente.
+
+**1. Triage hotspot** (`compute_hotspots`, deterministico, no LLM, no rete):
+per ogni paese in `gdelt_events` (codici **FIPS 10-4**, non ISO-2!), finestra
+14gg vs baseline trailing 90gg — z-score conteggi giornalieri material
+conflict (baseline piatta + salto → z=4 cap), shift quota quad4/(quad3+quad4),
+deterioramento Goldstein medio, surge di volume (log-ratio). Score composito
+pesato 0.35/0.25/0.25/0.15, componenti normalizzate [0,1]. Guardie:
+≥30 eventi in finestra, ≥30 giorni di baseline. No lookahead (`as_of`
+iniettabile). `pathos scenario hotspots` per ispezione.
+
+**2. Dossier** (`build_dossier`): snapshot di evidenze congelato per hotspot —
+metriche GDELT, anomalie `gdelt_anomaly`, cluster RSS (titolo/località LIKE
+nome paese), divergenze narrative sugli stessi eventi (la divergenza è
+segnale), blackout IODA, prior strutturale UCDP se backfillato. Ogni item ha
+id `E1..En` citabile dalla matrice ACH. Persistito in
+`scenario_sets.dossier_json` = audit trail immutabile di cosa sapevamo.
+
+**3. Generazione** (`generate_scenarios`, **1 call Claude per hotspot**,
+default 2 hotspot/run → budget 2-3 task/giorno rispettato): 3-4 scenari
+**MECE** a orizzonte `settings.scenario_horizon_days` (90), ciascuno con
+rating ACH per evidenza (CC/C/N/I/II), probabilità che sommano a 1
+(rinormalizzate difensivamente, garbage → uniforme), 2-3 **indicatori
+osservabili** nei nostri stream (→ `watchlist_items.scenario_id`),
+invalidazione, implicazioni di mercato, scope. Key assumptions sul set.
+Paese con set già attivo → skip (si aggiorna via review, non si duplica).
+Rifiuto/JSON malformato del LLM → skip loggato, mai crash (stesso contratto
+di thesis.py).
+
+**4. Scoring — aggancio predictions v2**: ogni scenario spawna una prediction
+`world`/`geopolitical` (domini `conflitto_armato` + `tensione_militare`,
+1:1 via `scenarios.prediction_id`). Un set MECE di predizioni binarie dove
+esattamente una risolve vera = score probabilistico multi-classe corretto →
+Brier + time-adjusted + calibrazione per bucket **gratis** dal motore
+esistente.
+
+**5. Review** (`review_scenarios`, 1 call Claude per set attivo): ricalcola
+metriche correnti, matcha le `indicator_query` della watchlist sugli eventi
+nuovi (match ≥ metà dei termini, item scatta una volta sola →
+status='triggered'), Claude rivede la distribuzione → delta > 0.01 applicati
+a `scenarios.probability` E `revise_prediction()` (storia revisioni
+auditabile). **Set oltre l'orizzonte: solo flag OVERDUE, mai revisionati**
+(una probabilità cambiata a finestra chiusa avvelenerebbe il Brier).
+
+**6. Risoluzione** (`resolve_scenario_set`, umana): si nomina lo scenario
+materializzato → winner true, fratelli false, tutte le predictions scorate,
+watchlist residua expired, set chiuso. `pathos predict calibration` mostra
+il risultato.
+
+**Wiring**: brief mattutino include sezione "ACTIVE CONFLICT SCENARIOS"
+(il brief nota quali scenari i segnali del giorno favoriscono, senza
+riassegnare probabilità); dashboard pagina "Scenari"; CLI gruppo
+`pathos scenario` (hotspots/generate/list/show/review/resolve). NON è nel
+ciclo notturno (`pathos cycle`): generazione e review sono task Claude
+on-demand, come thesis generate.
+
+**Limiti dichiarati**: mappa FIPS→nome parziale (fallback codice raw, il LLM
+gestisce FIPS); matching indicatori keyword-based volutamente semplice;
+evidenze RSS via LIKE sul nome paese (recall imperfetto senza country-code
+sugli eventi RSS); risoluzione interamente umana (nessun auto-resolve).
+Test: 19 in `tests/test_scenarios.py` (LLM mockato, no rete).
+
+---
+
 ## 8b. Dashboard Streamlit (Fase 4)
 
 `pathos serve [--host localhost] [--port 8501]` — shell-out a `streamlit run pathosphere/dashboard/app.py`.
@@ -1106,7 +1188,7 @@ gli oggetti `sqlite3.Connection` non sono thread-safe e `cache_resource` è
 condiviso tra sessioni/thread Streamlit — aprire un file locale è comunque
 economico.
 
-**8 pagine:**
+**9 pagine:**
 | Pagina | Contenuto | Fonte dati |
 |---|---|---|
 | Overview | Conteggi tabelle, freschezza dati, stato fasi 0-4 | tutte |
@@ -1114,6 +1196,7 @@ economico.
 | Narrazioni | Divergenza media per coppia di blocchi + top eventi | `narrative_divergences` |
 | Grafo entità | Top-N entità hub per grado + sottografo indotto (layout circolare, no dipendenza layout aggiuntiva) | `entities`, `entity_links` (già risolti via `canonical_entity_id`, vedi `graph.py::build_entity_links`) |
 | Tesi | Tab pending/approved/rejected, bottoni Approva/Rifiuta/Apri trade — **stesso comportamento della CLI** (`approve_thesis` + `create_thesis_prediction` su approvazione) | `theses`, `watchlist_items` |
+| Scenari | Set di scenari di conflitto: distribuzione probabilità (bar chart), indicatori watchlist, dossier evidenze | `scenario_sets`, `scenarios`, `watchlist_items` |
 | Portafogli | Curva equity (cash iniziale + P&L realizzato cumulato + punto live), trade aperti | `trades`, `portfolios` (via `market.trading`) |
 | Predizioni | Curva di calibrazione Tetlock (accuratezza osservata vs probabilità dichiarata per bucket), liste aperte/risolte | `predictions` (via `agent.predictions.get_calibration`) |
 | Brief | Storico brief mattutini, selezione per data | `briefs` |
@@ -1248,6 +1331,23 @@ pathos
 │   ├── approve <id>    Approva tesi pending (valida ticker yfinance, warn non blocca)
 │   └── reject <id>     Rifiuta tesi pending con motivazione
 │       └── --reason    Motivazione (obbligatoria, loggata in theses.rejection_reason)
+├── scenario            Previsione scenari di conflitto (triage hotspot → ACH, §8.9)
+│   ├── hotspots        Ranking escalation per paese da gdelt_events (deterministico, no LLM)
+│   │   └── --top           Quanti stampare [default: 10]
+│   ├── generate        Genera set di scenari ACH per i top hotspot (1 call Claude/hotspot)
+│   │   ├── --country       Forza un codice paese FIPS GDELT (es. IS, UP, IR)
+│   │   ├── --horizon-days  Orizzonte scenari [default: settings, 90]
+│   │   ├── --max-hotspots  Quanti hotspot coprire [default: settings, 2]
+│   │   └── --model         claude|qwen-local [default: REASONING_MODEL]
+│   ├── list            Set con distribuzione probabilità
+│   │   └── --status        active|resolved|all [default: active]
+│   ├── show <set_id>   Dettaglio: net assessment, key assumptions, ACH, indicatori, dossier
+│   ├── review          Aggiorna probabilità set attivi (indicatori + metriche fresche, 1 call/set)
+│   │   ├── --set-id        Solo un set [default: tutti gli attivi]
+│   │   └── --model         claude|qwen-local
+│   └── resolve <set_id>  Chiude il set: --winner materializzato, fratelli falsi → scoring predictions
+│       ├── --winner        Label scenario materializzato (obbligatorio, es. A)
+│       └── --date          Data esito [default: oggi UTC]
 ├── portfolio           Gestione portafogli virtuali (paper trading)
 │   ├── init            Crea agent/random/benchmark ($100k); benchmark apre SPY trade
 │   └── status          P&L realizzato + non realizzato per portfolio (fetch prezzi live)

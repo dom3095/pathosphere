@@ -1,6 +1,62 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-15 — NUOVO: enrichment technicals (analisi finanziaria price-action) su branch `feat/stock-technicals` (da `feat/historical-events-backfill`), 628 test verdi. CP-029 ancora aperto: run debate id=4 lanciato dall'utente, esito da verificare.*
+*Aggiornato: 2026-07-16 — NUOVO: previsione scenari di conflitto (3g) su branch `feat/conflict-forecasting` (da `feat/stock-technicals`), 650 test verdi. CP-029 ancora aperto (esito run debate id=4 da verificare); nuovi CP-030 (minore) e CP-031 (dashboard predizioni, pre-esistente).*
+
+## Sessione 2026-07-16 — scenari di conflitto (branch `feat/conflict-forecasting`)
+
+Branch: `feat/conflict-forecasting` (da `feat/stock-technicals`, su richiesta esplicita).
+Richiesta: "strategia di previsioni di scenari di conflitti, come se fossi a capo di un
+ufficio di intelligence nazionale" + wiring con l'esistente + code review + doc.
+
+**Metodologia scelta** (ricerca web fatta in sessione): triage numerico ispirato a
+ACLED CAST (acleddata.com/methodology/cast-methodology) e VIEWS/PRIO (viewsforecasting.org);
+ragionamento con Analysis of Competing Hypotheses di Heuer + Key Assumptions Check +
+Indicators & Warnings; update loop superforecaster; scoring Tetlock riusando predictions v2.
+Principio rispettato: il numerico SELEZIONA (triage), Claude RAGIONA, predictions v2 MISURA
+— "core = agent semantico, non quant".
+
+**Cosa è stato fatto** (dettaglio in wiki §8.9, roadmap 3g, LOOP_STATE):
+- `pathosphere/agent/scenarios.py`: compute_hotspots (FIPS! non ISO-2 — GDELT ActionGeo usa
+  FIPS 10-4, mappa nomi `_FIPS_COUNTRIES` parziale con fallback codice raw) → build_dossier
+  (dossier_json congelato = audit trail no-lookahead) → generate_scenarios (1 call Claude per
+  hotspot, skip se set attivo esiste già per il paese, skip loggato su JSON malformato) →
+  review_scenarios (match indicatori ≥metà termini, item scatta una volta; overdue = solo flag)
+  → resolve_scenario_set (winner umano, MECE: 1 vera + N false → multi-class Brier corretto).
+- Schema: `scenario_sets`, `scenarios` (prediction_id 1:1), `watchlist_items.scenario_id`.
+- Wiring: CLI `pathos scenario ...`; brief sezione "ACTIVE CONFLICT SCENARIOS" (il brief nota
+  quali scenari i segnali del giorno favoriscono, senza riassegnare probabilità — query difensiva
+  su OperationalError per DB pre-migrazione); dashboard 9ª pagina "Scenari".
+- NON nel ciclo notturno: generate/review sono task Claude on-demand (budget 2-3/giorno).
+- Test: 19 nuovi, **650 verdi** totali. Ruff: 0 violazioni sui file nuovi.
+
+**Code review (stessa sessione)**: gli 8 finder subagent sono morti per limite sessione
+(reset 16:50) — review completata INLINE, stesso fallback della sessione technicals. 4 finding:
+1. review post-orizzonte revisionava probabilità → ora `continue` dopo flag OVERDUE (protegge Brier)
+2. `_match_indicators` confronto lessicografico su formati timestamp misti ('T'/spazio/date-only)
+   → `date()` su entrambi i lati in SQL
+3. `--country is` minuscolo non matchava FIPS → `.upper()` nel modulo
+4. `_persist_scenario_set` non transazionale (add_prediction committa internamente) → NON fixato,
+   documentato come CP-030 (rischio basso, fix pulito = param commit=False su add_prediction)
+
+**Scoperto en passant**: CP-031 — `dashboard/views/predictions.py` usa `calib["overall"]` che
+`get_calibration()` non restituisce → KeyError con predizioni presenti. Pre-esistente, non toccato
+(fuori scope branch), fix banale annotato nel CP.
+
+**Stato esatto al cut-off**: tutto implementato/testato/documentato, NON ancora committato.
+**Prossima azione raccomandata**: commit + push + `gh pr create`; poi primo
+`pathos scenario generate` REALE (lo lancia l'utente — vedi regola run-ingest-self) per validare
+il prompt ACH su Claude vero; poi `pathos scenario review` dopo qualche giorno di ingest.
+
+**Comandi utili**:
+```
+uv run pathos scenario hotspots --top 10        # triage, no LLM
+uv run pathos scenario generate                 # 2 call Claude (top-2 hotspot)
+uv run pathos scenario generate --country IS    # teatro forzato (codice FIPS)
+uv run pathos scenario list / show <id>
+uv run pathos scenario review                   # 1 call Claude per set attivo
+uv run pathos scenario resolve <id> --winner B
+uv run pytest tests/test_scenarios.py -q
+```
 
 ## Sessione 2026-07-15 — enrichment technicals (branch `feat/stock-technicals`)
 
