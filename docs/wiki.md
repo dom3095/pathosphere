@@ -1041,6 +1041,55 @@ delay filing ~45gg = complessità > valore per un enrichment layer v1.
 small-cap (issue #2584), rate-limit su scraping non autenticato, ratio
 comparabili solo intra-settore (il testo renderizzato lo dichiara).
 
+### 8.8 Technicals (enrichment) — `pathosphere/market/technicals.py` ✅
+
+**Livello di contesto price-action, complementare ai fondamentali**: i
+fondamentali valgono solo per quote_type EQUITY e degradano a minimal per
+ETF/future/FX — esattamente gli strumenti che un desk geopolitico propone di
+più (BZ=F, ITA, FRO). Lo storico prezzi esiste per tutto ciò che è quotato:
+i technicals coprono quel buco. Stesso principio: **descrittivo, mai
+decisionale** — nessun segnale buy/sell, niente soglie.
+
+**Cosa calcola** (`fetch_technicals(ticker) → TechnicalsSnapshot | None`,
+1 anno di barre daily EOD yfinance, `auto_adjust=True`):
+- Momentum: rendimenti 1w/1m/3m/6m/1y (offset in giorni di borsa: 5/21/63/126;
+  1y = intera finestra, solo se ≥240 barre ≈ vero anno di borsa — sotto, il
+  testo etichetta il range come "N-bar window" invece di "52w", con warning)
+- Volatilità 21gg annualizzata; **RSI(14)** con smoothing Wilder (serie piatta
+  — titolo sospeso/illiquido — → None, non un finto 100 overbought)
+- Distanza prezzo da SMA 20/50/200 (frazione, None se finestra non coperta)
+- Range 52w: % da massimo, % sopra minimo; **max drawdown** nella finestra
+- Volume: rapporto media 21gg / media 63gg (None per FX/indici senza volume)
+- `data_quality`: full (≥200 barre) | partial (≥60) | minimal
+- `render_technicals_text(snap)`: template deterministico prompt-ready con
+  caveat esplicito ("descriptive price action only — not a trading signal")
+
+**Contratto di degradazione** identico a fundamentals: `None` solo su
+fallimento totale (<2 barre); storico corto → campi None + warnings; mai
+eccezioni. **No-lookahead by construction**: solo barre EOD fino al fetch,
+snapshot congelato alla generazione tesi, mai aggiornato.
+
+**Aggancio in `generate_theses` e `run_debate`**: stato condiviso
+`_MarketEnrichment` (thesis.py — cache per layer + coda review, riusato
+identico da debate.py: niente closures duplicate, no drift tra pipeline).
+Snapshot+testo in `theses.technicals_json`. La review LLM batch è una
+**"market review" unica** (fundamentals + technicals nello stesso prompt —
+**zero call LLM extra** rispetto a prima): l'assessment finisce in
+`fundamentals_json.llm_assessment` se presente, altrimenti in
+`technicals_json.llm_assessment` (caso ETF/future senza fondamentali).
+**Riuso prezzo**: `_price_snapshot()` prende il last close già scaricato dai
+technicals (stesso close EOD auto-adjusted di `fetch_price`) — una sola
+chiamata history yfinance per ticker; fallback `fetch_price` se technicals
+disattivati/assenti. Disattivabile con `--no-technicals` (indipendente da
+`--no-fundamentals`).
+
+**Ispezione manuale**: `pathos technicals TICKER`. In `pathos thesis show`
+sezione Technicals dopo Fundamentals.
+
+**Limiti noti**: EOD only (nessun intraday); RSI/SMA descrittivi su orizzonti
+7-30gg delle tesi event-driven — un evento invalida qualsiasi trend, il caveat
+nel testo lo dichiara; yfinance stesso rate-limit dei fondamentali.
+
 ---
 
 ## 8b. Dashboard Streamlit (Fase 4)
@@ -1182,17 +1231,20 @@ pathos
 │   ├── --model         claude|qwen-local [default: da .env]
 │   └── --dry-run       Mostra solo conteggi segnali, no LLM
 ├── thesis              Generazione e approvazione tesi
-│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call + 1 review fondamentali)
+│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call + 1 market review batch)
 │   │   ├── --date      Data brief [default: oggi UTC]
 │   │   ├── --n         Numero tesi primarie [default: 3]
 │   │   ├── --model     claude|qwen-local
-│   │   └── --no-fundamentals  Salta enrichment fondamentali (no yfinance, no review call)
+│   │   ├── --no-fundamentals  Salta enrichment fondamentali (no yfinance, no review call)
+│   │   └── --no-technicals    Salta enrichment technicals (price-action)
 │   ├── debate          Genera tesi via debate pipeline (Qwen×13 + Claude×1)
 │   │   ├── --date      Data brief
-│   │   └── --n         Numero tesi primarie [default: 3]
+│   │   ├── --n         Numero tesi primarie [default: 3]
+│   │   ├── --no-fundamentals  Come thesis generate
+│   │   └── --no-technicals    Come thesis generate
 │   ├── list            Lista tesi filtrate per status
 │   │   └── --status    pending|approved|rejected|closed|all [default: pending]
-│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist, fondamentali
+│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist, fondamentali, technicals
 │   ├── approve <id>    Approva tesi pending (valida ticker yfinance, warn non blocca)
 │   └── reject <id>     Rifiuta tesi pending con motivazione
 │       └── --reason    Motivazione (obbligatoria, loggata in theses.rejection_reason)
@@ -1232,6 +1284,7 @@ pathos
 │   └── calibration       Dual-metric: time-adjusted score (primaria) + Brier (secondaria)
 │       └── breakdown per bucket probabilità, macro_area, prediction_type
 ├── fundamentals <ticker>  Snapshot fondamentali (ratio, Altman Z, Piotroski F) — ispezione manuale
+├── technicals <ticker>    Snapshot price-action (momentum, RSI, SMA, 52w range) — ispezione manuale
 ├── serve                Avvia dashboard Streamlit (Fase 4, vedi sezione 8b)
 │   ├── --host           [default: localhost]
 │   └── --port           [default: 8501]

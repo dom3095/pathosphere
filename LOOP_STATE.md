@@ -1,28 +1,19 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: backfill storico eventi (CP-027 parte 1) — branch `feat/historical-events-backfill`
+## Fase corrente: merge `feat/stock-technicals` da `feat/historical-events-backfill`
 
-**2026-07-14 notte (3ª sessione) — 4 ingestori storici implementati e testati:**
+**2026-07-15 — Risoluzione merge conflicts (3 file):**
+- CRITICAL_POINTS.md: CP-027 combine eventi storico + nota prezzi
+- HANDOFF.md: ridotto a sommario, dettagli in sezioni successive
+- LOOP_STATE.md: merge in corso
 
-- `ingest/ucdp.py` — UCDP GED conflitti 1989→ (CSV zip aperto, `--min-deaths 25` → ~15.8k eventi)
-- `ingest/who_don.py` — WHO Disease Outbreak News epidemie 1996→ (OData, resume incrementale)
-- `ingest/reliefweb.py` — ReliefWeb v2 disastri 1981→ (serve `RELIEFWEB_APPNAME`, skip graceful)
-- `ingest/econ_crises.py` — crisi economiche da Wikidata SPARQL (QID nel summary)
-- 4 comandi CLI (`pathos ingest ucdp|who-don|reliefweb|econ-crises`), setting `reliefweb_appname`
-- GDELT scartato come fonte storica (sintetico CAMEO, no prosa — CP-016)
-- Tutto in `events` diretto, dedup `(title, first_seen)`, no raw_documents/embedding
-- 19 test nuovi (`tests/test_historical_sources.py`) → **603 verdi**, ruff pulito su file nuovi
+**Branch e PRs**:
+1. `feat/fundamentals-analysis` (PR #14): fundamentals layer, CP-008/010/012, CP-022 geoloc RSS, CP-025/026, CP-028 review, auto-open soglia, test 584 verdi — **IN MAIN, MERGIATA**
+2. `feat/historical-events-backfill` (creato da feat/fundamentals-analysis): 4 ingestori storici, CP-027 parte 1, 603 verdi — **DA MERGGIARE**
+3. `feat/stock-technicals` (creato da feat/historical-events-backfill): technicals analysis, PR #16, 631 verdi — **DA MERGGIARE**
+4. CP-029 (CP-029 timeout 1800s + retry): 584→631 verdi in main, attende run reale utente
 
-**Subtask completati**: probe API reali (UCDP API→token, CSV aperto; ReliefWeb v1 dismessa→v2 con
-appname; WHO DON OK; Wikidata OK), 4 moduli, CLI, test, docs (wiki §5.5+indice+env+CLI ref+fonti,
-CP-027 aggiornato, HANDOFF).
-
-**Prossima azione**: utente lancia backfill reale da terminale → verifica conteggi/mappa → commit +
-PR branch. Parallelo: run debate id=4 in corso (CP-029, esito da verificare).
-
----
-
-## Fase precedente: CP-029 APERTO — timeout 1800s + retry implementati, attesa run reale utente (branch `feat/fundamentals-analysis`, PR #14)
+**Prossima azione**: completare merge → push → verificare stati branch/PR.
 
 **2026-07-14 notte (2ª sessione) — Implementata opzione 1 di CP-029:**
 

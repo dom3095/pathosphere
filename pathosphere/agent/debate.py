@@ -22,15 +22,15 @@ from loguru import logger
 
 from pathosphere.agent.thesis import (
     ThesisResult,
-    _fundamentals_doc,
+    _MarketEnrichment,
     _maybe_auto_open,
-    _run_fundamentals_review,
+    _price_snapshot,
+    _run_market_review,
     _save_thesis,
     _save_watchlist_items,
 )
 from pathosphere.config import get_settings
 from pathosphere.llm.client import LLMClient
-from pathosphere.market.prices import fetch_price
 
 # ── persona catalogue ─────────────────────────────────────────────────────────
 
@@ -404,48 +404,36 @@ async def _persist_theses(
     llm_client: LLMClient,
     *,
     enrich_fundamentals: bool = True,
+    enrich_technicals: bool = True,
     auto_open: bool = True,
     auto_open_threshold: float | None = None,
 ) -> ThesisResult:
-    """Same persistence + fundamentals enrichment + confidence-threshold
-    auto-open as `thesis.py::generate_theses` — reuses its private helpers
-    directly instead of re-implementing them, so the debate pipeline can't
-    silently drift from the fast-path pipeline's feature set again (it
-    previously had neither fundamentals nor auto-open)."""
+    """Same persistence + fundamentals/technicals enrichment +
+    confidence-threshold auto-open as `thesis.py::generate_theses` — reuses
+    its private helpers directly instead of re-implementing them, so the
+    debate pipeline can't silently drift from the fast-path pipeline's
+    feature set again (it previously had neither fundamentals nor auto-open)."""
     thesis_ids: list[int] = []
     watchlist_count = 0
-    fund_cache: dict[str, dict | None] = {}
-    review_items: list[dict] = []
+    enrichment = _MarketEnrichment(enrich_fundamentals, enrich_technicals)
     auto_open_candidates: list[tuple[int, float | None]] = []
-
-    def _enrich(ticker: str | None) -> str | None:
-        if not enrich_fundamentals:
-            return None
-        return _fundamentals_doc(ticker, fund_cache)
-
-    def _queue_review(thesis_id: int, t: dict, ticker: str | None, fund_json: str | None) -> None:
-        if fund_json:
-            review_items.append({
-                "thesis_id": thesis_id,
-                "title": t.get("title", ""),
-                "ticker": ticker,
-                "direction": t.get("direction"),
-                "text": json.loads(fund_json)["text"],
-            })
 
     for t in theses_data[:n]:
         ticker = t.get("instrument")
-        price = fetch_price(ticker) if ticker else None
+        fund_json, tech_json = enrichment.docs(ticker)
+        price = _price_snapshot(ticker, tech_json)
         if ticker and price is None:
             logger.warning(f"DEBATE: price fetch failed for {ticker}")
-        fund_json = _enrich(ticker)
 
         # Embed debate_context into causal_chain JSON
         t.setdefault("causal_chain", [])
-        thesis_id = _save_thesis(conn, t, price, debate_id=debate_id, fundamentals_json=fund_json)
+        thesis_id = _save_thesis(
+            conn, t, price, debate_id=debate_id,
+            fundamentals_json=fund_json, technicals_json=tech_json,
+        )
         thesis_ids.append(thesis_id)
         watchlist_count += _save_watchlist_items(conn, thesis_id, t.get("indicators", []))
-        _queue_review(thesis_id, t, ticker, fund_json)
+        enrichment.queue_review(thesis_id, t, ticker, fund_json, tech_json)
         auto_open_candidates.append((thesis_id, t.get("confidence")))
 
         logger.info(
@@ -455,22 +443,25 @@ async def _persist_theses(
 
         for alt in t.get("alternatives", []):
             alt_ticker = alt.get("instrument")
-            alt_price = price if alt_ticker == ticker else (fetch_price(alt_ticker) if alt_ticker else None)
-            alt_fund = _enrich(alt_ticker)
-            alt_id = _save_thesis(conn, alt, alt_price, debate_id=debate_id, fundamentals_json=alt_fund)
+            alt_fund, alt_tech = enrichment.docs(alt_ticker)
+            alt_price = price if alt_ticker == ticker else _price_snapshot(alt_ticker, alt_tech)
+            alt_id = _save_thesis(
+                conn, alt, alt_price, debate_id=debate_id,
+                fundamentals_json=alt_fund, technicals_json=alt_tech,
+            )
             thesis_ids.append(alt_id)
             watchlist_count += _save_watchlist_items(conn, alt_id, alt.get("indicators", []))
-            _queue_review(alt_id, alt, alt_ticker, alt_fund)
+            enrichment.queue_review(alt_id, alt, alt_ticker, alt_fund, alt_tech)
             auto_open_candidates.append((alt_id, alt.get("confidence")))
             logger.info(f"DEBATE: alt id={alt_id} | {alt.get('title', '')} | {alt_ticker}")
 
-    if review_items:
+    if enrichment.review_items:
         try:
-            annotated = await _run_fundamentals_review(conn, llm_client, review_items)
-            logger.info(f"DEBATE: fundamentals review annotated {annotated} theses")
+            annotated = await _run_market_review(conn, llm_client, enrichment.review_items)
+            logger.info(f"DEBATE: market review annotated {annotated} theses")
         except Exception as exc:
             logger.warning(
-                f"DEBATE: fundamentals review failed ({exc}) — theses saved without assessment"
+                f"DEBATE: market review failed ({exc}) — theses saved without assessment"
             )
 
     conn.commit()
@@ -522,6 +513,7 @@ async def run_debate(
     brief_date: str | None = None,
     n_theses: int = 3,
     enrich_fundamentals: bool = True,
+    enrich_technicals: bool = True,
     auto_open: bool = True,
     auto_open_threshold: float | None = None,
 ) -> DebateResult:
@@ -530,10 +522,11 @@ async def run_debate(
     Args:
         conn:          Open SQLite connection.
         qwen_client:   LLMClient with backend='qwen-local' (research + critique).
-        claude_client: LLMClient with backend='claude' (synthesis + fundamentals review).
+        claude_client: LLMClient with backend='claude' (synthesis + market review).
         brief_date:    ISO date of the brief to use (default: today UTC).
         n_theses:      Number of primary theses to generate.
         enrich_fundamentals: same as thesis.py::generate_theses.
+        enrich_technicals: same as thesis.py::generate_theses.
         auto_open:     same as thesis.py::generate_theses.
         auto_open_threshold: same as thesis.py::generate_theses.
 
@@ -602,6 +595,7 @@ async def run_debate(
         thesis_result = await _persist_theses(
             conn, theses_data, debate_id, n_theses, claude_client,
             enrich_fundamentals=enrich_fundamentals,
+            enrich_technicals=enrich_technicals,
             auto_open=auto_open,
             auto_open_threshold=auto_open_threshold,
         )
