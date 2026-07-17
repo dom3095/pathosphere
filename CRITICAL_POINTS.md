@@ -388,6 +388,25 @@ tutte le notizie politiche/economiche a favore dei soli segnali fisici (terremot
 
 ---
 
+## CP-031: dashboard pagina Predizioni — KeyError `overall` con predizioni presenti — **RISOLTO 2026-07-17** (branch `fix/cp031-predictions-keyerror`)
+
+**Contesto:** `dashboard/views/predictions.py` leggeva `calib["overall"]["count"]` /
+`["mean_brier_score"]` / `["mean_time_adjusted_score"]`, ma `get_calibration()`
+(`agent/predictions.py`) non restituisce una chiave `overall`: le metriche aggregate sono
+top-level (`total_resolved`, `mean_brier_score`, `mean_time_adjusted_score`). La pagina
+funzionava solo nello stato vuoto (guard `open_df.empty and resolved_df.empty` → return
+prima del crash): con ANCHE UNA sola predizione nel DB, KeyError immediato. Scoperto
+en passant nella sessione scenari 2026-07-16 (la verifica AppTest della Fase 4 era stata
+fatta con 0 predizioni), fix rimandato; il DB reale ora ha predizioni → pagina rotta.
+
+**Fix:** chiavi allineate a quelle reali (`total_resolved` come guard, metriche top-level).
+Nessuna modifica a `get_calibration()` — il resto della pagina (buckets/accuracy) usava già
+le chiavi giuste.
+
+**Verifica:** repro AppTest (scratchpad) su DB temporaneo: pre-fix KeyError riprodotto con
+1 predizione aperta; post-fix pagina renderizza senza eccezioni sia con sola predizione
+aperta sia con predizione risolta (ramo calibrazione + chart esercitati). Ruff pulito,
+498 test verdi invariati (pagina senza test pytest dedicati, come da nota Fase 4).
 ## CP-023: fondamentali yfinance — degradazione silenziosa e dati non cross-verificati (aperto)
 
 **Contesto:** `pathosphere/market/fundamentals.py` arricchisce le tesi con ratio/Altman Z/Piotroski F
