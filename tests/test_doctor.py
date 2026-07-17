@@ -231,16 +231,15 @@ def test_backlog_excludes_non_prose_origins(tmp_db, settings):
 
 
 def test_geoloc_backlog_skips_on_pre_migration_db(tmp_db, settings):
-    # base schema has no events.geoloc_checked (added by a later branch):
-    # the check must degrade to SKIP, not crash
+    # a pre-CP-022 DB has no events.geoloc_checked: the check must degrade
+    # to SKIP, not crash (current schema ships the column, so strip it)
+    tmp_db.execute("DROP INDEX idx_events_geoloc_checked")
+    tmp_db.execute("ALTER TABLE events DROP COLUMN geoloc_checked")
     res = _by_name(run_doctor(tmp_db, settings))[("backlog", "rss geolocation")]
     assert res.status == SKIP
 
 
 def test_geoloc_backlog_counts_when_column_exists(tmp_db, settings):
-    tmp_db.execute(
-        "ALTER TABLE events ADD COLUMN geoloc_checked INTEGER NOT NULL DEFAULT 0"
-    )
     tmp_db.execute(
         "INSERT INTO events (title, first_seen, last_seen, origin) "
         "VALUES ('e', '2026-01-01', '2026-01-01', 'rss')"
@@ -332,17 +331,15 @@ def test_open_prediction_within_horizon_ok(tmp_db, settings):
 
 
 def test_scenarios_skip_when_tables_absent(tmp_db, settings):
+    # a pre-#17 DB has no scenario tables: the check must degrade to SKIP,
+    # not crash (current schema ships them, so drop them)
+    tmp_db.execute("DROP TABLE scenarios")
+    tmp_db.execute("DROP TABLE scenario_sets")
     res = _by_name(run_doctor(tmp_db, settings))[("agent", "conflict scenarios")]
     assert res.status == SKIP
 
 
 def test_scenarios_overdue_warns_when_tables_exist(tmp_db, settings):
-    tmp_db.execute(
-        """CREATE TABLE scenario_sets (
-            id INTEGER PRIMARY KEY, country TEXT, country_name TEXT,
-            created_date TEXT, horizon_date TEXT, status TEXT
-        )"""
-    )
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
     tmp_db.execute(
         "INSERT INTO scenario_sets (country, country_name, created_date, "
