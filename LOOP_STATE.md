@@ -1,6 +1,321 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: Fase 4 Dashboard pronta per commit/PR; CP-022 (geoloc RSS) validato ma non implementato
+## Fase corrente: previsione scenari di conflitto (3g) — branch `feat/conflict-forecasting`
+
+**2026-07-16 — modulo scenari implementato, wired, testato, reviewed:**
+
+- `agent/scenarios.py` (~900 righe) — pipeline completa: `compute_hotspots` (triage
+  deterministico gdelt_events, finestra 14gg vs baseline 90gg, z material conflict + shift quad4 +
+  Goldstein delta + volume surge, score SOLO ranking) → `build_dossier` (evidenze E1..En congelate:
+  metriche, anomalie gdelt, RSS, divergenze, IODA, UCDP prior) → `generate_scenarios` (1 call
+  Claude/hotspot, default 2: 3-4 scenari MECE ACH, probabilità→1, indicatori→watchlist) →
+  `review_scenarios` (trigger indicatori + metriche fresche → `revise_prediction` con rationale;
+  set overdue MAI revisionati) → `resolve_scenario_set` (winner umano → scoring predictions v2).
+- Migrazioni: `scenario_sets`, `scenarios`, `watchlist_items.scenario_id` (+3 indici)
+- Config: `scenario_horizon_days=90`, `scenario_max_hotspots=2`
+- Wiring: CLI gruppo `pathos scenario` (hotspots/generate/list/show/review/resolve); brief con
+  sezione "ACTIVE CONFLICT SCENARIOS"; dashboard pagina "Scenari" (9ª vista)
+- Test: +19 (`tests/test_scenarios.py`) → **650 verdi**; ruff pulito su tutti i file nuovi
+- Code review inline (8 finder subagent morti per limite sessione, come sessione precedente):
+  4 finding — 3 fixati (revisione post-orizzonte bloccata, confronto date normalizzato con `date()`,
+  `--country` uppercased), 1 documentato (CP-030 persistenza parziale). Scoperto e annotato anche
+  CP-031 (pagina Predizioni dashboard: KeyError `overall`, pre-esistente, NON toccato).
+- Smoke reale via subagent: hotspots su DB reale ok, help ok, migrazione ok, view import ok.
+
+**2026-07-17 — allineamento branch**: mergiato `origin/feat/stock-technicals` (che include
+`origin/main` con backfill #15) in `feat/conflict-forecasting`. PR #16 (technicals) in CI,
+merge su main da PR. Questo branch va in PR dopo #16.
+
+**Prossima azione**: push + PR branch `feat/conflict-forecasting`; primo
+`pathos scenario generate` reale (lanciato dall'utente) per validare il prompt su Claude vero.
+
+---
+
+## Fase precedente: enrichment technicals (analisi finanziaria price-action) — branch `feat/stock-technicals`
+
+**2026-07-15 — Risoluzione merge conflicts (3 file):**
+- CRITICAL_POINTS.md: CP-027 combine eventi storico + nota prezzi
+- HANDOFF.md: ridotto a sommario, dettagli in sezioni successive
+- LOOP_STATE.md: merge in corso
+
+**Branch e PRs**:
+1. `feat/fundamentals-analysis` (PR #14): fundamentals layer, CP-008/010/012, CP-022 geoloc RSS, CP-025/026, CP-028 review, auto-open soglia, test 584 verdi — **IN MAIN, MERGIATA**
+2. `feat/historical-events-backfill` (creato da feat/fundamentals-analysis): 4 ingestori storici, CP-027 parte 1, 603 verdi — **DA MERGGIARE**
+3. `feat/stock-technicals` (creato da feat/historical-events-backfill): technicals analysis, PR #16, 631 verdi — **DA MERGGIARE**
+4. CP-029 (CP-029 timeout 1800s + retry): 584→631 verdi in main, attende run reale utente
+
+**Prossima azione**: completare merge → push → verificare stati branch/PR.
+
+**2026-07-14 notte (2ª sessione) — Implementata opzione 1 di CP-029:**
+
+Verificato nel DB: nessun run nuovo dopo id=3 (ultimo sempre `failed`) — l'utente non ha ancora
+rilanciato. Implementata opzione 1 di CP-029 in `llm/client.py`:
+- Timeout per-chiamata Qwen **900s → 1800s** (`_QWEN_TIMEOUT_S`) — assorbe i picchi >900s osservati.
+- **1 retry automatico su `ReadTimeout`** (`_QWEN_READ_TIMEOUT_RETRIES=1`) — distingue picco
+  transitorio da limite duro; al secondo timeout consecutivo l'eccezione propaga.
+- 3 test dedicati: valore 1800s, retry-poi-successo (2 POST, risposta del 2°), doppio timeout propaga
+  (esattamente 2 POST, no loop infinito). **584 test verdi** (582+2). Ruff pulito.
+
+Doc aggiornate: `CRITICAL_POINTS.md` (CP-029: opzione 1 fatta, restano opzioni 2-3), `HANDOFF.md`
+(prompt di ripresa riscritto), `docs/wiki.md` §8.3 (nota timeout/retry).
+
+**Prossima azione**: run reale lanciato DALL'UTENTE a macchina scarica (comando nel prompt di ripresa
+in `HANDOFF.md`). CP-029 si chiude solo con `debates.status='complete'` verificato nel DB.
+
+---
+
+## Fase precedente: CP-029 — 2 run reali falliti, in handoff (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 notte — Secondo run reale con timeout 900s, fallito di nuovo (id=3):**
+
+Dopo il fix "timeout 900s + doc" (sotto), rilanciato `pathos thesis debate` per validare davvero
+(l'utente ha chiesto esplicitamente "dobbiamo aspettare che finisca correttamente, no graceful fail").
+Partito 21:26:13. Step 1 research (batch 2) **riuscito** alle 22:03:20 (~37 min, 6 chiamate — batching
++ 900s regge qui). Step 2 divergence **riuscito** alle 22:13:06 (9:46 min). **Step 3 critique fallito**
+di nuovo, `ReadTimeout` esattamente a 900.0s.
+
+Scoperta che smentisce l'ipotesi precedente: il prompt di critique è **più piccolo** di quello di
+research (solo 2 divergenze brevi + narrativa propria, niente brief intero) — eppure più lento. La
+latenza non dipende solo dalla dimensione del prompt, **cresce con la durata della sessione** (~370s
+stimati a inizio run → 900s+ dopo ~50 minuti). Causa non verificata: throttling termico M1, degrado
+memoria, o interferenza di altri processi attivi (inclusa questa stessa sessione Claude Code). Nessun
+dato sporco (debate id=1,2,3 tutte `status='failed'` pulite).
+
+**Decisione utente**: non insistere oltre stasera. "Committa, prepara l'handoff, scrivi il prompt per
+il tuo collega e lancio io" — codice attuale (batching+900s) committato così com'è, CP-029 lasciato
+esplicitamente **aperto** (non risolto — la dichiarazione di "risolto" del fix precedente era prematura,
+corretta in `CRITICAL_POINTS.md`). Prossimo tentativo lanciato dall'utente stesso, non dall'agent.
+
+**Dettaglio + opzioni per il prossimo tentativo**: CP-029 in `CRITICAL_POINTS.md`. **Prompt di ripresa
+per la prossima sessione**: vedi `HANDOFF.md`, sezione in cima.
+
+---
+
+## Fase precedente: `pathos thesis debate` — primo tentativo di validazione, fix timeout+batching (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 sera — Primo run reale di `pathos thesis debate` (mai lanciato prima):**
+
+Utente ha chiesto "lancialo" per verificare se il debate funziona davvero (non solo test mockati).
+Crash reale al primo tentativo: `httpx.ReadTimeout` a 120.0s sullo Step 1 (research, 6 chiamate Qwen
+parallele contro un solo Ollama locale — viola il vincolo hardware CLAUDE.md "un modello alla volta").
+Registrato CP-029, nessun dato sporco creato (debate row marcata `failed` correttamente).
+
+Utente ha chiesto di mandare le chiamate **a 2 a 2** (batch, non tutte parallele). Implementato
+`_gather_in_batches()` in `agent/debate.py` (`QWEN_BATCH_SIZE=2`), timeout httpx 120s→300s. Rilanciato
+per verificare — **timeout di nuovo, stavolta a 300.0s esatti**. Misurata poi una singola chiamata
+Qwen isolata (zero concorrenza) con un prompt di ricerca realistico: **318.7 secondi**. Causa vera: non
+la concorrenza, la velocità pura di qwen3:4b q4 su M1 8GB per un prompt di questa dimensione (i 46-113s
+di CP-022 erano per un prompt minuscolo di classificazione, non rappresentativi).
+
+**Decisione presa con l'utente** (via AskUserQuestion): timeout+documentazione, nessuna riduzione di
+qualità (scartate le opzioni "prompt più corti"/"meno personas"/"modello più piccolo"). Fix finale:
+timeout 300s→**900s** (margine ~3x sopra i 318.7s misurati), docstring `pathos thesis debate` (`cli.py`)
+aggiornata con avviso esplicito "SOLO background/overnight, mai interattivo" + esempio
+`caffeinate -i uv run pathos thesis debate &` — stesso pattern già usato per `--geolocate-qwen`.
+
+**Test**: 582 verdi (invariato — nuovi test batching `test_gather_in_batches_caps_concurrency`,
+`test_gather_in_batches_waits_for_batch_before_next`, timeout rinominato
+`test_complete_qwen_uses_900s_timeout`). Ruff pulito, 7 violazioni pre-esistenti invariate.
+
+**Non testato end-to-end con timeout 900s** — nessun terzo run reale lanciato (costerebbe 60-90+
+minuti). Fix verificato per costruzione (timeout matematicamente sopra la latenza misurata) + unit test
+sul valore passato a `httpx.AsyncClient`, non da un run reale completo. Prossimo run reale (lanciato
+dall'utente, in background) è la prima validazione end-to-end vera.
+
+**Dettaglio**: CP-029 in `CRITICAL_POINTS.md`.
+
+**Prossimo**: se l'utente vuole, lanciare `pathos thesis debate` in background per la prima
+validazione end-to-end completa con timeout 900s. Altrimenti pronta per merge insieme al resto —
+nessun altro lavoro di codice noto in sospeso.
+
+---
+
+## Fase precedente: code review pre-merge completata, 10 bug/gap fixati (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 sera — Code review strutturata pre-merge (CP-028):**
+
+Utente ha chiesto "hai fatto code review? ci sono bug committati?" prima di mergiare PR #14. Fatta
+review con skill `/code-review --level high`: 8 angoli paralleli + verifica 1-voto sui candidati
+deboli. **10 problemi reali trovati** (6 confermati, 1 plausibile, 3 di efficienza per consenso
+multi-angolo), tutti fixati su richiesta esplicita ("fixerei tutto prima").
+
+Più gravi: crash TypeError post-commit in `_maybe_auto_open` (confidence non validata), ciclo
+automatico che non usava il fix CP-022 di oggi (`orchestrator.py` non chiamava mai
+`geolocate_rss_events`). Altri: `thesis debate` senza fundamentals/auto-open (ora riusa le funzioni
+di `thesis.py`), fence-stripping che non gestiva testo dopo la chiusura, mismatch alias entità in
+geoloc (verificato su dato reale "turkey"/"Turkey"), duplicazione approve+open CLI vs auto-open
+(estratte funzioni condivise in `agent/approval.py`, sistema anche gap validazione ticker), 2 fix
+efficienza (cache migration per-processo, major_powers calcolata una volta invece di due),
+doppio conteggio eventi nel brief (cosmetico).
+
+**Test**: 579 verdi (era 560, +19: +11 sui fix di regressione, +8 test dedicati diretti per i fix
+#1/#6/#7 — TypeError guard, validate_ticker chiamato davvero, approve_thesis_with_prediction/
+open_trade_and_link testate singolarmente). Ruff pulito, 14 violazioni pre-esistenti invariate.
+
+**Dettaglio**: CP-028 in `CRITICAL_POINTS.md`, sezione dedicata in `HANDOFF.md`.
+
+**Prossimo**: pronta per merge — nessun lavoro di codice noto in sospeso. Aspetta review umana su
+PR #14 (branch protection) + CI check `test` (ultimo controllo era `pending`, ricontrollare).
+
+---
+
+## Fase precedente: auto-open a soglia di confidence implementato (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 — Discussione utente su scope notizie + cadenza + autonomia → feature auto-open:**
+
+Utente ha chiesto scope notizie passate all'LLM + sollevato 2 punti: (1) cadenza tesi dovrebbe essere
+settimanale, non giornaliera — confermato: già così di fatto (thesis generate mai nel loop
+automatico, solo manuale); ma 7gg di lookback nel brief è troppo poco per conflitti pluriennali
+("l'unghia del leone") — **discusso design "situazioni" a orizzonte semantico, non a giorni fissi,
+rimandato a sessione dedicata** (Fase 5 in roadmap.md, non iniziata, richiede cautela per rischio
+chain-collapse già visto 3 volte nel progetto). (2) "tesi aperte in autonomia, poi rifinite" —
+contraddiceva la regola scritta in CLAUDE.md ("nessuna operazione autonoma") — chiarito: soglia di
+confidence (0.6) decide auto-open vs pending manuale.
+
+**Implementato**: `pathosphere/agent/thesis.py` — `_maybe_auto_open()` replica esattamente la
+sequenza manuale (`approve_thesis` → `create_thesis_prediction` → `open_agent_trade` →
+`link_thesis_prediction_to_trade`), eseguita **dopo** la review fondamentali (una tesi contraddetta
+dai fondamentali beneficia comunque di quel contesto prima di aprire). Soglia in
+`config.py::auto_open_confidence_threshold` (default 0.6, calibrato sui dati reali di oggi). CLI:
+`--no-auto-open`, `--auto-open-threshold N`. Degrado: approvazione riuscita + apertura trade fallita
+→ resta `approved` (non torna `pending`), completabile dopo con `pathos trade open <id>`.
+
+**CLAUDE.md aggiornato** (principio 2, "Human-in-the-loop, con auto-open a soglia") — la regola
+scritta ora riflette il comportamento reale, non più "nessuna operazione autonoma" senza eccezioni.
+
+**Test**: 560 verdi (era 554, +6: `_maybe_auto_open` successo/fallimento/soglia + integrazione
+`generate_theses`). Ruff pulito (baseline 8 pre-esistenti invariate).
+
+**Prossimo**: prossimo `pathos thesis generate` reale eserciterà la feature per davvero (oggi le 7
+tesi esistenti restano tutte `pending`, generate prima di questo fix). Fase 5 "situazioni" quando si
+apre una sessione dedicata.
+
+---
+
+## Fase precedente: primo ciclo reale completato — CP-025/CP-026 trovati e risolti (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 — Primo `pathos brief` → `pathos thesis generate` reale della storia del progetto:**
+
+`pathos portfolio init` (3 portafogli, benchmark SPY aperto) → `pathos brief` → `pathos thesis
+generate`. Il primo tentativo ha esposto 2 bug reali mai visti prima (nessun run reale era mai stato
+fatto):
+
+- **CP-025**: brief senza contenuto narrativo nei giorni a 0 `narrative_divergences` (il caso comune)
+  — nessuna query di fallback per eventi RSS recenti in generale. Fix: `_query_recent_events()` in
+  `brief.py`, sezione sempre popolata indipendente dalle divergenze.
+- **CP-026**: `claude -p` (subprocess in `llm/client.py`) ereditava CLAUDE.md/hook del repo,
+  contaminando l'output con meta-commentario da coding-agent ("salvato in scratchpad", "vuoi che lo
+  integri in brief.py?"). Fix: `--safe-mode --tools=` (isola dal repo, preserva auth OAuth — NON
+  `--bare`, che romperebbe l'auth). Trovato anche un secondo problema nello stesso giro: JSON valido
+  ma avvolto in fence ` ```json ` non gestito da nessun chiamante `json_mode=True` — fix centralizzato
+  (`_strip_json_fence()` in `complete()`).
+
+**Risultato dopo i fix**: brief pulito (parte da `# Intelligence Brief`, 12 recent events reali su
+Hormuz/Graham/Le Pen), **7 tesi reali persistite** (BZ=F, FRO, ITA — 3 primarie + 4 alternative),
+fundamentals review batch completato, nessun rifiuto, nessuna contaminazione.
+
+Test: 554 verdi (era 546, +8 llm_client +8 brief). `.gitignore` corretto (`data/briefs/` mancava,
+ora ignorato come db/parquet/logs).
+
+**Prossimo**: `pathos thesis approve <id>` su una delle 7 (verifica auto-creazione predizione
+economic, CP-004/005) → `pathos trade open <id>` (verifica apertura trade reale, primo dato vero per
+CP-023). Oppure aspettare merge PR #14 prima di continuare ad accumulare commit sullo stesso branch.
+
+---
+
+## Fase precedente: CP-022 geoloc RSS risolto (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-14 — CP-022 implementato (euristica + fallback Qwen), eseguito sul DB reale (solo Step 1):**
+
+`geolocate_rss_events()` (euristica gratis, sempre attiva in `pathos extract` prima di
+`geocode_events`) + `geolocate_ambiguous_events_qwen()` (fallback Qwen3 4B, opt-in esplicito
+`--geolocate-qwen --geoloc-limit N`, riprendibile via nuova colonna `events.geoloc_checked`).
+Latenza Qwen ri-misurata a macchina scarica: 46.7s/call (era 90-113s nel notebook sotto stress).
+
+Eseguito Step 1 sul DB reale: 2689 eventi RSS valutati → 870 `located` (32%), 1324 `ambiguous`
+(49%, in attesa di `--geolocate-qwen`), 74 `skip_bilateral`, 421 `skip_none`. Step 2 (Qwen) NON
+eseguito sul backlog storico completo (fuori scope questa sessione, ~17h di chiamate seriali) —
+prossimo passo consigliato: batch notturno `caffeinate -i uv run pathos extract --geolocate-qwen
+--geoloc-limit 200` ripetuto finché `ambiguous` non scende a 0.
+
+Test: 535 verdi (era 519, +16). Ruff pulito sui file toccati (12 violazioni pre-esistenti
+invariate). CP-022 marcato RISOLTO in `CRITICAL_POINTS.md` con valutazione critica a 5 punti
+(dipendenza da qualità NER, instabilità `MAJOR_POWERS` nel tempo, validazione Qwen a 2 campioni,
+backfill storico non completato, `geocode_events()` invariata).
+
+Nota di processo: implementazione fatta da subagent in background, interrotto 2 volte da errori
+infra (connessione caduta, poi stallo 600s) — non errori logici. Codice/test recuperati intatti
+dal working tree entrambe le volte (mai persi), completamento doc+commit+push fatto a mano.
+
+**Prossimo**: batch Qwen storico (~1324 eventi ambigui) quando comodo, non urgente (mappa dashboard
+già migliorata da 870 nuovi eventi geolocalizzati). Oppure: merge PR #14 (fundamentals + CP-008/010/
+012/022 tutti insieme) → primo `thesis generate` reale.
+
+---
+
+## Fase precedente: CP-008/CP-010/CP-012 risolti (branch `feat/fundamentals-analysis`, PR #14)
+
+**2026-07-13 ~ notte — 3 critical point chiusi (indipendenti, 1 giro):**
+
+- **CP-008**: `import sqlite3` mancante in 6 moduli ingest (comtrade/gdelt/physical/portwatch/rss/sources_seed) → `ruff check --select F821` 0 errori.
+- **CP-010**: `get_connection` ora chiama `migrate_db(conn)` — DB pulled con schema vecchio non crasha più senza `pathos db init` esplicito. 1 test nuovo.
+- **CP-012**: `dedup_documents` commit per batch (BATCH_SIZE=32, stesso pattern di `embedder.py`) invece di una transazione unica sull'intero backfill — resiliente a Ctrl+C/crash, log progresso INFO per batch. 1 test nuovo (batch parziale committato sopravvive a eccezione su batch successivo).
+
+Test: 519 verdi (era 517 in `feat/fundamentals-analysis`, +2). Ruff pulito su tutti i file toccati (2 F401 pre-esistenti in `gdelt.py`, non introdotti, fuori scope). 3 commit separati, push su `feat/fundamentals-analysis` (PR #14 si aggiorna da sola).
+
+**Prossimo**: nessuna azione specifica — CP-008/010/012 chiusi. Riprendere da dove lasciato prima (merge PR fondamentali → primo `thesis generate` reale, o CP-022 geoloc RSS).
+
+---
+
+## Fase precedente: enrichment fondamentali implementato (branch `feat/fundamentals-analysis`, PR aperta)
+
+**2026-07-13 ~ sera — Modulo fondamentali (enrichment layer, non motore quant):**
+
+Nuovo `pathosphere/market/fundamentals.py`: `fetch_fundamentals(ticker)` →
+`FundamentalsSnapshot` (ratio yfinance `.info` + Altman Z con skip settore
+finanziario + Piotroski F con conteggio test calcolabili) +
+`render_fundamentals_text()` (template deterministico prompt-ready, no LLM).
+Contratto degradazione identico a `fetch_price`: `None` solo su fallimento
+totale, dati parziali = caso atteso (warnings), mai eccezioni.
+
+Aggancio in `generate_theses`: ogni ticker proposto → snapshot+testo in
+`theses.fundamentals_json` (nuova colonna, migrazione idempotente); se ≥1
+tesi ha dati → 1 call LLM batch di review (annotazione supporta/contraddice/
+neutrale, salvata come `llm_assessment` — NON decide, l'umano approva).
+Fallimento review → warning, tesi salvate comunque. CLI: `pathos fundamentals
+<ticker>`, `pathos thesis generate --no-fundamentals`, sezione Fundamentals
+in `thesis show`. SEC EDGAR rimandato a v2 (motivato in HANDOFF).
+
+**Test**: 19 nuovi (15 test_fundamentals.py + 4 test_thesis.py), 517 totali
+verdi. Ruff pulito sui file toccati (residui pre-esistenti invariati).
+
+**Prossimo**: merge PR → primo giro reale `pathos thesis generate` per
+vedere fundamentals_json su tesi vere; valutare copertura reale dei ticker
+proposti dall'LLM (non-USA attesi problematici).
+
+---
+
+## Fase precedente: Fase 4 Dashboard pronta per commit/PR; CP-022 (geoloc RSS) validato ma non implementato
+
+**2026-07-17 notte — `pathos doctor` (sessione autonoma, branch `feat/doctor` da main):**
+
+Sessione autonoma notturna (utente a dormire, bypass permissions, vincolo: mai main).
+Scelta di iniziativa: health check operativo `pathos doctor` — colpisce CP-001 (claude CLI
+mai verificato), CP-003 (Ollama giù), classe CP-023 (degradazione silenziosa).
+
+- Nuovo `pathosphere/doctor.py`: 5 aree (prerequisites/config/freshness/backlog/agent) +
+  probe rete opt-in (`--network`, yfinance). Read-only, zero LLM, exit 1 solo su FAIL.
+- Difensivo su DB pre-migration (OperationalError → skip) E su campi Settings di branch
+  non mergiati (hasattr) — funziona identico pre/post merge delle 4 PR in volo.
+- Query backlog = stesse dei moduli pipeline (embedder/dedup/extract), conteggi identici.
+- 36 test nuovi (`tests/test_doctor.py`, tutto mockato) → 534 verdi da 498 su main.
+  Ruff pulito sui file nuovi. Provato sul DB reale: 16 ok / 8 warn / 0 fail, trovati
+  subito 10 tesi pending, brief 3gg, backlog wikidata 12651.
+- Docs: wiki §8c + CLI ref, roadmap Fase 0, CP-001/CP-003 mitigazioni.
+- Prossima azione: merge PR (dopo le 4 in coda); poi eventualmente wiring nel brief o
+  in `pathos loop` come pre-check.
+
+---
 
 **2026-07-13 ~ 19:30 UTC — CP-022 investigato e validato (solo notebook, nessun codice toccato):**
 

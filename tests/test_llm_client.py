@@ -9,6 +9,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from pathosphere.llm.client import (
@@ -16,6 +17,7 @@ from pathosphere.llm.client import (
     _inject_json_system,
     _messages_to_text,
     _run_claude_subprocess,
+    _strip_json_fence,
 )
 
 
@@ -28,6 +30,84 @@ def test_inject_json_system_prepends():
     assert result[0]["role"] == "system"
     assert "JSON" in result[0]["content"]
     assert result[1] == msgs[0]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# _strip_json_fence (CP-026 — models don't reliably honour "no markdown fences")
+
+def test_strip_json_fence_removes_json_tagged_fence():
+    raw = '```json\n{"a": 1}\n```'
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
+def test_strip_json_fence_removes_bare_fence():
+    raw = '```\n{"a": 1}\n```'
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
+def test_strip_json_fence_noop_on_clean_json():
+    raw = '{"a": 1}'
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
+def test_strip_json_fence_handles_surrounding_whitespace():
+    raw = '  \n```json\n{"a": 1}\n```\n  '
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
+def test_strip_json_fence_multiline_body():
+    raw = '```json\n{\n  "theses": [1, 2, 3]\n}\n```'
+    assert json.loads(_strip_json_fence(raw)) == {"theses": [1, 2, 3]}
+
+
+def test_strip_json_fence_trailing_prose_after_closing_fence():
+    """CP-026 regression: an anchored end-of-string match missed this case —
+    the model adds a sentence after the closing fence despite instructions
+    not to add text outside the JSON structure."""
+    raw = '```json\n{"a": 1}\n```\nHope this helps!'
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
+def test_strip_json_fence_leading_and_trailing_prose():
+    raw = 'Sure, here is the JSON:\n```json\n{"a": 1}\n```\nLet me know if you need more.'
+    assert _strip_json_fence(raw) == '{"a": 1}'
+
+
+def test_complete_claude_json_mode_strips_fence(monkeypatch):
+    """Integration: LLMClient.complete(json_mode=True) must hand callers
+    clean JSON even when the model wraps it in a fence despite instructions
+    not to (the actual failure mode hit on the first real thesis-generate
+    run, 2026-07-14)."""
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = '```json\n{"theses": []}\n```'
+    mock_result.stderr = ""
+
+    client = LLMClient(backend="claude")
+    with patch("subprocess.run", return_value=mock_result):
+        result = asyncio.run(
+            client.complete([{"role": "user", "content": "Give me JSON."}], json_mode=True)
+        )
+
+    assert result == '{"theses": []}'
+    assert json.loads(result) == {"theses": []}
+
+
+def test_complete_claude_non_json_mode_does_not_strip():
+    """Fence-stripping only applies when json_mode=True — a prose response
+    that happens to contain a code block must pass through untouched."""
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "Here is code:\n```python\nprint(1)\n```"
+    mock_result.stderr = ""
+
+    client = LLMClient(backend="claude")
+    with patch("subprocess.run", return_value=mock_result):
+        result = asyncio.run(
+            client.complete([{"role": "user", "content": "Show me code."}])
+        )
+
+    assert result == "Here is code:\n```python\nprint(1)\n```"
 
 
 def test_inject_json_system_merges_existing():
@@ -108,7 +188,29 @@ def test_run_claude_subprocess_success():
     assert out == "Hello from Claude"
     mock_run.assert_called_once()
     args, kwargs = mock_run.call_args
-    assert args[0] == ["claude", "-p", "test prompt"]
+    assert args[0] == ["claude", "-p", "--safe-mode", "--tools=", "test prompt"]
+
+
+def test_run_claude_subprocess_uses_safe_mode_no_tools():
+    """CP-026 regression guard: the subprocess must run isolated from this
+    repo's CLAUDE.md/hooks (--safe-mode) and with no tool access (--tools=),
+    so pipeline completions can't be contaminated by coding-session framing
+    or perform file/bash side effects. Must NOT use --bare — that requires
+    ANTHROPIC_API_KEY and skips OAuth/keychain auth, which this project's
+    subscription-credit setup relies on."""
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "ok"
+    mock_result.stderr = ""
+
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
+        _run_claude_subprocess("test prompt")
+
+    cmd = mock_run.call_args[0][0]
+    assert "--safe-mode" in cmd
+    assert "--tools=" in cmd
+    assert "--bare" not in cmd
+    assert cmd[-1] == "test prompt"
 
 
 def test_run_claude_subprocess_failure():
@@ -143,7 +245,7 @@ def test_complete_claude_json_mode_injects_system():
     captured_prompts: list[str] = []
 
     def fake_run(cmd, **kwargs):
-        captured_prompts.append(cmd[2])  # third arg is the prompt
+        captured_prompts.append(cmd[-1])  # prompt is always the last arg
         r = MagicMock()
         r.returncode = 0
         r.stdout = '{"key": "value"}'
@@ -193,6 +295,88 @@ def test_complete_qwen_success():
 
     result = asyncio.run(run())
     assert result == "Qwen says hello."
+
+
+def test_complete_qwen_uses_1800s_timeout():
+    """CP-029: per-call latency grows over a long debate session (~370s early,
+    >900s after ~50 min in the same run — critique step timed out at exactly
+    900.0s despite a smaller prompt than the research step that succeeded).
+    1800s absorbs the worst observed spikes; debate stays a background-only
+    command, not a latency-sensitive path."""
+    client = LLMClient(backend="qwen-local")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    mock_resp.raise_for_status = MagicMock()
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(return_value=mock_resp)
+            mock_cls.return_value = mock_http
+
+            await client.complete([{"role": "user", "content": "hi"}])
+            return mock_cls
+
+    mock_cls = asyncio.run(run())
+    assert mock_cls.call_args.kwargs["timeout"] == 1800
+
+
+def test_complete_qwen_retries_once_on_read_timeout():
+    """CP-029: a single ReadTimeout may be a transient latency spike, not a
+    hard limit — one automatic retry distinguishes the two. Second attempt
+    succeeding must return its response normally."""
+    client = LLMClient(backend="qwen-local")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": "recovered"}}]
+    }
+    mock_resp.raise_for_status = MagicMock()
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(
+                side_effect=[httpx.ReadTimeout("timed out"), mock_resp]
+            )
+            mock_cls.return_value = mock_http
+
+            result = await client.complete([{"role": "user", "content": "hi"}])
+            return result, mock_http.post.call_count
+
+    result, call_count = asyncio.run(run())
+    assert result == "recovered"
+    assert call_count == 2
+
+
+def test_complete_qwen_raises_after_second_read_timeout():
+    """CP-029: exactly one retry — two consecutive ReadTimeouts mean a real
+    limit, the exception must propagate (no infinite retry loop)."""
+    client = LLMClient(backend="qwen-local")
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(
+                side_effect=httpx.ReadTimeout("timed out")
+            )
+            mock_cls.return_value = mock_http
+
+            with pytest.raises(httpx.ReadTimeout):
+                await client.complete([{"role": "user", "content": "hi"}])
+            return mock_http.post.call_count
+
+    call_count = asyncio.run(run())
+    assert call_count == 2
 
 
 def test_complete_qwen_custom_model():

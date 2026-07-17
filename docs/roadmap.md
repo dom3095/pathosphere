@@ -1,6 +1,6 @@
 # Pathosphere — Roadmap
 
-Stato aggiornato: 2026-07-07.
+Stato aggiornato: 2026-07-16.
 
 ---
 
@@ -11,7 +11,7 @@ Stato aggiornato: 2026-07-07.
 | **0** | Fondamenta | ✅ Completa |
 | **1** | Ingestione | ✅ Completa |
 | **2** | Semantica | ✅ Completa |
-| **3** | Agent e valutazione | ✅ Completa (3a–3f) |
+| **3** | Agent e valutazione | ✅ Completa (3a–3g) |
 | **4** | Interfaccia | ⬜ Futuro |
 
 ---
@@ -25,6 +25,7 @@ Stato aggiornato: 2026-07-07.
 | Schema SQLite + sqlite-vec + migrate_db | `pathosphere/db/schema.py` | ✅ |
 | CLI `pathos` (Click) | `pathosphere/cli.py` | ✅ |
 | Ciclo notturno orchestrator (6 fasi) | `pathosphere/cycle/orchestrator.py` | ✅ |
+| Health check operativo (`pathos doctor`, wiki §8c) | `pathosphere/doctor.py` | ✅ 2026-07-17 |
 
 ---
 
@@ -54,6 +55,7 @@ Stato aggiornato: 2026-07-07.
 | Dedup semantica KNN (cosine ≥ 0.92, 72h) | `semantic/dedup.py` | `raw_documents.is_duplicate` | ✅ |
 | Clustering → eventi (union-find, soglia 0.85) | `semantic/cluster.py` | `events`, `event_documents` | ✅ |
 | NER multilingua (spaCy `xx_ent_wiki_sm`) | `semantic/extract.py` | `entities`, `document_entities` | ✅ |
+| Geolocalizzazione eventi RSS (euristica + fallback Qwen, CP-022) | `semantic/extract.py` | `events.location_name`, `events.geoloc_checked` | ✅ |
 | Geocoding (Nominatim, cache) | `semantic/extract.py` | `events.lat/lon`, `geocode_cache` | ✅ |
 | Wikidata entity linking (QID, canonical_name) | `semantic/extract.py` | `entities.wikidata_qid` | ✅ |
 | Grafo co-occorrenze | `semantic/graph.py` | `entity_links` | ✅ |
@@ -85,6 +87,26 @@ Stato aggiornato: 2026-07-07.
 - `causal_chain` JSON: `{"steps": [...], "trigger_summary": "...", "persona_notes": {}, "debate_context": {...}}`
 - `price_snapshot` al momento della generazione (no-lookahead)
 - `watchlist_items` auto-popolati per ogni tesi
+- **Enrichment fondamentali** (`pathosphere/market/fundamentals.py`): ratio yfinance +
+  Altman Z (skip finanziari) + Piotroski F per ogni ticker proposto →
+  `theses.fundamentals_json` + 1 call LLM batch di review (annotazione, non decisione).
+  Degrada senza bloccare; `--no-fundamentals` per saltare. CLI: `pathos fundamentals <ticker>`.
+  SEC EDGAR rimandato a v2.
+- **Enrichment technicals** (`pathosphere/market/technicals.py`, 2026-07-15): price-action
+  yfinance 1y daily per ogni ticker proposto (momentum 1w-1y, volatilità 21gg, RSI-14 Wilder,
+  distanze SMA 20/50/200, range 52w, max drawdown, trend volume) → `theses.technicals_json`.
+  Copre ETF/future/FX dove i fondamentali degradano a minimal. Review LLM unificata
+  ("market review": fundamentals+technicals nello stesso prompt batch — zero call extra);
+  assessment in fundamentals_json, fallback technicals_json. Descrittivo, mai segnale.
+  `--no-technicals` per saltare. CLI: `pathos technicals <ticker>`. Wiki §8.8.
+  Post code-review (stessa sessione): stato enrichment condiviso `_MarketEnrichment`
+  (thesis+debate, no closures duplicate), price_snapshot riusa il last close dei
+  technicals (1 sola history call/ticker), RSI piatto → None, label "52w"/"1y" onesta
+  sotto 240 barre.
+- **Auto-open a soglia di confidence** (2026-07-14): tesi con `confidence ≥ 0.6` (configurabile,
+  `settings.auto_open_confidence_threshold`) auto-approvate e tradate subito dopo la review
+  fondamentali — soldi virtuali, revisione umana dopo invece di gate prima. Sotto soglia: flusso
+  manuale invariato. `--no-auto-open` / `--auto-open-threshold N` per override.
 
 ### 3d. Flusso approvazione CLI ✅
 
@@ -147,6 +169,29 @@ pathos predict calibration
 
 - 39 test in `tests/test_predictions.py` (test_revise_prediction, test_get_calibration, etc.)
 
+### 3g. Previsione scenari di conflitto ✅ (2026-07-16, branch `feat/conflict-forecasting`)
+
+**`pathosphere/agent/scenarios.py`** — pipeline analitica strutturata (wiki §8.9):
+
+- **Triage hotspot deterministico** (no LLM): per paese FIPS da `gdelt_events`, finestra 14gg vs
+  baseline 90gg — z material conflict, shift quota quad4, deterioramento Goldstein, surge volume.
+  Solo selezione dell'attenzione, mai predizione (principio core-agentico-non-quant).
+- **Dossier di evidenze congelato** (`dossier_json`, id E1..En citabili): metriche + anomalie GDELT +
+  cluster RSS + divergenze narrative + IODA + prior UCDP.
+- **Generazione ACH** (1 call Claude/hotspot, default 2/run): 3-4 scenari MECE a 90gg, rating per
+  evidenza, probabilità che sommano a 1, indicatori osservabili → `watchlist_items.scenario_id`,
+  invalidazione, key assumptions.
+- **Scoring via predictions v2**: ogni scenario = 1 prediction world/geopolitical (domini
+  conflitto_armato+tensione_militare) → Brier/time-adjusted/calibrazione gratis.
+- **Review superforecaster** (1 call/set): indicatori triggerati + metriche fresche → revisioni
+  con rationale (`revise_prediction`). Set oltre orizzonte: flag OVERDUE, MAI revisionati.
+- **Risoluzione umana**: `pathos scenario resolve <id> --winner X` → winner true, fratelli false.
+- Tabelle: `scenario_sets`, `scenarios`, `watchlist_items.scenario_id`. CLI: `pathos scenario
+  hotspots|generate|list|show|review|resolve`. Wiring: sezione "ACTIVE CONFLICT SCENARIOS" nel brief,
+  pagina "Scenari" in dashboard. NON nel ciclo notturno (task Claude on-demand).
+- 19 test (`tests/test_scenarios.py`, LLM mockato). Metodologia: ACLED CAST / VIEWS (triage),
+  Heuer ACH + Indicators & Warnings (ragionamento), Tetlock (scoring).
+
 ---
 
 ## Fase 4 — Interfaccia ✅
@@ -166,6 +211,39 @@ prodotto dati reali (0 righe al momento della prima verifica). Mappa/
 Narrazioni/Grafo entità già popolate con dati reali (8241 eventi, 9142
 entità, 749 divergenze). Verificata con `streamlit.testing.v1.AppTest` su
 tutte le 8 pagine contro il DB reale (nessuna eccezione).
+
+---
+
+## Fase 5 — Situazioni a lungo termine (pianificata, non iniziata)
+
+**Contesto (2026-07-14)**: il brief oggi lavora su due orizzonti — spot news (7gg, `_query_recent_events`
+CP-025) ed eventi fisici/divergenze. Nessuno cattura archi pluriennali (guerra Ucraina 2022-ongoing,
+Crimea 2014, ecc.) — una finestra a giorni fissi, per quanto allargata, tratta un conflitto lungo come
+la sua ultima settimana ("l'unghia del leone").
+
+**Design proposto** (discusso con l'utente, non ancora costruito):
+- Nuova tabella `situations` (label, `started_at`, `ended_at` NULL=ongoing, summary aggiornato
+  incrementalmente) + `situation_events` (link a eventi/`story_id`)
+- **Nessun backfill storico automatico** — il registro parte vuoto da quando il modulo viene
+  costruito, non pretende di sapere cos'è "la guerra di Crimea 2014" senza che qualcuno/qualcosa
+  gliel'abbia detto esplicitamente
+- Confini **semantici, non a giorni fissi**: al momento del brief, Claude giudica se una storia
+  recente appartiene a una situazione già tracciata (gli si passa label+summary brevi) o ne apre una
+  nuova — proposta LLM validabile/correggibile a mano, non merge cieco automatico (stessa cautela
+  imparata da CP-011/018/019/020/021: aggregazione automatica su similarità/entità condivise ha
+  già causato chain-collapse tre volte in questo progetto)
+- Brief risultante: sezione "SITUAZIONI IN CORSO" con arco temporale reale + ultimo sviluppo
+
+**Perché rimandato**: nuovo modulo (schema + logica + comando CLI), non un tweak — merita sessione
+dedicata con validazione preventiva (stesso pattern notebook-prima-del-codice usato per CP-022), non
+va infilato di corsa. Vedi anche la feature auto-open (Fase 3, sotto) per il contesto della
+discussione che ha originato questa idea.
+
+**Dipendenza — parte RISOLTA 2026-07-14** (branch `feat/historical-events-backfill`): la fase
+presuppone di sapere QUANDO sono iniziate le situazioni note (Ucraina 2022-02-24, Crimea 2014...).
+Backfill eventi storici ora disponibile — `pathos ingest ucdp|who-don|reliefweb|econ-crises` (conflitti
+1989→, epidemie 1996→, disastri 1981→, crisi economiche) — vedi wiki.md §5.5. Resta aperta solo la
+parte 2 di **CP-027**: serie storiche prezzi/economiche (correlazione eventi↔borsa), mai persistite.
 
 ---
 
@@ -190,8 +268,8 @@ tutte le 8 pagine contro il DB reale (nessuna eccezione).
 
 | Fonte | Motivo |
 |---|---|
-| ACLED, UCDP | Frequenza settimanale, parzialmente coperto da GDELT |
-| WHO DON, ProMED | Nessuna crisi sanitaria in corso nel MVP |
+| ACLED | Frequenza settimanale, parzialmente coperto da GDELT — UCDP invece incluso come backfill storico one-off (§5.5) |
+| ProMED | Nessuna crisi sanitaria in corso nel MVP — WHO DON invece incluso come backfill storico (§5.5) |
 | Cloudflare Radar | IODA già copre il segnale di blackout internet |
 | FRED (macro) | Utile per contesto, non critico per MVP semiconduttori |
 | OpenSky (traffico aereo) | Fuori scope per ora |

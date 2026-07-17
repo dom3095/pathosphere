@@ -153,6 +153,47 @@ def config() -> None:
         click.echo(f"  {field_name:<30} = {value}")
 
 
+# ─── doctor ───────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--network", is_flag=True,
+              help="Also probe market data (yfinance) over the network.")
+def doctor(network: bool) -> None:
+    """Read-only health check: prerequisites, config, freshness, backlogs, agent state."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.doctor import FAIL, OK, SKIP, WARN, has_failures, run_doctor
+
+    settings = get_settings()
+    if not settings.db_path.exists():
+        click.echo("Database not found. Run first: pathos db init")
+        raise SystemExit(1)
+    conn = get_connection(settings.db_path)
+    results = run_doctor(conn, settings, network=network)
+    conn.close()
+
+    icons = {
+        OK: ("✓", "green"),
+        WARN: ("⚠", "yellow"),
+        FAIL: ("✗", "red"),
+        SKIP: ("·", None),
+    }
+    section = None
+    for r in results:
+        if r.section != section:
+            section = r.section
+            click.echo(f"\n{section.upper()}")
+        icon, color = icons[r.status]
+        click.echo(f"  {click.style(icon, fg=color)} {r.name}: {r.detail}")
+    counts = {s: sum(1 for r in results if r.status == s)
+              for s in (OK, WARN, FAIL, SKIP)}
+    click.echo(
+        f"\n{counts[OK]} ok · {counts[WARN]} warn · "
+        f"{counts[FAIL]} fail · {counts[SKIP]} skip"
+    )
+    if has_failures(results):
+        raise SystemExit(1)
+
+
 # ─── serve (Fase 4 dashboard) ──────────────────────────────────────────────────
 
 @cli.command()
@@ -857,6 +898,121 @@ def ingest_ioda(
         click.echo(f"\nFirst errors: {result.errors[:5]}")
 
 
+@ingest.command("ucdp")
+@click.option("--min-deaths", default=25, show_default=True,
+              help="Keep only events with at least this many deaths (best estimate).")
+@click.option("--start", default=None, help="Range start on date_start (YYYY-MM-DD).")
+@click.option("--end", default=None, help="Range end on date_start (YYYY-MM-DD).")
+@click.option("--csv-path", default=None, type=click.Path(exists=True, path_type=Path),
+              help="Already-downloaded GED CSV (skips the ~29 MB zip download).")
+def ingest_ucdp(min_deaths: int, start: str | None, end: str | None,
+                csv_path: Path | None) -> None:
+    """Backfill historical armed-conflict events from UCDP GED (1989→today)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.ucdp import ingest_ucdp as _ingest_ucdp
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_ucdp(
+        conn, min_deaths=min_deaths, start=start, end=end, csv_path=csv_path
+    )
+    conn.close()
+
+    click.echo(
+        f"\nUCDP GED result:\n"
+        f"  Rows:   {result.rows_read:,} read | {result.rows_kept:,} kept (≥{min_deaths} deaths)\n"
+        f"  Events: +{result.events_created:,} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
+@ingest.command("who-don")
+@click.option("--start", default=None,
+              help="Historical backfill anchor (YYYY-MM-DD). When omitted, "
+                   "resume from the last stored item (full history if none).")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD).")
+def ingest_who_don(start: str | None, end: str | None) -> None:
+    """Fetch WHO Disease Outbreak News as epidemic events (1996→today)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.who_don import ingest_who_don as _ingest_who_don
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_who_don(conn, start=start, end=end)
+    conn.close()
+
+    click.echo(
+        f"\nWHO DON result:\n"
+        f"  Items:  {result.items_fetched} fetched\n"
+        f"  Events: +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
+@ingest.command("reliefweb")
+@click.option("--start", default=None,
+              help="Historical backfill anchor (YYYY-MM-DD). When omitted, "
+                   "resume from the last stored disaster (full history if none).")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD).")
+def ingest_reliefweb(start: str | None, end: str | None) -> None:
+    """Fetch ReliefWeb disasters as hazard events (1981→today, needs RELIEFWEB_APPNAME)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.reliefweb import ingest_reliefweb as _ingest_reliefweb
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_reliefweb(
+        conn, appname=settings.reliefweb_appname, start=start, end=end
+    )
+    conn.close()
+
+    if result.skipped_no_appname:
+        click.echo(
+            "ReliefWeb skipped: set RELIEFWEB_APPNAME in .env "
+            "(free registration: https://apidoc.reliefweb.int/parameters#appname)."
+        )
+        return
+    click.echo(
+        f"\nReliefWeb result:\n"
+        f"  Disasters: {result.items_fetched} fetched\n"
+        f"  Events:    +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
+@ingest.command("econ-crises")
+@click.option("--start", default=None, help="Range start (YYYY-MM-DD).")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD).")
+def ingest_econ_crises(start: str | None, end: str | None) -> None:
+    """Backfill historical economic/financial crises from Wikidata."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.econ_crises import ingest_econ_crises as _ingest_econ
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_econ(conn, start=start, end=end)
+    conn.close()
+
+    click.echo(
+        f"\nWikidata econ crises result:\n"
+        f"  Items:  {result.items_fetched} fetched\n"
+        f"  Events: +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
 # ─── embed ────────────────────────────────────────────────────────────────────
 
 @cli.command()
@@ -941,9 +1097,17 @@ def cluster(time_window_hours: int) -> None:
 @click.option("--repair-wikidata-types", is_flag=True, default=False,
               help="One-time network repair for QID conflicts resolved before "
                    "type-aware resolution existed (CP-018 #1).")
+@click.option("--geolocate-qwen", is_flag=True, default=False,
+              help="CP-022 Step 2: Qwen3 4B local fallback for RSS events the "
+                   "free heuristic left ambiguous. SLOW (~seconds/event, network "
+                   "to Ollama) — explicit opt-in batch, not run by default.")
+@click.option("--geoloc-limit", default=20, show_default=True,
+              help="Max Qwen calls per run for --geolocate-qwen (resumable "
+                   "across runs via events.geoloc_checked).")
 def extract(
     limit: int | None, max_lookups: int, skip_geocode: bool, skip_wikidata: bool,
     backfill_demonyms: bool, backfill_orgs: bool, repair_wikidata_types: bool,
+    geolocate_qwen: bool, geoloc_limit: int,
 ) -> None:
     """Run NER, geocode events, link entities to Wikidata."""
     from pathosphere.db.schema import get_connection
@@ -952,8 +1116,10 @@ def extract(
         backfill_organization_entities,
         canonicalize_location_entities,
         canonicalize_person_entities,
+        compute_major_powers,
         extract_entities,
         geocode_events,
+        geolocate_rss_events,
         link_wikidata,
         purge_noise_entities,
         repair_wikidata_type_conflicts,
@@ -1000,6 +1166,19 @@ def extract(
         )
         click.echo(f"Wikidata type-conflict repair: {repaired} canonical swaps")
 
+    # CP-022 Step 1: free heuristic, no network — always runs so location_name
+    # is populated before geocode_events() (unchanged) picks it up below.
+    # Computed once here (not inside geolocate_rss_events) so the optional
+    # --geolocate-qwen step below can reuse the same set instead of re-running
+    # the corpus-wide GROUP BY a second time in this invocation.
+    major_powers = compute_major_powers(conn)
+    geoloc = geolocate_rss_events(conn, major_powers=major_powers)
+    click.echo(
+        f"RSS geolocation (heuristic): {geoloc.events_evaluated} events | "
+        f"{geoloc.located} located | {geoloc.ambiguous} ambiguous | "
+        f"{geoloc.skip_bilateral} skip_bilateral | {geoloc.skip_none} skip_none"
+    )
+
     if not skip_geocode:
         geo = geocode_events(
             conn,
@@ -1021,6 +1200,27 @@ def extract(
             f"Wikidata: {wd.qids_found} QIDs | {wd.entities_checked} checked | "
             f"{wd.conflicts} conflicts | {wd.stoplisted} stoplisted"
             + (" | RATE LIMITED" if wd.rate_limited else "")
+        )
+
+    if geolocate_qwen:
+        # CP-022 Step 2: explicit opt-in, slow (LLM call/event) — never part
+        # of the default flow above. Resumable via events.geoloc_checked.
+        import asyncio
+
+        from pathosphere.llm.client import LLMClient
+        from pathosphere.semantic.extract import geolocate_ambiguous_events_qwen
+
+        qwen_result = asyncio.run(
+            geolocate_ambiguous_events_qwen(
+                conn, LLMClient(backend="qwen-local"), limit=geoloc_limit,
+                major_powers=major_powers,
+            )
+        )
+        click.echo(
+            f"RSS geolocation (Qwen fallback): {qwen_result.events_scanned} scanned | "
+            f"{qwen_result.qwen_calls} LLM calls ({qwen_result.qwen_located} located, "
+            f"{qwen_result.qwen_no_location} no anchor, {qwen_result.qwen_errors} errors) | "
+            f"{qwen_result.resolved_by_heuristic} resolved by heuristic re-check"
         )
 
     conn.close()
@@ -1172,7 +1372,18 @@ def thesis() -> None:
               help="Number of primary theses to generate.")
 @click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
               help="LLM backend override (default: from REASONING_MODEL in .env).")
-def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
+@click.option("--no-fundamentals", is_flag=True, default=False,
+              help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+@click.option("--no-technicals", is_flag=True, default=False,
+              help="Skip technicals (price-action) enrichment.")
+@click.option("--no-auto-open", is_flag=True, default=False,
+              help="Skip auto-approve+auto-open for high-confidence theses — "
+                   "all theses stay 'pending' for manual approval.")
+@click.option("--auto-open-threshold", default=None, type=float,
+              help="Confidence cutoff for auto-open (default: from settings, 0.6).")
+def thesis_generate(brief_date: str | None, n: int, model: str | None,
+                    no_fundamentals: bool, no_technicals: bool, no_auto_open: bool,
+                    auto_open_threshold: float | None) -> None:
     """Generate theses from today's brief (fast, single LLM call)."""
     import asyncio
     from pathosphere.db.schema import get_connection
@@ -1184,15 +1395,33 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
     conn = get_connection(settings.db_path)
     llm_client = LLMClient(backend=model)
 
-    result = asyncio.run(generate_theses(conn, llm_client, brief_date=brief_date, n=n))
+    result = asyncio.run(generate_theses(
+        conn, llm_client, brief_date=brief_date, n=n,
+        enrich_fundamentals=not no_fundamentals,
+        enrich_technicals=not no_technicals,
+        auto_open=not no_auto_open,
+        auto_open_threshold=auto_open_threshold,
+    ))
     conn.close()
 
-    click.echo(
-        f"\nTheses generated:\n"
-        f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
-        f"  Watchlist: +{result.watchlist_created} items\n"
-        f"  IDs      : {result.thesis_ids}"
-    )
+    if result.theses_created == 0 and result.refusal_reason:
+        click.echo(
+            "\nNo theses proposed — the model judged today's signals too thin "
+            "to ground a falsifiable thesis. Reasoning:\n"
+            f"{result.refusal_reason}"
+        )
+    else:
+        auto_line = (
+            f"\n  Auto-opened: {len(result.auto_opened_ids)} {result.auto_opened_ids}"
+            if result.auto_opened_ids else "\n  Auto-opened: 0"
+        )
+        click.echo(
+            f"\nTheses generated:\n"
+            f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
+            f"  Watchlist: +{result.watchlist_created} items\n"
+            f"{auto_line}\n"
+            f"  IDs      : {result.thesis_ids}"
+        )
 
 
 @thesis.command("list")
@@ -1320,6 +1549,24 @@ def thesis_show(thesis_id: int) -> None:
             if w["indicator_query"]:
                 click.echo(f"           query: {w['indicator_query']}")
 
+    if "fundamentals_json" in thesis.keys() and thesis["fundamentals_json"]:
+        import json as _json
+        fund = _json.loads(thesis["fundamentals_json"])
+        click.echo("\n── Fundamentals ─────────────────────────────────────────")
+        click.echo(fund.get("text", "(no text)"))
+        assessment = fund.get("llm_assessment")
+        if assessment:
+            click.echo(f"\n  [LLM assessment] {assessment}")
+
+    if "technicals_json" in thesis.keys() and thesis["technicals_json"]:
+        import json as _json
+        tech = _json.loads(thesis["technicals_json"])
+        click.echo("\n── Technicals ───────────────────────────────────────────")
+        click.echo(tech.get("text", "(no text)"))
+        assessment = tech.get("llm_assessment")
+        if assessment:
+            click.echo(f"\n  [LLM assessment] {assessment}")
+
     click.echo(f"{'═' * 70}\n")
 
 
@@ -1328,56 +1575,41 @@ def thesis_show(thesis_id: int) -> None:
 def thesis_approve(thesis_id: int) -> None:
     """Approve a pending thesis (status → approved). Validates ticker via yfinance."""
     from pathosphere.db.schema import get_connection
-    from pathosphere.agent.approval import approve_thesis, get_thesis, validate_ticker
+    from pathosphere.agent.approval import approve_thesis_with_prediction
 
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
 
-    # Pre-fetch thesis to run ticker validation before mutating
-    thesis = get_thesis(conn, thesis_id)
-    if thesis is None:
-        conn.close()
-        click.echo(f"Thesis {thesis_id} not found.")
-        raise SystemExit(1)
-
-    ticker = thesis["instrument"]
-    if ticker:
-        click.echo(f"Validating ticker {ticker}...", nl=False)
-        ok = validate_ticker(ticker)
-        if ok:
-            click.echo(" OK")
-        else:
-            click.echo(f" WARNING: {ticker} not found on yfinance. Check the ticker before trading.")
-
-    from pathosphere.agent.predictions import create_thesis_prediction
-
     try:
-        updated = approve_thesis(conn, thesis_id)
+        result = approve_thesis_with_prediction(conn, thesis_id)
     except ValueError as exc:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
+    conn.close()
 
-    # v2: every approved thesis gets an auto economic prediction so the
-    # geopolitical→thesis→trade→economic chain is measurable end to end.
-    # Approval is already committed: a prediction failure must not mask it.
-    pred_line = ""
-    try:
-        pred = create_thesis_prediction(conn, updated)
+    updated = result.thesis
+    ticker_line = ""
+    if result.ticker_valid is False:
+        ticker_line = f"\n  WARNING  : {updated['instrument']} not found on yfinance. Check before trading."
+    elif result.ticker_valid is True:
+        ticker_line = f"\n  Ticker OK: {updated['instrument']} validated on yfinance."
+
+    if result.prediction is not None:
+        pred = result.prediction
         pred_line = (f"\n  Economic prediction #{pred['id']} auto-created "
                      f"(p={pred['probability']:.0%}, horizon {pred['horizon_date']})")
-    except (ValueError, sqlite3.Error) as exc:
+    else:
         pred_line = (f"\n  WARNING: thesis approved but economic prediction "
-                     f"NOT created: {exc}")
-    conn.close()
+                     f"NOT created: {result.prediction_error}")
 
     click.echo(
         f"\nThesis {thesis_id} approved.\n"
         f"  Title    : {updated['title']}\n"
         f"  Ticker   : {updated['instrument']} {updated['direction']}\n"
         f"  Approved : {updated['approved_at']}"
-        + pred_line
+        + ticker_line + pred_line
     )
 
 
@@ -1414,14 +1646,38 @@ def thesis_reject(thesis_id: int, reason: str) -> None:
               help="ISO date of the brief to use (default: today UTC).")
 @click.option("--n", default=3, show_default=True,
               help="Number of primary theses to generate.")
-def thesis_debate(brief_date: str | None, n: int) -> None:
+@click.option("--no-fundamentals", is_flag=True, default=False,
+              help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+@click.option("--no-technicals", is_flag=True, default=False,
+              help="Skip technicals (price-action) enrichment.")
+@click.option("--no-auto-open", is_flag=True, default=False,
+              help="Skip auto-approve+auto-open for high-confidence theses — "
+                   "all theses stay 'pending' for manual approval.")
+@click.option("--auto-open-threshold", default=None, type=float,
+              help="Confidence cutoff for auto-open (default: from settings, 0.6).")
+def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
+                  no_technicals: bool, no_auto_open: bool,
+                  auto_open_threshold: float | None) -> None:
     """Generate theses via multi-persona debate (Qwen x13 + Claude x1).
 
     Pipeline:
-      1. Research   — 6 personas independently analyse the brief (Qwen, parallel)
+      1. Research   — 6 personas independently analyse the brief (Qwen, batches of 2)
       2. Divergence — detect 2-3 key disagreement points (Qwen)
-      3. Critique   — each persona responds to divergences (Qwen, parallel)
+      3. Critique   — each persona responds to divergences (Qwen, batches of 2)
       4. Synthesis  — Claude generates theses informed by the debate (Claude)
+
+    Same fundamentals enrichment + confidence-threshold auto-open as
+    `pathos thesis generate` — both pipelines share the same persistence path.
+
+    SLOW (CP-029): each Qwen call on this hardware runs ~5+ minutes for a
+    research/critique-sized prompt (measured: 318.7s single-call, no
+    concurrency). 13 Qwen calls total ⇒ expect 60-90+ minutes end to end.
+    Run this in the background, e.g.:
+
+        caffeinate -i uv run pathos thesis debate &
+
+    not interactively in a terminal you plan to keep using. Prefer
+    `pathos thesis generate` (single Claude call, no Qwen) for a fast path.
     """
     import asyncio
     from pathosphere.db.schema import get_connection
@@ -1439,10 +1695,16 @@ def thesis_debate(brief_date: str | None, n: int) -> None:
         f"\nStarting debate for {brief_date or 'today'} | "
         f"personas: {', '.join(PERSONAS)} | n={n}"
     )
-    click.echo("Step 1/4 — Research (6 personas, parallel)...")
+    click.echo("Step 1/4 — Research (6 personas, batches of 2)...")
 
     result = asyncio.run(
-        run_debate(conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n)
+        run_debate(
+            conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n,
+            enrich_fundamentals=not no_fundamentals,
+            enrich_technicals=not no_technicals,
+            auto_open=not no_auto_open,
+            auto_open_threshold=auto_open_threshold,
+        )
     )
     conn.close()
 
@@ -1457,8 +1719,289 @@ def thesis_debate(brief_date: str | None, n: int) -> None:
         f"  Theses     : {result.thesis_result.theses_created} "
         f"({n} primary + {result.thesis_result.theses_created - n} alternatives)\n"
         f"  Watchlist  : +{result.thesis_result.watchlist_created} items\n"
+        f"  Auto-opened: {len(result.thesis_result.auto_opened_ids)} "
+        f"{result.thesis_result.auto_opened_ids}\n"
         f"  IDs        : {result.thesis_result.thesis_ids}"
     )
+
+
+# ─── scenario (conflict forecasting) ──────────────────────────────────────────
+
+@cli.group()
+def scenario() -> None:
+    """Conflict scenario forecasting (hotspot triage → ACH scenarios)."""
+
+
+@scenario.command("hotspots")
+@click.option("--top", default=10, show_default=True, help="How many hotspots to print.")
+def scenario_hotspots(top: int) -> None:
+    """Rank escalation hotspots from GDELT metrics (deterministic, no LLM)."""
+    from pathosphere.agent.scenarios import compute_hotspots
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    hotspots = compute_hotspots(conn)
+    conn.close()
+
+    if not hotspots:
+        click.echo("No hotspots — gdelt_events too thin (run `pathos ingest gdelt` first).")
+        return
+    click.echo(f"\nTop {min(top, len(hotspots))} escalation hotspots (triage only, not a prediction):\n")
+    for h in hotspots[:top]:
+        click.echo(f"  {h.summary_line()}")
+
+
+@scenario.command("generate")
+@click.option("--country", default=None,
+              help="Force a GDELT FIPS country code (e.g. IS, UP, IR) instead of top hotspots.")
+@click.option("--horizon-days", default=None, type=int,
+              help="Scenario horizon in days (default: from settings, 90).")
+@click.option("--max-hotspots", default=None, type=int,
+              help="How many hotspots to cover (default: from settings, 2 — one Claude call each).")
+@click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
+              help="LLM backend override (default: from REASONING_MODEL in .env).")
+def scenario_generate(country: str | None, horizon_days: int | None,
+                      max_hotspots: int | None, model: str | None) -> None:
+    """Generate ACH conflict scenario sets for the top hotspots."""
+    import asyncio
+    from pathosphere.agent.scenarios import generate_scenarios
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    llm_client = LLMClient(backend=model)
+
+    try:
+        result = asyncio.run(generate_scenarios(
+            conn, llm_client, country=country,
+            horizon_days=horizon_days, max_hotspots=max_hotspots,
+        ))
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nScenario generation complete:\n"
+        f"  Sets       : {result.sets_created} {result.set_ids}\n"
+        f"  Scenarios  : {result.scenarios_created}\n"
+        f"  Predictions: {result.predictions_created}\n"
+        f"  Watchlist  : +{result.watchlist_created} indicators"
+    )
+    for reason in result.skipped:
+        click.echo(f"  Skipped    : {reason}")
+
+
+@scenario.command("list")
+@click.option("--status", default="active",
+              type=click.Choice(["active", "resolved", "all"]), show_default=True)
+def scenario_list(status: str) -> None:
+    """List scenario sets with their probability distributions."""
+    from pathosphere.agent.scenarios import get_scenarios, list_scenario_sets
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    sets = list_scenario_sets(conn, status=None if status == "all" else status)
+
+    if not sets:
+        click.echo(f"No {status} scenario sets.")
+        conn.close()
+        return
+    for s in sets:
+        reviewed = f" | reviewed {s['last_reviewed_at'][:10]}" if s["last_reviewed_at"] else ""
+        click.echo(
+            f"\nSet {s['id']} — {s['country_name'] or s['country']} "
+            f"[{s['status']}] horizon {s['horizon_date']}{reviewed}"
+        )
+        for sc in get_scenarios(conn, s["id"]):
+            outcome = ""
+            if sc["is_outcome"] is not None:
+                outcome = "  ← MATERIALIZED" if sc["is_outcome"] else ""
+            click.echo(f"  [{sc['label']}] p={sc['probability']:.2f}  {sc['title']}{outcome}")
+    conn.close()
+
+
+@scenario.command("show")
+@click.argument("set_id", type=int)
+def scenario_show(set_id: int) -> None:
+    """Full detail for a scenario set (dossier, ACH ratings, indicators)."""
+    import json as _json
+    from pathosphere.agent.scenarios import get_scenario_set, get_scenarios
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    s = get_scenario_set(conn, set_id)
+    if s is None:
+        conn.close()
+        click.echo(f"Scenario set {set_id} not found.")
+        raise SystemExit(1)
+
+    click.echo(
+        f"\nSet {s['id']} — {s['country_name'] or s['country']} [{s['status']}]\n"
+        f"Created {s['created_date']} | horizon {s['horizon_date']}"
+    )
+    if s["summary"]:
+        click.echo(f"\nNet assessment: {s['summary']}")
+    assumptions = _json.loads(s["key_assumptions"] or "[]")
+    if assumptions:
+        click.echo("\nKey assumptions:")
+        for a in assumptions:
+            click.echo(f"  - {a}")
+
+    for sc in get_scenarios(conn, set_id):
+        click.echo(f"\n[{sc['label']}] {sc['title']} — p={sc['probability']:.2f}")
+        if sc["description"]:
+            click.echo(f"  {sc['description']}")
+        if sc["invalidation"]:
+            click.echo(f"  Invalidation: {sc['invalidation']}")
+        if sc["market_implications"]:
+            click.echo(f"  Markets: {sc['market_implications']}")
+        ratings = _json.loads(sc["ach_evidence_json"] or "{}")
+        if ratings:
+            click.echo(f"  ACH: {', '.join(f'{k}={v}' for k, v in sorted(ratings.items()))}")
+        items = conn.execute(
+            "SELECT label, indicator_query, status FROM watchlist_items WHERE scenario_id = ?",
+            (sc["id"],),
+        ).fetchall()
+        for w in items:
+            click.echo(f"  Indicator [{w['status']}]: {w['label']} — '{w['indicator_query']}'")
+        if sc["prediction_id"]:
+            click.echo(f"  Prediction id: {sc['prediction_id']}")
+
+    dossier = _json.loads(s["dossier_json"] or "{}")
+    evidence = dossier.get("evidence", [])
+    if evidence:
+        click.echo("\nEvidence dossier (frozen at generation):")
+        for e in evidence:
+            click.echo(f"  [{e['id']}] ({e['source']}) {e['text']}")
+    conn.close()
+
+
+@scenario.command("review")
+@click.option("--set-id", default=None, type=int,
+              help="Review one set only (default: all active sets).")
+@click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
+              help="LLM backend override (default: from REASONING_MODEL in .env).")
+def scenario_review(set_id: int | None, model: str | None) -> None:
+    """Update probabilities of active sets (indicators + fresh metrics, one LLM call per set)."""
+    import asyncio
+    from pathosphere.agent.scenarios import review_scenarios
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    llm_client = LLMClient(backend=model)
+
+    try:
+        result = asyncio.run(review_scenarios(conn, llm_client, set_id=set_id))
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nScenario review complete:\n"
+        f"  Sets reviewed        : {result.sets_reviewed}\n"
+        f"  Indicators triggered : {result.indicators_triggered}\n"
+        f"  Probabilities revised: {result.probabilities_revised}"
+    )
+    if result.overdue_set_ids:
+        click.echo(
+            f"  OVERDUE (past horizon, resolve manually): {result.overdue_set_ids}"
+        )
+
+
+@scenario.command("resolve")
+@click.argument("set_id", type=int)
+@click.option("--winner", required=True,
+              help="Label of the scenario that materialized (e.g. A).")
+@click.option("--date", "resolved_date", default=None,
+              help="ISO date the outcome became clear (default: today UTC).")
+def scenario_resolve(set_id: int, winner: str, resolved_date: str | None) -> None:
+    """Resolve a set: WINNER materialized, siblings did not (scores all predictions)."""
+    from pathosphere.agent.scenarios import resolve_scenario_set
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    try:
+        outcome = resolve_scenario_set(conn, set_id, winner, resolved_date)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nSet {outcome['set_id']} resolved on {outcome['resolved_date']}:\n"
+        f"  Winner     : [{outcome['winner']}]\n"
+        f"  Predictions: {outcome['predictions_resolved']} scored "
+        f"(see `pathos predict calibration`)"
+    )
+
+
+# ─── fundamentals ─────────────────────────────────────────────────────────────
+
+@cli.command("fundamentals")
+@click.argument("ticker")
+def fundamentals_cmd(ticker: str) -> None:
+    """Show fundamentals snapshot for TICKER (ratios, Altman Z, Piotroski F).
+
+    Manual inspection tool — same data the thesis pipeline attaches to each
+    proposed instrument. Degrades gracefully: missing data shown as n/d.
+    """
+    from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
+
+    snap = fetch_fundamentals(ticker)
+    if snap is None:
+        click.echo(f"No fundamentals data for '{ticker}' (bad ticker or yfinance unavailable).")
+        raise SystemExit(1)
+
+    click.echo("\n" + render_fundamentals_text(snap))
+    if snap.warnings:
+        click.echo("\nWarnings:")
+        for w in snap.warnings:
+            click.echo(f"  - {w}")
+    click.echo("")
+
+
+# ─── technicals ───────────────────────────────────────────────────────────────
+
+@cli.command("technicals")
+@click.argument("ticker")
+def technicals_cmd(ticker: str) -> None:
+    """Show price-action technicals for TICKER (momentum, RSI, SMAs, 52w range).
+
+    Manual inspection tool — same data the thesis pipeline attaches to each
+    proposed instrument. Works for ETF/futures/FX where fundamentals do not
+    apply. Degrades gracefully: missing data shown as n/d.
+    """
+    from pathosphere.market.technicals import fetch_technicals, render_technicals_text
+
+    snap = fetch_technicals(ticker)
+    if snap is None:
+        click.echo(f"No price history for '{ticker}' (bad ticker or yfinance unavailable).")
+        raise SystemExit(1)
+
+    click.echo("\n" + render_technicals_text(snap))
+    if snap.warnings:
+        click.echo("\nWarnings:")
+        for w in snap.warnings:
+            click.echo(f"  - {w}")
+    click.echo("")
 
 
 # ─── export ───────────────────────────────────────────────────────────────────
@@ -1585,23 +2128,18 @@ def trade_open(thesis_id: int) -> None:
     Also opens a matching random trade (same qty/direction, random ticker).
     """
     from pathosphere.db.schema import get_connection
-    from pathosphere.market.trading import open_agent_trade
+    from pathosphere.agent.approval import open_trade_and_link
 
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
 
     try:
-        result = open_agent_trade(conn, thesis_id)
+        result = open_trade_and_link(conn, thesis_id)
     except ValueError as exc:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
-
-    # v2: link the thesis's auto economic prediction to the opened agent trade
-    from pathosphere.agent.predictions import link_thesis_prediction_to_trade
-
-    linked = link_thesis_prediction_to_trade(conn, thesis_id, result.agent_trade_id)
     conn.close()
 
     click.echo(
@@ -1610,7 +2148,6 @@ def trade_open(thesis_id: int) -> None:
         f"qty={result.quantity:.4f}  @ {result.price_open:.2f}\n"
         f"  Random #{result.random_trade_id:>4}  {result.random_ticker:<6}  {result.direction}  "
         f"(control, same thesis_id={thesis_id})"
-        + (f"\n  Economic prediction linked to trade #{result.agent_trade_id}" if linked else "")
     )
 
 

@@ -108,7 +108,7 @@ Sistema personale (mono-utente, nessuna vendita/condivisione) che raccoglie dati
 
 ## Principi non negoziabili
 1. **Budget quasi zero**: solo dati gratuiti. LLM con strategia IBRIDA: locale per il lavoro di massa, Claude (coperto dal credito mensile dell'abbonamento, vedi sezione LLM) solo per i 2-3 task di ragionamento al giorno.
-2. **Human-in-the-loop**: l'agent PROPONE tesi/trade, l'utente APPROVA o RIFIUTA (con motivazione loggata). Nessuna operazione autonoma.
+2. **Human-in-the-loop, con auto-open a soglia** (rivisto 2026-07-14): l'agent PROPONE tesi; per confidence ≥ `settings.auto_open_confidence_threshold` (default 0.6) il **paper trade si apre in autonomia** (soldi virtuali, rischio zero) — l'umano rivede/rifinisce/chiude *dopo*, non approva *prima*. Sotto soglia, resta il flusso originale: pending → `pathos thesis approve`/`reject` manuale (con motivazione loggata su rifiuto). Disattivabile per singolo run (`--no-auto-open`). Vale solo per il paper trading (soldi finti) — non è mai autonomia su denaro reale, che il progetto non tocca.
 3. **Pluralità di prospettive**: fonti da più blocchi geopolitici (occidentale, Cina, Russia, mondo arabo, India, Africa, America Latina). Ogni fonte etichettata con paese, orientamento, grado di controllo statale. La divergenza tra narrazioni è essa stessa un segnale da rilevare.
 4. **L'LLM vede solo il meglio**: filtraggio aggressivo a monte (GDELT pre-codificato, keyword, dedup vettoriale) → l'LLM processa ~30-50 documenti/giorno, non migliaia.
 5. **No lookahead bias**: nel paper trading si logga il prezzo al momento della DECISIONE, mai retroattivo. Costi di transazione e slippage simulati.

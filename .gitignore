@@ -19,6 +19,7 @@ wheels/
 data/db/
 data/parquet/
 data/logs/
+data/briefs/
 
 # Pytest / mypy
 .pytest_cache/
