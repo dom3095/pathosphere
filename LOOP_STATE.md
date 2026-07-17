@@ -297,6 +297,26 @@ proposti dall'LLM (non-USA attesi problematici).
 
 ## Fase precedente: Fase 4 Dashboard pronta per commit/PR; CP-022 (geoloc RSS) validato ma non implementato
 
+**2026-07-17 notte — `pathos doctor` (sessione autonoma, branch `feat/doctor` da main):**
+
+Sessione autonoma notturna (utente a dormire, bypass permissions, vincolo: mai main).
+Scelta di iniziativa: health check operativo `pathos doctor` — colpisce CP-001 (claude CLI
+mai verificato), CP-003 (Ollama giù), classe CP-023 (degradazione silenziosa).
+
+- Nuovo `pathosphere/doctor.py`: 5 aree (prerequisites/config/freshness/backlog/agent) +
+  probe rete opt-in (`--network`, yfinance). Read-only, zero LLM, exit 1 solo su FAIL.
+- Difensivo su DB pre-migration (OperationalError → skip) E su campi Settings di branch
+  non mergiati (hasattr) — funziona identico pre/post merge delle 4 PR in volo.
+- Query backlog = stesse dei moduli pipeline (embedder/dedup/extract), conteggi identici.
+- 36 test nuovi (`tests/test_doctor.py`, tutto mockato) → 534 verdi da 498 su main.
+  Ruff pulito sui file nuovi. Provato sul DB reale: 16 ok / 8 warn / 0 fail, trovati
+  subito 10 tesi pending, brief 3gg, backlog wikidata 12651.
+- Docs: wiki §8c + CLI ref, roadmap Fase 0, CP-001/CP-003 mitigazioni.
+- Prossima azione: merge PR (dopo le 4 in coda); poi eventualmente wiring nel brief o
+  in `pathos loop` come pre-check.
+
+---
+
 **2026-07-13 ~ 19:30 UTC — CP-022 investigato e validato (solo notebook, nessun codice toccato):**
 
 Usando la dashboard (Mappa), utente nota Cuba/Venezuela senza notizie geolocalizzate — solo

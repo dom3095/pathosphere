@@ -15,6 +15,10 @@ Aggiornare immediatamente quando emerge un nuovo punto. Rimuovere quando risolto
 
 **Azione:** nessuna modifica necessaria ora. Documentare in README se si distribuisce.
 
+**Mitigazione 2026-07-17:** `pathos doctor` verifica `claude` su PATH prima di
+qualunque run — FAIL (exit 1) se `reasoning_model=claude`, WARN altrimenti.
+Non risolve il caso "CLI presente ma non autenticata" (serve un run reale).
+
 ---
 
 ## CP-002: Ticker validation — LLM produce ticker non validi
@@ -34,6 +38,10 @@ Aggiornare immediatamente quando emerge un nuovo punto. Rimuovere quando risolto
 **Workaround:** usare fast path (`pathos thesis generate`) senza Ollama. Solo la pipeline debate è disabilitata.
 
 **Impatto:** `pathos thesis debate` fallisce con ConnectError se Ollama non è in esecuzione.
+
+**Mitigazione 2026-07-17:** `pathos doctor` interroga `{ollama_base_url}/api/tags`
+(timeout 3s): WARN se Ollama è giù o se il modello configurato non è pullato,
+con hint (`ollama serve` / `ollama pull qwen3:4b`).
 
 ---
 

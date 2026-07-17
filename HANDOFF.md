@@ -1,5 +1,46 @@
 # Handoff Document — Pathosphere
 
+*Aggiornato: 2026-07-13 ~ 19:30 — CP-022 aperto e validato (notebook), Fase 4 Dashboard implementata*
+*(2026-07-17: sezione doctor aggiunta in cima da sessione autonoma su branch `feat/doctor`,
+base main — le sessioni 14→16 luglio vivono negli HANDOFF dei branch feat/* non ancora mergiati)*
+
+## Sessione 2026-07-17 notte — `pathos doctor` (autonoma, branch `feat/doctor`)
+
+**Contesto**: l'utente ha lasciato la sessione libera ("implementa qualcosa di tua iniziativa"),
+bypass permissions attivo, unico vincolo: MAI push/commit su main. Lavorato in worktree isolato
+(`.claude/worktrees/doctor`) su branch `feat/doctor` **da main pulita** (non dallo stack di PR
+in volo) — PR indipendente, mergiabile in qualunque ordine.
+
+**Cosa**: `pathos doctor [--network]` — health check operativo read-only (`pathosphere/doctor.py`,
+wiki §8c). 5 aree: prerequisites (claude CLI su PATH → FAIL se reasoning_model=claude, CP-001;
+Ollama raggiungibile + modello pullato, CP-003; spaCy model), config (solo PRESENZA chiavi, mai
+il valore — regola sicurezza), freshness per fonte ricorrente (48-72h, comtrade 45gg, hint del
+comando), backlog pipeline (stesse query di embedder/dedup/extract; geoloc/geocode/wikidata),
+agent state (portafogli, tesi pending, trade oltre orizzonte, predizioni scadute, scenari overdue,
+età brief). Exit 0/1 (FAIL only) → usabile come gate: `pathos doctor && pathos cycle`.
+
+**Decisioni chiave**:
+- Difensivo due volte: `sqlite3.OperationalError` → riga skip (DB pre-migration), `hasattr` sui
+  campi Settings di branch non mergiati (`reliefweb_appname` esiste solo su PR #15). Il comando
+  funziona identico prima e dopo il merge delle 4 PR in coda — nessuna dipendenza di ordine.
+- Backlog = query IDENTICHE ai moduli pipeline (stesso filtro NON_PROSE_ORIGINS, stessi flag) —
+  i conteggi corrispondono a ciò che la fase processerebbe davvero.
+- `date()` su entrambi i lati nei confronti di orizzonte (stessa lezione formati misti della
+  review scenari del 16/07).
+- Rete di default: SOLO socket Ollama locale (3s). yfinance dietro `--network` opt-in.
+
+**Test**: 36 nuovi (`tests/test_doctor.py`, fixture autouse `hermetic`: nessun PATH lookup né
+socket reale) → **534 verdi** (baseline main 498). Ruff pulito sui file nuovi/toccati (6 violazioni
+cli.py pre-esistenti su main, verificate invariate). Provato sul DB reale (494 MB): 16 ok / 8 warn /
+0 fail — ha subito segnalato 10 tesi pending, brief di 3 giorni fa, 12651 entità senza Wikidata,
+2181 eventi RSS senza geoloc.
+
+**Stato esatto al cut-off**: implementato, testato, documentato (wiki §8c + CLI ref, roadmap,
+CP-001/CP-003 mitigazioni), committato su `feat/doctor`, push + PR aperta. NON mergiato.
+**Nota conflitti attesi**: HANDOFF/LOOP_STATE/wiki/roadmap sono modificati anche dalle PR in volo
+(#14-#17) — al merge di questa PR risolvere tenendo ENTRAMBE le sezioni (le mie sono additive).
+**Prossima azione raccomandata**: review + merge; poi valutare wiring come pre-check in
+`pathos loop` / sezione health nel brief (non fatto: fuori scope minimo).
 *Aggiornato: 2026-07-17 — previsione scenari di conflitto (3g) su branch `feat/conflict-forecasting` (da `feat/stock-technicals`), 650 test verdi. Merge in corso: backfill storico (#15) già su main; PR #16 technicals in CI; questo branch allineato via merge di `origin/feat/stock-technicals`. CP-029 ancora aperto (esito run debate id=4 da verificare); CP-030 (minore) e CP-031 (dashboard predizioni, pre-esistente).*
 
 ## Sessione 2026-07-16 — scenari di conflitto (branch `feat/conflict-forecasting`)

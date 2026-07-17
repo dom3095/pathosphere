@@ -25,6 +25,7 @@ Stato aggiornato: 2026-07-16.
 | Schema SQLite + sqlite-vec + migrate_db | `pathosphere/db/schema.py` | ✅ |
 | CLI `pathos` (Click) | `pathosphere/cli.py` | ✅ |
 | Ciclo notturno orchestrator (6 fasi) | `pathosphere/cycle/orchestrator.py` | ✅ |
+| Health check operativo (`pathos doctor`, wiki §8c) | `pathosphere/doctor.py` | ✅ 2026-07-17 |
 
 ---
 
