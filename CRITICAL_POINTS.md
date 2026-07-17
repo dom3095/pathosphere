@@ -776,7 +776,20 @@ indipendenti sui candidati a bassa confidenza (trovati da un solo angolo) — i 
 indipendentemente da 2-3 angoli diversi sono stati trattati come già verificati per consenso, senza
 ulteriore verifica dedicata.
 
-## CP-030: `_persist_scenario_set` non transazionale — persistenza parziale possibile (aperto, rischio basso)
+## CP-030: `_persist_scenario_set` non transazionale — persistenza parziale possibile — **RISOLTO 2026-07-17** (branch `fix/cp030-transactional-scenario-persist`)
+
+**Fix (come da piano sotto)**: `add_prediction(..., commit: bool = True)` — con `commit=False`
+salta il `conn.commit()` interno, il chiamante possiede la transazione. `_persist_scenario_set`
+ora: corpo in `_persist_scenario_set_inner` con `add_prediction(commit=False)`, UN commit finale;
+wrapper con `except Exception: conn.rollback(); raise` — su fallimento a metà nessuna riga
+set/scenario/prediction/watchlist sopravvive, e nessuna riga orfana non committata può essere
+trascinata nel commit dell'hotspot successivo sulla stessa connessione. Default `commit=True`
+invariato per tutti gli altri chiamanti (cli.py, create_thesis_prediction).
+
+**Test**: +3 — rollback intero set su fallimento al 2° scenario (monkeypatch `add_prediction`,
+verifica 5 tabelle a 0 righe); `commit=False` + rollback → 0 righe; default committa (sopravvive
+a rollback). Suite verde sui file toccati; 4 rossi in `test_doctor.py` pre-esistenti su main
+(interazione merge #17/#18, tracciati a parte).
 
 **Contesto (2026-07-16, branch `feat/conflict-forecasting`)**: `agent/scenarios.py::_persist_scenario_set`
 inserisce set → per ogni scenario: riga `scenarios` + `add_prediction()` + watchlist. Ma
