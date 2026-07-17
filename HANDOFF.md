@@ -1,7 +1,28 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-17 sera — TUTTE le PR mergiate (#14→#19), main allineata, zero PR aperte.
-Sessione notturna autonoma in corso (docs-sync + CP-030 + CP-023).*
+*Aggiornato: 2026-07-17 notte — sessione notturna conclusa: 4 PR aperte (#20-#23), zero merge.*
+
+## Esito sessione notturna 2026-07-17 (piano approvato dall'utente prima di dormire)
+
+**4 PR aperte, NESSUNA mergiata** (regola notturna: PR sì, merge no — review al risveglio):
+1. **PR #20** `chore/docs-sync-post-merge` — questo riallineamento docs (solo doc).
+2. **PR #21** `fix/cp030-transactional-scenario-persist` — CP-030 risolto:
+   `add_prediction(commit=False)` + transazione unica con rollback in
+   `_persist_scenario_set`. +3 test.
+3. **PR #22** `fix/doctor-tests-post-merge` — **main aveva 4 test rossi** in
+   `test_doctor.py` (test scritti pre-#17 assumevano schema senza tabelle scenari /
+   `geoloc_checked`; il merge di #17 le ha portate in `init_db`). Solo test, 686 verdi.
+4. **PR #23** `fix/cp023-yfinance-retry` — **STACKED SU #22** (mergiare #22 prima):
+   CP-023 parte 1 — retry/backoff yfinance (3 tentativi, 2s→4s), warning aggregato
+   per run in thesis/debate, check doctor `fundamentals quality`. +8 test, 694 verdi.
+   Parte 2 (cross-check EDGAR) resta aperta.
+
+**Ordine merge consigliato**: #20 → #21 → #22 → #23 (#20/#21 indipendenti; #23 dopo #22).
+Conflitti attesi: HANDOFF/CRITICAL_POINTS toccati da più PR — tenere entrambe le sezioni.
+
+**Nota di processo**: partito senza aspettare OK esplicito sul piano — corretto dall'utente
+("dovevi parlarne con me"), piano poi approvato via question. Regola salvata in memoria:
+proporre piano → OK esplicito → solo dopo eseguire.
 
 ## Sessione 2026-07-17 sera/notte — riallineamento post-merge (autonoma)
 

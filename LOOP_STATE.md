@@ -5,13 +5,15 @@
 **Stato**: tutte le PR mergiate (#14→#19), main allineata, zero PR aperte. Fasi 0-4
 complete + scenari conflitto + technicals + doctor + backfill storico in main.
 
-**Task notte 2026-07-17** (branch separati da main, PR aperte, MAI merge autonomo):
-1. `chore/docs-sync-post-merge` — questo riallineamento docs
-2. `fix/cp030` — `_persist_scenario_set` transazionale
-3. `fix/cp023` — retry/backoff yfinance + log degradazione visibile
+**Task notte 2026-07-17 — TUTTI COMPLETATI** (branch separati da main, zero merge):
+1. ✅ PR #20 `chore/docs-sync-post-merge` — riallineamento docs
+2. ✅ PR #21 `fix/cp030-transactional-scenario-persist` — CP-030 risolto (+3 test)
+3. ✅ PR #22 `fix/doctor-tests-post-merge` — 4 test rossi di main fixati (686 verdi)
+4. ✅ PR #23 `fix/cp023-yfinance-retry` — CP-023 parte 1 (stacked su #22, +8 test, 694 verdi)
 
-**Prossima azione (utente)**: primo `pathos scenario generate` reale; run `thesis debate`
-a macchina scarica (CP-029); batch geoloc Qwen; review/merge PR della notte.
+**Prossima azione (utente)**: review/merge PR notte in ordine #20→#21→#22→#23; poi primo
+`pathos scenario generate` reale; run `thesis debate` a macchina scarica (CP-029);
+batch geoloc Qwen.
 
 ---
 
