@@ -463,6 +463,7 @@ async def _persist_theses(
             logger.warning(
                 f"DEBATE: market review failed ({exc}) — theses saved without assessment"
             )
+    enrichment.log_fundamentals_degradation("DEBATE")
 
     conn.commit()
 

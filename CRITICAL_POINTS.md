@@ -407,7 +407,20 @@ le chiavi giuste.
 1 predizione aperta; post-fix pagina renderizza senza eccezioni sia con sola predizione
 aperta sia con predizione risolta (ramo calibrazione + chart esercitati). Ruff pulito,
 498 test verdi invariati (pagina senza test pytest dedicati, come da nota Fase 4).
-## CP-023: fondamentali yfinance — degradazione silenziosa e dati non cross-verificati (aperto)
+## CP-023: fondamentali yfinance — degradazione silenziosa e dati non cross-verificati — **PARTE 1 RISOLTA 2026-07-17** (retry+visibilità, branch `fix/cp023-yfinance-retry`), parte 2 (cross-check EDGAR) aperta
+
+**Fix parte 1 (2026-07-17)**: (a) retry con backoff esponenziale sulle 2 chiamate rete di
+`fetch_fundamentals` (info, statements): 3 tentativi, 2s→4s (`_with_retries`, `_sleep`
+monkeypatchabile) — un rate-limit transitorio non degrada più il run; contratto never-raise
+invariato. (b) Warning aggregato per run in `thesis generate`/`debate`
+(`_MarketEnrichment.log_fundamentals_degradation`): scatta se ≥metà ticker failed/degradati;
+minimal su non-equity NON conta (design per ETF/future/FX). (c) `pathos doctor` check
+`fundamentals quality`: ultime 20 tesi con `fundamentals_json`, WARN se ≥metà none/minimal su
+equity. Test: +3 fundamentals (retry poi successo, esaurimento tentativi, statements degradano),
++2 thesis (conteggi, run vuoto), +3 doctor (skip/warn/ok). 694 verdi.
+
+**Resta aperto (parte 2)**: nessun cross-check dei numeri (EDGAR v2) — line item Yahoo
+disallineati di un anno restano non rilevabili.
 
 **Contesto:** `pathosphere/market/fundamentals.py` arricchisce le tesi con ratio/Altman Z/Piotroski F
 da yfinance. Per design degrada senza mai bloccare `generate_theses` (`None`/campi mancanti + warning

@@ -18,7 +18,11 @@ from loguru import logger
 from pathosphere.agent.approval import approve_thesis_with_prediction, open_trade_and_link
 from pathosphere.config import get_settings
 from pathosphere.llm.client import LLMClient
-from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
+from pathosphere.market.fundamentals import (
+    _EQUITY_TYPES,
+    fetch_fundamentals,
+    render_fundamentals_text,
+)
 from pathosphere.market.prices import fetch_price
 from pathosphere.market.technicals import fetch_technicals, render_technicals_text
 
@@ -246,6 +250,37 @@ class _MarketEnrichment:
         fund = _fundamentals_doc(ticker, self._fund_cache) if self.enrich_fundamentals else None
         tech = _technicals_doc(ticker, self._tech_cache) if self.enrich_technicals else None
         return fund, tech
+
+    def fundamentals_degradation(self) -> dict[str, int]:
+        """Fundamentals health for this run (CP-023): failed = fetch returned
+        None; degraded = equity ticker with data_quality none/minimal (minimal
+        is the DESIGNED outcome for ETF/future/FX, so those don't count)."""
+        counts = {"tickers": 0, "failed": 0, "degraded": 0}
+        for doc in self._fund_cache.values():
+            counts["tickers"] += 1
+            if doc is None:
+                counts["failed"] += 1
+                continue
+            snapshot = doc["snapshot"]
+            if (snapshot.get("data_quality") in ("none", "minimal")
+                    and snapshot.get("quote_type") in _EQUITY_TYPES):
+                counts["degraded"] += 1
+        return counts
+
+    def log_fundamentals_degradation(self, tag: str) -> None:
+        """One loud per-run signal instead of scattered per-ticker warnings
+        (CP-023: enrichment can stay degraded for days unnoticed)."""
+        if not self.enrich_fundamentals:
+            return
+        c = self.fundamentals_degradation()
+        bad = c["failed"] + c["degraded"]
+        if c["tickers"] and bad * 2 >= c["tickers"]:
+            logger.warning(
+                f"{tag}: fundamentals enrichment DEGRADED this run — "
+                f"{c['failed']} failed + {c['degraded']} none/minimal equity "
+                f"of {c['tickers']} tickers (CP-023: yfinance rate-limit or "
+                f"non-US/small-cap coverage)"
+            )
 
     def queue_review(
         self, thesis_id: int, t: dict, ticker: str | None,
@@ -548,6 +583,7 @@ async def generate_theses(
             logger.warning(
                 f"THESIS: market review failed ({exc}) — theses saved without assessment"
             )
+    enrichment.log_fundamentals_degradation("THESIS")
 
     conn.commit()
     logger.success(

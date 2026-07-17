@@ -236,3 +236,51 @@ def test_render_text_etf():
     text = render_fundamentals_text(snap)
     assert "do not apply" in text
     assert "underlying exposure" in text
+
+
+# ── CP-023: retry/backoff on transient yfinance failures ─────────────────────
+
+def test_info_fetch_retries_then_succeeds(monkeypatch):
+    delays: list[float] = []
+    monkeypatch.setattr("pathosphere.market.fundamentals._sleep", delays.append)
+    tk = _mock_ticker(_INFO_FULL, _BALANCE, _INCOME, _CASHFLOW)
+    outcomes = iter([Exception("rate limited"), Exception("rate limited"), tk])
+
+    def flaky_ticker(_t):
+        item = next(outcomes)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    with patch("pathosphere.market.fundamentals.yf.Ticker", side_effect=flaky_ticker):
+        snap = fetch_fundamentals("NVDA")
+
+    assert snap is not None
+    assert snap.quote_type == "EQUITY"
+    assert delays == [2.0, 4.0]  # exponential backoff between the 3 attempts
+
+
+def test_info_fetch_gives_up_after_all_attempts(monkeypatch):
+    delays: list[float] = []
+    monkeypatch.setattr("pathosphere.market.fundamentals._sleep", delays.append)
+    with patch(
+        "pathosphere.market.fundamentals.yf.Ticker",
+        side_effect=Exception("yahoo down"),
+    ):
+        assert fetch_fundamentals("NVDA") is None
+    assert len(delays) == 2  # no sleep after the final attempt
+
+
+def test_statements_failure_retries_then_degrades(monkeypatch):
+    delays: list[float] = []
+    monkeypatch.setattr("pathosphere.market.fundamentals._sleep", delays.append)
+    tk = MagicMock()
+    tk.info = dict(_INFO_FULL)
+    type(tk).balance_sheet = PropertyMock(side_effect=Exception("boom"))
+
+    with patch("pathosphere.market.fundamentals.yf.Ticker", return_value=tk):
+        snap = fetch_fundamentals("NVDA")
+
+    assert snap is not None  # degrades, never raises — same contract as before
+    assert any("statements fetch failed" in w for w in snap.warnings)
+    assert len(delays) == 2

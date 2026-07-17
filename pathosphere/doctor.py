@@ -25,6 +25,7 @@ Exit code contract (enforced by the CLI): 0 = no FAIL (warnings allowed),
 """
 
 import importlib.util
+import json
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ SKIP = "skip"
 
 OLLAMA_PROBE_TIMEOUT_S = 3.0
 STALE_BRIEF_DAYS = 3
+FUNDAMENTALS_SAMPLE = 20  # CP-023: latest enriched theses inspected for quality
 
 # Backlog size above which a pending count becomes a WARN instead of an OK.
 # Small backlogs are normal between cycle phases; these flag a pipeline that
@@ -393,6 +395,49 @@ def _check_agent_state(conn: sqlite3.Connection) -> list[CheckResult]:
     else:
         results.append(CheckResult("agent", "predictions", OK,
                                    f"{open_preds or 0} open, none past horizon"))
+
+    # CP-023: fundamentals enrichment can stay silently degraded for days
+    # (yfinance rate-limit, non-US coverage) — surface the data_quality mix
+    # of the latest enriched theses. minimal on non-equity is by design and
+    # does not count as degraded.
+    try:
+        fund_rows = conn.execute(
+            """SELECT fundamentals_json FROM theses
+               WHERE fundamentals_json IS NOT NULL
+               ORDER BY id DESC LIMIT ?""",
+            (FUNDAMENTALS_SAMPLE,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        fund_rows = None
+    if fund_rows is None:
+        results.append(CheckResult("agent", "fundamentals quality", SKIP,
+                                   "table/column missing"))
+    elif not fund_rows:
+        results.append(CheckResult("agent", "fundamentals quality", SKIP,
+                                   "no enriched theses yet"))
+    else:
+        degraded = 0
+        for row in fund_rows:
+            try:
+                snapshot = json.loads(row["fundamentals_json"]).get("snapshot", {})
+            except (json.JSONDecodeError, TypeError):
+                degraded += 1
+                continue
+            if (snapshot.get("data_quality") in ("none", "minimal")
+                    and snapshot.get("quote_type") == "EQUITY"):
+                degraded += 1
+        if degraded * 2 >= len(fund_rows):
+            results.append(CheckResult(
+                "agent", "fundamentals quality", WARN,
+                f"{degraded} of last {len(fund_rows)} enriched theses are "
+                "none/minimal on equity tickers — yfinance rate-limit or "
+                "coverage gap (CP-023)",
+            ))
+        else:
+            results.append(CheckResult(
+                "agent", "fundamentals quality", OK,
+                f"{len(fund_rows) - degraded} of last {len(fund_rows)} healthy",
+            ))
 
     active_sets = _scalar(
         conn, "SELECT COUNT(*) FROM scenario_sets WHERE status = 'active'"

@@ -26,6 +26,7 @@ worth it for a v1 enrichment layer.
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
@@ -39,6 +40,35 @@ ALTMAN_DISTRESS = 1.81
 
 # quoteType values for which company fundamentals apply
 _EQUITY_TYPES = {"EQUITY"}
+
+# CP-023: yfinance rate-limits/hiccups are transient — one failed call must not
+# silently degrade the enrichment for the whole run. Small bounded retry only;
+# permanent gaps (non-US/small-cap) still degrade gracefully as before.
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY_S = 2.0
+_sleep = time.sleep  # module-level for test monkeypatching
+
+
+def _with_retries(what: str, ticker: str, fn):
+    """Run *fn* up to _RETRY_ATTEMPTS times with exponential backoff.
+
+    Returns (value, None) on success, (None, last_exception) when every
+    attempt raised. *fn* must return a non-None value.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, _RETRY_ATTEMPTS + 1):
+        try:
+            return fn(), None
+        except Exception as exc:
+            last_exc = exc
+            if attempt < _RETRY_ATTEMPTS:
+                delay = _RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
+                logger.warning(
+                    f"FUNDAMENTALS: {what} fetch failed for {ticker} "
+                    f"(attempt {attempt}/{_RETRY_ATTEMPTS}, retry in {delay:.0f}s): {exc}"
+                )
+                _sleep(delay)
+    return None, last_exc
 
 # Sectors / industry keywords where Altman Z is not applicable
 _FINANCIAL_SECTORS = {"financial services", "financial", "financials"}
@@ -246,12 +276,18 @@ def fetch_fundamentals(ticker: str) -> FundamentalsSnapshot | None:
         fetched_at=datetime.now(timezone.utc).isoformat(),
     )
 
-    try:
-        tk = yf.Ticker(ticker)
-        info: dict = tk.info or {}
-    except Exception as exc:
-        logger.warning(f"FUNDAMENTALS: info fetch failed for {ticker}: {exc}")
+    def _load_info():
+        t = yf.Ticker(ticker)
+        return t, t.info or {}
+
+    loaded, exc = _with_retries("info", ticker, _load_info)
+    if loaded is None:
+        logger.warning(
+            f"FUNDAMENTALS: info fetch failed for {ticker} "
+            f"after {_RETRY_ATTEMPTS} attempts: {exc}"
+        )
         return None
+    tk, info = loaded
 
     if not info or (info.get("quoteType") is None and info.get("marketCap") is None):
         logger.warning(f"FUNDAMENTALS: no info data for {ticker}")
@@ -298,14 +334,19 @@ def fetch_fundamentals(ticker: str) -> FundamentalsSnapshot | None:
         )
 
     # ── financial statements (may be empty/stale — expected) ──
+    def _load_statements():
+        return tk.balance_sheet, tk.financials, tk.cashflow
+
     balance = income = cashflow = None
-    try:
-        balance = tk.balance_sheet
-        income = tk.financials
-        cashflow = tk.cashflow
-    except Exception as exc:
+    stmts, exc = _with_retries("statements", ticker, _load_statements)
+    if stmts is not None:
+        balance, income, cashflow = stmts
+    else:
         snap.warnings.append(f"statements fetch failed: {exc}")
-        logger.warning(f"FUNDAMENTALS: statements fetch failed for {ticker}: {exc}")
+        logger.warning(
+            f"FUNDAMENTALS: statements fetch failed for {ticker} "
+            f"after {_RETRY_ATTEMPTS} attempts: {exc}"
+        )
 
     statements_ok = any(
         df is not None and not df.empty for df in (balance, income, cashflow)
