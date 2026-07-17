@@ -941,9 +941,17 @@ def cluster(time_window_hours: int) -> None:
 @click.option("--repair-wikidata-types", is_flag=True, default=False,
               help="One-time network repair for QID conflicts resolved before "
                    "type-aware resolution existed (CP-018 #1).")
+@click.option("--geolocate-qwen", is_flag=True, default=False,
+              help="CP-022 Step 2: Qwen3 4B local fallback for RSS events the "
+                   "free heuristic left ambiguous. SLOW (~seconds/event, network "
+                   "to Ollama) — explicit opt-in batch, not run by default.")
+@click.option("--geoloc-limit", default=20, show_default=True,
+              help="Max Qwen calls per run for --geolocate-qwen (resumable "
+                   "across runs via events.geoloc_checked).")
 def extract(
     limit: int | None, max_lookups: int, skip_geocode: bool, skip_wikidata: bool,
     backfill_demonyms: bool, backfill_orgs: bool, repair_wikidata_types: bool,
+    geolocate_qwen: bool, geoloc_limit: int,
 ) -> None:
     """Run NER, geocode events, link entities to Wikidata."""
     from pathosphere.db.schema import get_connection
@@ -952,8 +960,10 @@ def extract(
         backfill_organization_entities,
         canonicalize_location_entities,
         canonicalize_person_entities,
+        compute_major_powers,
         extract_entities,
         geocode_events,
+        geolocate_rss_events,
         link_wikidata,
         purge_noise_entities,
         repair_wikidata_type_conflicts,
@@ -1000,6 +1010,19 @@ def extract(
         )
         click.echo(f"Wikidata type-conflict repair: {repaired} canonical swaps")
 
+    # CP-022 Step 1: free heuristic, no network — always runs so location_name
+    # is populated before geocode_events() (unchanged) picks it up below.
+    # Computed once here (not inside geolocate_rss_events) so the optional
+    # --geolocate-qwen step below can reuse the same set instead of re-running
+    # the corpus-wide GROUP BY a second time in this invocation.
+    major_powers = compute_major_powers(conn)
+    geoloc = geolocate_rss_events(conn, major_powers=major_powers)
+    click.echo(
+        f"RSS geolocation (heuristic): {geoloc.events_evaluated} events | "
+        f"{geoloc.located} located | {geoloc.ambiguous} ambiguous | "
+        f"{geoloc.skip_bilateral} skip_bilateral | {geoloc.skip_none} skip_none"
+    )
+
     if not skip_geocode:
         geo = geocode_events(
             conn,
@@ -1021,6 +1044,27 @@ def extract(
             f"Wikidata: {wd.qids_found} QIDs | {wd.entities_checked} checked | "
             f"{wd.conflicts} conflicts | {wd.stoplisted} stoplisted"
             + (" | RATE LIMITED" if wd.rate_limited else "")
+        )
+
+    if geolocate_qwen:
+        # CP-022 Step 2: explicit opt-in, slow (LLM call/event) — never part
+        # of the default flow above. Resumable via events.geoloc_checked.
+        import asyncio
+
+        from pathosphere.llm.client import LLMClient
+        from pathosphere.semantic.extract import geolocate_ambiguous_events_qwen
+
+        qwen_result = asyncio.run(
+            geolocate_ambiguous_events_qwen(
+                conn, LLMClient(backend="qwen-local"), limit=geoloc_limit,
+                major_powers=major_powers,
+            )
+        )
+        click.echo(
+            f"RSS geolocation (Qwen fallback): {qwen_result.events_scanned} scanned | "
+            f"{qwen_result.qwen_calls} LLM calls ({qwen_result.qwen_located} located, "
+            f"{qwen_result.qwen_no_location} no anchor, {qwen_result.qwen_errors} errors) | "
+            f"{qwen_result.resolved_by_heuristic} resolved by heuristic re-check"
         )
 
     conn.close()
@@ -1172,7 +1216,16 @@ def thesis() -> None:
               help="Number of primary theses to generate.")
 @click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
               help="LLM backend override (default: from REASONING_MODEL in .env).")
-def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
+@click.option("--no-fundamentals", is_flag=True, default=False,
+              help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+@click.option("--no-auto-open", is_flag=True, default=False,
+              help="Skip auto-approve+auto-open for high-confidence theses — "
+                   "all theses stay 'pending' for manual approval.")
+@click.option("--auto-open-threshold", default=None, type=float,
+              help="Confidence cutoff for auto-open (default: from settings, 0.6).")
+def thesis_generate(brief_date: str | None, n: int, model: str | None,
+                    no_fundamentals: bool, no_auto_open: bool,
+                    auto_open_threshold: float | None) -> None:
     """Generate theses from today's brief (fast, single LLM call)."""
     import asyncio
     from pathosphere.db.schema import get_connection
@@ -1184,15 +1237,32 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None) -> None:
     conn = get_connection(settings.db_path)
     llm_client = LLMClient(backend=model)
 
-    result = asyncio.run(generate_theses(conn, llm_client, brief_date=brief_date, n=n))
+    result = asyncio.run(generate_theses(
+        conn, llm_client, brief_date=brief_date, n=n,
+        enrich_fundamentals=not no_fundamentals,
+        auto_open=not no_auto_open,
+        auto_open_threshold=auto_open_threshold,
+    ))
     conn.close()
 
-    click.echo(
-        f"\nTheses generated:\n"
-        f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
-        f"  Watchlist: +{result.watchlist_created} items\n"
-        f"  IDs      : {result.thesis_ids}"
-    )
+    if result.theses_created == 0 and result.refusal_reason:
+        click.echo(
+            "\nNo theses proposed — the model judged today's signals too thin "
+            "to ground a falsifiable thesis. Reasoning:\n"
+            f"{result.refusal_reason}"
+        )
+    else:
+        auto_line = (
+            f"\n  Auto-opened: {len(result.auto_opened_ids)} {result.auto_opened_ids}"
+            if result.auto_opened_ids else "\n  Auto-opened: 0"
+        )
+        click.echo(
+            f"\nTheses generated:\n"
+            f"  Theses   : {result.theses_created} ({n} primary + {result.theses_created - n} alternatives)\n"
+            f"  Watchlist: +{result.watchlist_created} items\n"
+            f"{auto_line}\n"
+            f"  IDs      : {result.thesis_ids}"
+        )
 
 
 @thesis.command("list")
@@ -1320,6 +1390,15 @@ def thesis_show(thesis_id: int) -> None:
             if w["indicator_query"]:
                 click.echo(f"           query: {w['indicator_query']}")
 
+    if "fundamentals_json" in thesis.keys() and thesis["fundamentals_json"]:
+        import json as _json
+        fund = _json.loads(thesis["fundamentals_json"])
+        click.echo("\n── Fundamentals ─────────────────────────────────────────")
+        click.echo(fund.get("text", "(no text)"))
+        assessment = fund.get("llm_assessment")
+        if assessment:
+            click.echo(f"\n  [LLM assessment] {assessment}")
+
     click.echo(f"{'═' * 70}\n")
 
 
@@ -1328,56 +1407,41 @@ def thesis_show(thesis_id: int) -> None:
 def thesis_approve(thesis_id: int) -> None:
     """Approve a pending thesis (status → approved). Validates ticker via yfinance."""
     from pathosphere.db.schema import get_connection
-    from pathosphere.agent.approval import approve_thesis, get_thesis, validate_ticker
+    from pathosphere.agent.approval import approve_thesis_with_prediction
 
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
 
-    # Pre-fetch thesis to run ticker validation before mutating
-    thesis = get_thesis(conn, thesis_id)
-    if thesis is None:
-        conn.close()
-        click.echo(f"Thesis {thesis_id} not found.")
-        raise SystemExit(1)
-
-    ticker = thesis["instrument"]
-    if ticker:
-        click.echo(f"Validating ticker {ticker}...", nl=False)
-        ok = validate_ticker(ticker)
-        if ok:
-            click.echo(" OK")
-        else:
-            click.echo(f" WARNING: {ticker} not found on yfinance. Check the ticker before trading.")
-
-    from pathosphere.agent.predictions import create_thesis_prediction
-
     try:
-        updated = approve_thesis(conn, thesis_id)
+        result = approve_thesis_with_prediction(conn, thesis_id)
     except ValueError as exc:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
+    conn.close()
 
-    # v2: every approved thesis gets an auto economic prediction so the
-    # geopolitical→thesis→trade→economic chain is measurable end to end.
-    # Approval is already committed: a prediction failure must not mask it.
-    pred_line = ""
-    try:
-        pred = create_thesis_prediction(conn, updated)
+    updated = result.thesis
+    ticker_line = ""
+    if result.ticker_valid is False:
+        ticker_line = f"\n  WARNING  : {updated['instrument']} not found on yfinance. Check before trading."
+    elif result.ticker_valid is True:
+        ticker_line = f"\n  Ticker OK: {updated['instrument']} validated on yfinance."
+
+    if result.prediction is not None:
+        pred = result.prediction
         pred_line = (f"\n  Economic prediction #{pred['id']} auto-created "
                      f"(p={pred['probability']:.0%}, horizon {pred['horizon_date']})")
-    except (ValueError, sqlite3.Error) as exc:
+    else:
         pred_line = (f"\n  WARNING: thesis approved but economic prediction "
-                     f"NOT created: {exc}")
-    conn.close()
+                     f"NOT created: {result.prediction_error}")
 
     click.echo(
         f"\nThesis {thesis_id} approved.\n"
         f"  Title    : {updated['title']}\n"
         f"  Ticker   : {updated['instrument']} {updated['direction']}\n"
         f"  Approved : {updated['approved_at']}"
-        + pred_line
+        + ticker_line + pred_line
     )
 
 
@@ -1414,14 +1478,35 @@ def thesis_reject(thesis_id: int, reason: str) -> None:
               help="ISO date of the brief to use (default: today UTC).")
 @click.option("--n", default=3, show_default=True,
               help="Number of primary theses to generate.")
-def thesis_debate(brief_date: str | None, n: int) -> None:
+@click.option("--no-fundamentals", is_flag=True, default=False,
+              help="Skip fundamentals enrichment (no yfinance fetch, no review call).")
+@click.option("--no-auto-open", is_flag=True, default=False,
+              help="Skip auto-approve+auto-open for high-confidence theses — "
+                   "all theses stay 'pending' for manual approval.")
+@click.option("--auto-open-threshold", default=None, type=float,
+              help="Confidence cutoff for auto-open (default: from settings, 0.6).")
+def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
+                  no_auto_open: bool, auto_open_threshold: float | None) -> None:
     """Generate theses via multi-persona debate (Qwen x13 + Claude x1).
 
     Pipeline:
-      1. Research   — 6 personas independently analyse the brief (Qwen, parallel)
+      1. Research   — 6 personas independently analyse the brief (Qwen, batches of 2)
       2. Divergence — detect 2-3 key disagreement points (Qwen)
-      3. Critique   — each persona responds to divergences (Qwen, parallel)
+      3. Critique   — each persona responds to divergences (Qwen, batches of 2)
       4. Synthesis  — Claude generates theses informed by the debate (Claude)
+
+    Same fundamentals enrichment + confidence-threshold auto-open as
+    `pathos thesis generate` — both pipelines share the same persistence path.
+
+    SLOW (CP-029): each Qwen call on this hardware runs ~5+ minutes for a
+    research/critique-sized prompt (measured: 318.7s single-call, no
+    concurrency). 13 Qwen calls total ⇒ expect 60-90+ minutes end to end.
+    Run this in the background, e.g.:
+
+        caffeinate -i uv run pathos thesis debate &
+
+    not interactively in a terminal you plan to keep using. Prefer
+    `pathos thesis generate` (single Claude call, no Qwen) for a fast path.
     """
     import asyncio
     from pathosphere.db.schema import get_connection
@@ -1439,10 +1524,15 @@ def thesis_debate(brief_date: str | None, n: int) -> None:
         f"\nStarting debate for {brief_date or 'today'} | "
         f"personas: {', '.join(PERSONAS)} | n={n}"
     )
-    click.echo("Step 1/4 — Research (6 personas, parallel)...")
+    click.echo("Step 1/4 — Research (6 personas, batches of 2)...")
 
     result = asyncio.run(
-        run_debate(conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n)
+        run_debate(
+            conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n,
+            enrich_fundamentals=not no_fundamentals,
+            auto_open=not no_auto_open,
+            auto_open_threshold=auto_open_threshold,
+        )
     )
     conn.close()
 
@@ -1457,8 +1547,35 @@ def thesis_debate(brief_date: str | None, n: int) -> None:
         f"  Theses     : {result.thesis_result.theses_created} "
         f"({n} primary + {result.thesis_result.theses_created - n} alternatives)\n"
         f"  Watchlist  : +{result.thesis_result.watchlist_created} items\n"
+        f"  Auto-opened: {len(result.thesis_result.auto_opened_ids)} "
+        f"{result.thesis_result.auto_opened_ids}\n"
         f"  IDs        : {result.thesis_result.thesis_ids}"
     )
+
+
+# ─── fundamentals ─────────────────────────────────────────────────────────────
+
+@cli.command("fundamentals")
+@click.argument("ticker")
+def fundamentals_cmd(ticker: str) -> None:
+    """Show fundamentals snapshot for TICKER (ratios, Altman Z, Piotroski F).
+
+    Manual inspection tool — same data the thesis pipeline attaches to each
+    proposed instrument. Degrades gracefully: missing data shown as n/d.
+    """
+    from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
+
+    snap = fetch_fundamentals(ticker)
+    if snap is None:
+        click.echo(f"No fundamentals data for '{ticker}' (bad ticker or yfinance unavailable).")
+        raise SystemExit(1)
+
+    click.echo("\n" + render_fundamentals_text(snap))
+    if snap.warnings:
+        click.echo("\nWarnings:")
+        for w in snap.warnings:
+            click.echo(f"  - {w}")
+    click.echo("")
 
 
 # ─── export ───────────────────────────────────────────────────────────────────
@@ -1585,23 +1702,18 @@ def trade_open(thesis_id: int) -> None:
     Also opens a matching random trade (same qty/direction, random ticker).
     """
     from pathosphere.db.schema import get_connection
-    from pathosphere.market.trading import open_agent_trade
+    from pathosphere.agent.approval import open_trade_and_link
 
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
 
     try:
-        result = open_agent_trade(conn, thesis_id)
+        result = open_trade_and_link(conn, thesis_id)
     except ValueError as exc:
         conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
-
-    # v2: link the thesis's auto economic prediction to the opened agent trade
-    from pathosphere.agent.predictions import link_thesis_prediction_to_trade
-
-    linked = link_thesis_prediction_to_trade(conn, thesis_id, result.agent_trade_id)
     conn.close()
 
     click.echo(
@@ -1610,7 +1722,6 @@ def trade_open(thesis_id: int) -> None:
         f"qty={result.quantity:.4f}  @ {result.price_open:.2f}\n"
         f"  Random #{result.random_trade_id:>4}  {result.random_ticker:<6}  {result.direction}  "
         f"(control, same thesis_id={thesis_id})"
-        + (f"\n  Economic prediction linked to trade #{result.agent_trade_id}" if linked else "")
     )
 
 

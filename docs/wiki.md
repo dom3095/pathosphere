@@ -676,13 +676,15 @@ Due step indipendenti e riprendibili:
 **File:** `pathosphere/semantic/extract.py`  
 **Comando:** `uv run pathos extract`
 
-Tre step indipendenti e riprendibili:
+Step indipendenti e riprendibili:
 
 | Step | Funzione | Output tabelle |
 |---|---|---|
 | NER (spaCy `xx_ent_wiki_sm`) | `extract_entities` | `entities` + `document_entities` |
+| Geolocalizzazione RSS — euristica (CP-022) | `geolocate_rss_events` | `events.location_name` |
 | Geocoding (Nominatim) | `geocode_events` | `events.lat/lon` + `geocode_cache` |
 | Wikidata QID | `link_wikidata` | `entities.wikidata_qid` + `canonical_name` |
+| Geolocalizzazione RSS — fallback Qwen (CP-022, opt-in) | `geolocate_ambiguous_events_qwen` | `events.location_name` + `events.geoloc_checked` |
 
 **Parametri:**
 
@@ -692,10 +694,23 @@ Tre step indipendenti e riprendibili:
 | `--max-lookups` | 50 | Budget lookup Nominatim + Wikidata per run |
 | `--skip-geocode` | off | Salta Nominatim (solo NER + Wikidata) |
 | `--skip-wikidata` | off | Salta Wikidata (solo NER + geocoding) |
+| `--geolocate-qwen` | off | Attiva lo Step 2 Qwen (vedi sotto) — lento, opt-in esplicito |
+| `--geoloc-limit` | 20 | Budget chiamate Qwen per run (`--geolocate-qwen`), riprendibile |
 
 **NER:** modello `xx_ent_wiki_sm` (~30 MB), multilingua. Label map: `PER→person`, `ORG→company`, `LOC→location`, `MISC→other`. Ogni doc viene troncato a 2000 caratteri (title + body head). Flag `ner_done=1` segna i doc già processati → riprendibile.
 
-**Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup).
+**Geolocalizzazione RSS (CP-022):** solo gli ingestor geo-nativi (USGS/FIRMS/PortWatch) scrivono `location_name` dal dato grezzo — nulla lo derivava per eventi `origin='rss'` clusterizzati (0/1996 prima del fix). Due step, validati in `notebooks/study_19_rss_event_geolocation.ipynb`:
+
+- **Step 1 — euristica** (`geolocate_rss_events`, gratis, istantanea, nessuna rete, gira sempre in `pathos extract` prima di `geocode_events`): per ogni evento RSS senza `location_name`, prende le entità `location`/`country` menzionate nei documenti del cluster e applica una regola attore/bersaglio sul set "grandi potenze" — calcolato **a runtime**, non una lista fissa: le top-8 country/location entity per numero di documenti distinti nel corpus (`_compute_major_powers`, soglia sul gradino naturale della distribuzione osservato nel notebook).
+  - 0 paesi menzionati → `skip_none` (nessuna azione)
+  - 1 solo paese → `located`, scrive `location_name`
+  - 2+ paesi, tutti "grande potenza" → `skip_bilateral` (relazione USA-Iran ecc., non ancorata a un luogo — nessuna azione)
+  - 1 major + 1 minor → `located` sul minor (ipotesi: major = attore, minor = bersaglio)
+  - Tutto il resto (1 major + 2+ minor, 2+ major + minor...) → `ambiguous`, lasciato per lo Step 2
+  - Sul DB reale in questa sessione: vedi CP-022 in `CRITICAL_POINTS.md` per i numeri esatti di classificazione.
+- **Step 2 — fallback Qwen locale** (`geolocate_ambiguous_events_qwen`, **non** nel flusso di default di `pathos extract` — comando esplicito `pathos extract --geolocate-qwen [--geoloc-limit N]`): per gli eventi `ambiguous`, un prompt title-only a Qwen3 4B via `LLMClient(backend="qwen-local")` (`json_mode=True`) chiede `location_country`/`actor_countries`/`via_countries` e distingue bersaglio-tramite-terzo-paese (es. "USA→Cuba via Venezuela" → Cuba) e relazioni bilaterali senza bersaglio (→ null, nessuna scrittura). **Lento** — 46.7s/chiamata misurato a macchina scarica (era 90-113s nel notebook sotto pressione di memoria) — quindi batch esplicito con budget piccolo (`--geoloc-limit`, default 20), non sincrono nel flusso interattivo. Riprendibile via `events.geoloc_checked`: un evento è marcato `1` appena *esaminato* (location trovata o "nessun bersaglio" confermato — entrambe risposte definitive, mai ririprovate), resta `0` solo su fallimento di rete/JSON malformato (log warning, batch continua, evento ritentato al prossimo run).
+
+**Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup). Invariato da CP-022 — riceve `location_name` già popolato dallo Step 1/2 sopra.
 
 **Wikidata:** `wbsearchentities` API per entità ordinate per `mentions DESC` (priorità alle più citate). Rate: 1 req/s (`WIKIDATA_DELAY_S`), delay rispettato anche su errore. Su HTTP 429 il run si interrompe subito (le entità restanti restano `wikidata_checked=0` → ritentate al ciclo successivo). Stoplist `GENERIC_ENTITY_STOPLIST` (~110 nomi comuni/ruoli/demonimi es. `CRIMINAL`, `MILITARY`, `MALE`): marcati `wikidata_checked=1` senza lookup (e QID legacy sbagliati azzerati), così il budget va a entità vere. Conflict on `UNIQUE(wikidata_qid)` gestito: marca `wikidata_checked=1` senza sovrascrivere (merge futura work).
 
@@ -722,7 +737,7 @@ INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF
 |---|---|---|---|
 | `INGEST` | `_phase_ingest` | `pathos ingest gdelt/rss/…` | Scarica GDELT (+ anomalie Goldstein CP-016) + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS/IODA |
 | `EMBED` | `_phase_embed` | `pathos embed` | Embedding e5-small + dedup semantica KNN |
-| `EXTRACT` | `_phase_extract` | `pathos extract` | NER (spaCy) + geocoding Nominatim + Wikidata QID |
+| `EXTRACT` | `_phase_extract` | `pathos extract` | NER (spaCy) + geolocalizzazione RSS euristica (CP-022) + geocoding Nominatim + Wikidata QID |
 | `CLUSTER` | `_phase_cluster` | `pathos cluster` | Union-find clustering → eventi |
 | `GRAPH` | `_phase_graph` | `pathos graph` | Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences |
 | `BRIEF` | `_phase_brief` | `pathos brief` | Genera brief mattutino + tesi (Claude SDK) |
@@ -814,9 +829,26 @@ result = await client.complete(messages, json_mode=True)
 
 Cambiare backend = una riga di config. A/B testing: stesso giorno, tesi da Qwen3 4B vs Claude, il paper trading misura la differenza.
 
+**Isolamento subprocess (`claude` backend, CP-026)**: `_run_claude_subprocess` invoca `claude -p
+--safe-mode --tools= PROMPT` — `--safe-mode` disabilita CLAUDE.md/hook/skill/plugin del repo per
+quella chiamata (senza, il processo erediterebbe il caveman-mode e le istruzioni da coding-agent di
+questo stesso file, contaminando l'output con meta-commentario tipo "salvato in scratchpad") **senza**
+rompere l'auth OAuth/abbonamento (a differenza di `--bare`, che richiede `ANTHROPIC_API_KEY` esplicita
+e non legge mai OAuth/keychain). `--tools=` disabilita l'accesso a strumenti file/bash — ogni chiamata
+resta una pura completion testuale.
+
+**Fence-stripping automatico (CP-026)**: quando `json_mode=True`, `complete()` applica
+`_strip_json_fence()` alla risposta prima di restituirla — i modelli non rispettano sempre l'istruzione
+"no markdown fences" nel system prompt; centralizzato qui invece che ripetuto in ogni chiamante
+(`thesis.py`, `debate.py`, `extract.py`).
+
 ### 8.2 Brief mattutino — `pathosphere/agent/brief.py` ✅
 
-Legge dal DB: divergenze narrative (`divergence_score > 0.5`), entità hub (`entity_links`), anomalie recenti (portwatch/firms/usgs/ioda). 1 chiamata Claude → brief strutturato salvato in `briefs` + file `data/briefs/YYYY-MM-DD.md`.
+Legge dal DB: **eventi RSS recenti** (`origin='rss'`, ordinati per copertura fonti — CP-025, sempre
+popolato indipendentemente dalle divergenze), divergenze narrative (`divergence_score > 0.5`,
+spesso vuoto — è un segnale specifico, non il canale primario di contenuto), entità hub
+(`entity_links`), anomalie recenti (portwatch/firms/usgs/ioda). 1 chiamata Claude → brief strutturato
+salvato in `briefs` + file `data/briefs/YYYY-MM-DD.md`.
 
 ```bash
 uv run pathos brief                        # oggi, tutti i segnali
@@ -829,16 +861,37 @@ uv run pathos brief --dry-run              # solo conteggi, no LLM
 **Fast path** (`pathos thesis generate`): 1 Claude call → N tesi primarie + alternative. Ogni tesi: `title`, `causal_chain` (JSON), `instrument`, `direction`, `horizon_days`, `confidence`, `invalidation`, `watchlist_items`.
 
 **Debate pipeline** (`pathos thesis debate`): 4 step sequenziali:
-1. Research — 6 personas × Qwen (Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris)
+1. Research — 6 personas × Qwen (Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris), a batch di 2 (non tutte parallele — un solo modello Qwen in memoria su Ollama, CP-029)
 2. Divergence detection — Qwen identifica 2-3 disaccordi strutturali
-3. Critique — ogni persona risponde ai punti di divergenza (Qwen)
+3. Critique — ogni persona risponde ai punti di divergenza (Qwen), stesso batching di 2
 4. Synthesis — Claude genera tesi con `debate_context` (supporters/opponents)
+
+**LENTO (CP-029)**: ~5+ min/chiamata Qwen misurati su prompt reale (318.7s, non i 46-113s di un prompt
+di classificazione minuscolo) — 13 chiamate totali ⇒ **60-90+ minuti** end-to-end. La latenza per
+chiamata inoltre **cresce nel corso della sessione** (~370s a inizio run → >900s dopo ~50 min, causa
+non isolata): timeout per-chiamata Qwen a **1800s** con **1 retry automatico** su `ReadTimeout`
+(`llm/client.py`). Lanciare SOLO in background/overnight
+(`caffeinate -i uv run pathos thesis debate &`), mai interattivo. Preferire
+`pathos thesis generate` (fast path, 1 sola chiamata Claude) quando serve rapidità.
 
 `price_snapshot` = prezzo EOD yfinance al momento della generazione (no-lookahead bias).
 
+**Auto-open a soglia di confidence (2026-07-14)**: dopo la review fondamentali (§8.6b — così una tesi
+contraddetta dai fondamentali beneficia comunque di quel contesto prima dell'apertura), ogni tesi con
+`confidence ≥ settings.auto_open_confidence_threshold` (default 0.6, in `config.py`) viene
+**auto-approvata e il paper trade aperto in autonomia** — stessa sequenza esatta del flusso manuale
+(`approve_thesis` → `create_thesis_prediction` → `open_agent_trade` → `link_thesis_prediction_to_trade`),
+soldi virtuali, l'umano rivede/chiude dopo invece di approvare prima. Sotto soglia: resta `pending`
+per approvazione manuale come sempre. Degrado: se l'approvazione riesce ma l'apertura trade fallisce
+(es. portafogli non inizializzati), la tesi resta `approved` ma non tradata — non torna `pending` —
+completabile dopo con `pathos trade open <id>`, stesso stato in cui finirebbe un flusso manuale con
+`approve` riuscito e `trade open` fallito. Disattivabile per singolo run: `--no-auto-open`; soglia
+override: `--auto-open-threshold N`.
+
 ### 8.4 Flusso approvazione — `pathosphere/agent/approval.py` ✅
 
-Human-in-the-loop: l'agent propone, l'utente decide.
+Human-in-the-loop **sotto la soglia di auto-open** (§8.3) — sopra soglia l'agent propone e apre, la
+revisione umana avviene dopo.
 
 ```bash
 uv run pathos thesis list                  # tesi pending (tabella: id/title/inst/dir/price/horizon/conf)
@@ -911,6 +964,48 @@ pathos predict calibration
 - `pathos thesis approve <id>` → auto-crea `predictions` con `macro_area=economic` e `prediction_type=economic`
 - `pathos trade open <thesis_id>` → link oldest unresolved economic prediction a trade via `link_thesis_prediction_to_trade()`
 - Migrazione: `outcome` legacy specchia `outcome_on_time` per retrocompatibilità; pre-v2 righe auto-backfillate come `macro_area='world'` + `prediction_type='geopolitical'`
+
+### 8.7 Fondamentali (enrichment) — `pathosphere/market/fundamentals.py` ✅
+
+**Livello di contesto, non motore decisionale**: arricchisce ogni tesi con i
+fondamentali del ticker proposto dall'LLM. Nessuna soglia automatica di
+rifiuto — decide l'agent/l'umano; il modulo fornisce solo dati + testo
+interpretativo.
+
+**Cosa calcola** (`fetch_fundamentals(ticker) → FundamentalsSnapshot | None`):
+- Ratio da `yfinance .info`: P/E trailing/forward, P/B, EV/EBITDA, D/E (in %,
+  convenzione yfinance), ROE, current ratio, revenue/earnings growth, margine
+- **Altman Z-score** (5 fattori, soglie standard: >2.99 safe, <1.81 distress) —
+  calcolato SOLO se tutti i componenti presenti; **skippato con flag
+  `not_applicable` per settore finanziario** (leva = core business)
+- **Piotroski F-score** (0-9) sui due anni più recenti — ogni test scorato solo
+  se i dati esistono; riporta `piotroski_testable` (quanti dei 9 avevano dati)
+- `data_quality`: full | partial | minimal | none
+- `render_fundamentals_text(snap)`: blocco testuale prompt-ready deterministico
+  (template, no LLM — dato numerico, zero costo, testabile) con caveat espliciti
+
+**Contratto di degradazione** (identico a `fetch_price`): `None` solo su
+fallimento totale; dati parziali → snapshot con campi `None` + `warnings`;
+ETF/index/FX → snapshot minimale flaggato; mai eccezioni. Dati mancanti per
+non-USA/small-cap = caso ATTESO (limiti noti yfinance), non errore.
+
+**Aggancio in `generate_theses`**: dopo `fetch_price`, ogni ticker proposto
+riceve `fetch_fundamentals` (con cache intra-run); snapshot+testo salvati in
+`theses.fundamentals_json`. Se ≥1 tesi ha fondamentali → **1 call LLM batch
+extra** ("fundamentals review"): 2-3 frasi per tesi (supporta/contraddice/
+neutrale + rischi bilancio) salvate come `llm_assessment` nel JSON. Qualsiasi
+fallimento della review → warning, tesi salvate comunque senza assessment.
+Disattivabile con `--no-fundamentals`.
+
+**Ispezione manuale**: `pathos fundamentals TICKER`. In `pathos thesis show`
+la sezione Fundamentals mostra testo + assessment LLM.
+
+**SEC EDGAR rimandato a v2**: mapping ticker→CIK + copertura solo USA-filer +
+delay filing ~45gg = complessità > valore per un enrichment layer v1.
+
+**Limiti noti**: yfinance statements spesso vuoti/disallineati per non-USA e
+small-cap (issue #2584), rate-limit su scraping non autenticato, ratio
+comparabili solo intra-settore (il testo renderizzato lo dichiara).
 
 ---
 
@@ -1043,16 +1138,17 @@ pathos
 │   ├── --model         claude|qwen-local [default: da .env]
 │   └── --dry-run       Mostra solo conteggi segnali, no LLM
 ├── thesis              Generazione e approvazione tesi
-│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call)
+│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call + 1 review fondamentali)
 │   │   ├── --date      Data brief [default: oggi UTC]
 │   │   ├── --n         Numero tesi primarie [default: 3]
-│   │   └── --model     claude|qwen-local
+│   │   ├── --model     claude|qwen-local
+│   │   └── --no-fundamentals  Salta enrichment fondamentali (no yfinance, no review call)
 │   ├── debate          Genera tesi via debate pipeline (Qwen×13 + Claude×1)
 │   │   ├── --date      Data brief
 │   │   └── --n         Numero tesi primarie [default: 3]
 │   ├── list            Lista tesi filtrate per status
 │   │   └── --status    pending|approved|rejected|closed|all [default: pending]
-│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist
+│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist, fondamentali
 │   ├── approve <id>    Approva tesi pending (valida ticker yfinance, warn non blocca)
 │   └── reject <id>     Rifiuta tesi pending con motivazione
 │       └── --reason    Motivazione (obbligatoria, loggata in theses.rejection_reason)
@@ -1091,6 +1187,7 @@ pathos
 │   │   └── --resolved-date      YYYY-MM-DD (obbligatorio — actual event date or eval date)
 │   └── calibration       Dual-metric: time-adjusted score (primaria) + Brier (secondaria)
 │       └── breakdown per bucket probabilità, macro_area, prediction_type
+├── fundamentals <ticker>  Snapshot fondamentali (ratio, Altman Z, Piotroski F) — ispezione manuale
 ├── serve                Avvia dashboard Streamlit (Fase 4, vedi sezione 8b)
 │   ├── --host           [default: localhost]
 │   └── --port           [default: 8501]

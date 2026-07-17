@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS events (
     lat             REAL,
     lon             REAL,
     resolved_at     TEXT,
+    geoloc_checked  INTEGER NOT NULL DEFAULT 0, -- 1 after Qwen geoloc fallback examined this event (CP-022)
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -470,6 +471,21 @@ _MIGRATIONS = [
     # internal coherence for inspection. Resolve via COALESCE(story_id, id).
     "ALTER TABLE events ADD COLUMN story_id INTEGER REFERENCES events(id)",
     "CREATE INDEX IF NOT EXISTS idx_event_story ON events(story_id)",
+    # fundamentals enrichment: JSON snapshot (ratios, Altman Z, Piotroski F,
+    # rendered text, optional LLM assessment) captured at thesis-generation
+    # time — 1:1 with the thesis, no cross-thesis queries → JSON column,
+    # not a dedicated table. NULL = fundamentals unavailable (expected for
+    # non-US/small-cap/ETF instruments).
+    "ALTER TABLE theses ADD COLUMN fundamentals_json TEXT",
+    # geoloc_checked (CP-022): distinguishes "not yet examined by the Qwen
+    # geolocation fallback" (0) from "examined, no target location found"
+    # (1, location_name stays NULL) for RSS events the cheap heuristic in
+    # geolocate_rss_events() left ambiguous or skip_bilateral/skip_none. Same
+    # not-yet/done convention as raw_documents.ner_done/dedup_checked — needed
+    # so geolocate_ambiguous_events_qwen() doesn't re-call the LLM on events
+    # already resolved to "no location" every run.
+    "ALTER TABLE events ADD COLUMN geoloc_checked INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_events_geoloc_checked ON events(geoloc_checked)",
 ]
 
 
@@ -483,6 +499,20 @@ def migrate_db(conn: sqlite3.Connection) -> None:
             pass  # column or index already exists
 
 
+# CP-010 follow-up: get_connection() below runs migrate_db() on every call,
+# not just `pathos db init` — necessary the FIRST time a process opens a
+# given db_path (a pulled DB with new columns must not crash), but repeating
+# the full ~20-statement execute+commit+except sweep on every call is pure
+# no-op cost once a path is known-migrated for this process. Reviewed as an
+# efficiency finding: cycle/orchestrator.py opens 6 connections per
+# `pathos cycle` run, and the Streamlit dashboard opens a fresh connection
+# on every page rerun (long-lived process, many reruns). Per-process cache
+# only — a concurrent process still migrates once on its own first call,
+# which is correct (no cross-process coordination needed for an idempotent,
+# additive-only migration list).
+_migrated_paths: set[Path] = set()
+
+
 def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -493,6 +523,15 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
+    # CP-010: migrate on every connection, not just `pathos db init` — a pulled
+    # DB with pre-existing tables but missing new columns must not crash with
+    # "no such column" on the first query that touches them. Idempotent
+    # (migrate_db swallows "already exists" OperationalError). Cached per
+    # resolved path so repeat connections in the same process skip the sweep.
+    resolved = db_path.resolve()
+    if resolved not in _migrated_paths:
+        migrate_db(conn)
+        _migrated_paths.add(resolved)
     return conn
 
 

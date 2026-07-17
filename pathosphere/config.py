@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # in time_adjusted_score (0.001 → ~1000 days off = full penalty)
     timing_penalty_alpha: float = 0.001
 
+    # Theses at/above this confidence auto-approve + auto-open a paper trade
+    # at generation time (virtual money, human reviews/closes after — see
+    # CLAUDE.md "Human-in-the-loop"). Below threshold: stays pending for
+    # manual approval, as before. Calibrated 2026-07-14 against the first
+    # real thesis-generate run (0.62/0.58/0.55 observed confidences).
+    auto_open_confidence_threshold: float = 0.6
+
     @field_validator("log_level")
     @classmethod
     def log_level_upper(cls, v: str) -> str:
