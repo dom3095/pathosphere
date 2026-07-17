@@ -39,11 +39,11 @@ def render(conn: sqlite3.Connection) -> None:
         return
 
     calib = get_calibration(conn)
-    if calib["overall"]["count"] > 0:
+    if calib["total_resolved"] > 0:
         st.subheader("Calibrazione (Tetlock)")
         m1, m2 = st.columns(2)
-        mb = calib["overall"]["mean_brier_score"]
-        mt = calib["overall"]["mean_time_adjusted_score"]
+        mb = calib["mean_brier_score"]
+        mt = calib["mean_time_adjusted_score"]
         m1.metric("Brier score medio", f"{mb:.3f}" if mb is not None else "—")
         m2.metric("Time-adjusted score medio", f"{mt:.3f}" if mt is not None else "—")
 
