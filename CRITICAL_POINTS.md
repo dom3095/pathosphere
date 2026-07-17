@@ -604,9 +604,40 @@ overnight con `caffeinate`.
 
 ---
 
-## CP-027: nessuna fonte di dati storici — eventi geopolitici pre-ingest e serie storiche prezzi (aperto, non iniziato)
+## CP-027: nessuna fonte di dati storici — **PARTE EVENTI RISOLTA 2026-07-14** (branch `feat/historical-events-backfill`), parte prezzi ancora aperta
 
-**Contesto (2026-07-14)**: due esigenze emerse in discussione con l'utente, entrambe bloccate dalla
+**Aggiornamento 2026-07-14 (sessione backfill storico)**: implementata la parte 1 (eventi storici).
+Decisione chiave: **GDELT scartato come fonte storica** — documenti sintetici da codici CAMEO senza
+prosa reale (CP-016), inutilizzabili per mappa e clustering. Scelte 4 fonti aperte, gratuite e
+verificabili con testo/coordinate genuini:
+
+1. **UCDP GED** (`ingest/ucdp.py`, `pathos ingest ucdp`) — conflitti armati 1989→, lat/lon precisi.
+   CSV zip aperto ~29 MB / 250 MB raw, ~381k righe (l'API REST ora richiede token, il download no).
+   Filtro `--min-deaths` default 25 → ~15.8k eventi (≥100 → ~3k). Streaming read, `--csv-path` per
+   riusare un download già fatto.
+2. **WHO Disease Outbreak News** (`ingest/who_don.py`, `pathos ingest who-don`) — epidemie 1996→,
+   OData API aperta, prosa reale in `Overview`, paese dal titolo (separatore en-dash) →
+   `location_name`, lat/lon NULL risolti dal geocoder della fase extract. Resume incrementale.
+3. **ReliefWeb v2** (`ingest/reliefweb.py`, `pathos ingest reliefweb`) — disastri naturali 1981→
+   (UN OCHA). Scoperto durante il probe: v1 dismessa, v2 rifiuta appname non registrati — serve
+   `RELIEFWEB_APPNAME` in `.env` (registrazione gratuita, **passo umano ancora da fare**:
+   https://apidoc.reliefweb.int/parameters#appname); senza, skip graceful (pattern FIRMS).
+4. **Wikidata SPARQL** (`ingest/econ_crises.py`, `pathos ingest econ-crises`) — crisi economiche/
+   finanziarie (Q3733076/Q290178/Q176494, P580/P585, paese P17 con coordinate P625); crisi
+   multi-paese (>3) salvate come `location_name='global'` senza punto; QID nel summary per
+   verificabilità.
+
+Tutte scrivono direttamente in `events` (dedup `(title, first_seen)`, idempotenti) — **niente
+`raw_documents`/embedding**: lo storico è statico, serve per mappa e future "situazioni" (Fase 5),
+non come input di clustering live. Nessuna modifica schema. 19 test nuovi → 603 verdi, ruff pulito
+sui file toccati. Run reale di backfill: lanciato dall'utente da terminale (non ancora eseguito al
+momento della scrittura).
+
+**Resta aperto di CP-027**: parte 2 — serie storiche prezzi (`fetch_price` prende solo l'ultimo
+close; yfinance `history(period="max")` disponibile, manca persistenza) e calendario economico
+(earnings/CPI/NFP) senza candidato gratuito assegnato.
+
+**Contesto originale (2026-07-14)**: due esigenze emerse in discussione con l'utente, entrambe bloccate dalla
 stessa lacuna strutturale — il progetto non persiste **nulla di storico** oltre a ciò che ingerisce
 giorno per giorno da quando gira. Non un bug, una fonte dati mai costruita.
 

@@ -1,6 +1,32 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-14 notte (2ª sessione) — CP-029 ANCORA APERTO: timeout 1800s + retry automatico implementati e testati (584 verdi), manca SOLO la validazione con run reale lanciato dall'utente (branch `feat/fundamentals-analysis`, PR #14)*
+*Aggiornato: 2026-07-14 notte (3ª sessione) — NUOVO: backfill storico eventi (CP-027 parte eventi) su branch `feat/historical-events-backfill` (da `feat/fundamentals-analysis`), 603 test verdi. CP-029 ancora aperto: run debate id=4 lanciato dall'utente in background, esito da verificare.*
+
+## Sessione 2026-07-14 (3ª) — backfill storico eventi (CP-027 parte 1)
+
+Branch: `feat/historical-events-backfill` (creato da `feat/fundamentals-analysis`, che resta su PR #14 non mergiata).
+
+**Cosa è stato fatto**: 4 nuovi ingestori per eventi storici reali, geolocalizzati, da fonti aperte/
+gratuite/verificabili — GDELT scartato di proposito (documenti sintetici CAMEO senza prosa, CP-016):
+
+| Comando | Fonte | Copertura | Note |
+|---|---|---|---|
+| `pathos ingest ucdp` | UCDP GED CSV zip (aperto) | conflitti 1989→ | `--min-deaths 25` → ~15.8k eventi; `--csv-path` riusa download |
+| `pathos ingest who-don` | WHO DON OData API | epidemie 1996→ | resume incrementale; paese dal titolo, geocode in extract |
+| `pathos ingest reliefweb` | ReliefWeb v2 | disastri 1981→ | **serve RELIEFWEB_APPNAME in .env** (registrazione gratuita, non fatta); senza → skip |
+| `pathos ingest econ-crises` | Wikidata SPARQL | crisi economiche | QID nel summary; multi-paese → 'global' |
+
+Tutto in `events` diretto (no raw_documents/embedding — storico statico, non input clustering).
+Nessuna modifica schema. 19 test nuovi (`tests/test_historical_sources.py`) → **603 verdi**, ruff
+pulito sui file nuovi (6 violazioni cli.py pre-esistenti su main, verificate).
+
+**Prossima azione**: (1) l'utente lancia il backfill reale da terminale (CSV UCDP già scaricato in
+scratchpad sessione, altrimenti il comando lo riscarica); (2) registrare appname ReliefWeb; (3) commit
++ PR del branch; (4) parte 2 di CP-027 (serie storiche prezzi) resta aperta.
+
+---
+
+*Sessione precedente (2026-07-14 notte, 2ª) — CP-029 ANCORA APERTO: timeout 1800s + retry automatico implementati e testati, manca SOLO la validazione con run reale lanciato dall'utente (branch `feat/fundamentals-analysis`, PR #14). Run id=4 lanciato dall'utente stanotte, esito da verificare con la query sotto.*
 
 ## ⚠️ PROMPT DI RIPRESA — leggi questo per primo
 

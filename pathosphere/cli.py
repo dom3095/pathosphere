@@ -857,6 +857,121 @@ def ingest_ioda(
         click.echo(f"\nFirst errors: {result.errors[:5]}")
 
 
+@ingest.command("ucdp")
+@click.option("--min-deaths", default=25, show_default=True,
+              help="Keep only events with at least this many deaths (best estimate).")
+@click.option("--start", default=None, help="Range start on date_start (YYYY-MM-DD).")
+@click.option("--end", default=None, help="Range end on date_start (YYYY-MM-DD).")
+@click.option("--csv-path", default=None, type=click.Path(exists=True, path_type=Path),
+              help="Already-downloaded GED CSV (skips the ~29 MB zip download).")
+def ingest_ucdp(min_deaths: int, start: str | None, end: str | None,
+                csv_path: Path | None) -> None:
+    """Backfill historical armed-conflict events from UCDP GED (1989→today)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.ucdp import ingest_ucdp as _ingest_ucdp
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_ucdp(
+        conn, min_deaths=min_deaths, start=start, end=end, csv_path=csv_path
+    )
+    conn.close()
+
+    click.echo(
+        f"\nUCDP GED result:\n"
+        f"  Rows:   {result.rows_read:,} read | {result.rows_kept:,} kept (≥{min_deaths} deaths)\n"
+        f"  Events: +{result.events_created:,} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
+@ingest.command("who-don")
+@click.option("--start", default=None,
+              help="Historical backfill anchor (YYYY-MM-DD). When omitted, "
+                   "resume from the last stored item (full history if none).")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD).")
+def ingest_who_don(start: str | None, end: str | None) -> None:
+    """Fetch WHO Disease Outbreak News as epidemic events (1996→today)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.who_don import ingest_who_don as _ingest_who_don
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_who_don(conn, start=start, end=end)
+    conn.close()
+
+    click.echo(
+        f"\nWHO DON result:\n"
+        f"  Items:  {result.items_fetched} fetched\n"
+        f"  Events: +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
+@ingest.command("reliefweb")
+@click.option("--start", default=None,
+              help="Historical backfill anchor (YYYY-MM-DD). When omitted, "
+                   "resume from the last stored disaster (full history if none).")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD).")
+def ingest_reliefweb(start: str | None, end: str | None) -> None:
+    """Fetch ReliefWeb disasters as hazard events (1981→today, needs RELIEFWEB_APPNAME)."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.reliefweb import ingest_reliefweb as _ingest_reliefweb
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_reliefweb(
+        conn, appname=settings.reliefweb_appname, start=start, end=end
+    )
+    conn.close()
+
+    if result.skipped_no_appname:
+        click.echo(
+            "ReliefWeb skipped: set RELIEFWEB_APPNAME in .env "
+            "(free registration: https://apidoc.reliefweb.int/parameters#appname)."
+        )
+        return
+    click.echo(
+        f"\nReliefWeb result:\n"
+        f"  Disasters: {result.items_fetched} fetched\n"
+        f"  Events:    +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
+@ingest.command("econ-crises")
+@click.option("--start", default=None, help="Range start (YYYY-MM-DD).")
+@click.option("--end", default=None, help="Range end (YYYY-MM-DD).")
+def ingest_econ_crises(start: str | None, end: str | None) -> None:
+    """Backfill historical economic/financial crises from Wikidata."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.ingest.econ_crises import ingest_econ_crises as _ingest_econ
+
+    settings = get_settings()
+    _require_db(settings)
+
+    conn = get_connection(settings.db_path)
+    result = _ingest_econ(conn, start=start, end=end)
+    conn.close()
+
+    click.echo(
+        f"\nWikidata econ crises result:\n"
+        f"  Items:  {result.items_fetched} fetched\n"
+        f"  Events: +{result.events_created} | {len(result.errors)} errors"
+    )
+    if result.errors:
+        click.echo(f"\nErrors: {result.errors[:5]}")
+
+
 # ─── embed ────────────────────────────────────────────────────────────────────
 
 @cli.command()
