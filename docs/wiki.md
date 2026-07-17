@@ -37,6 +37,7 @@ Sistema personale di intelligence OSINT. Paper trading virtuale come metrica di 
 7. [Ciclo notturno](#7-ciclo-notturno)
 8. [Agent e valutazione (Fase 3)](#8-agent-e-valutazione-fase-3)
    - 8b. [Dashboard Streamlit (Fase 4)](#8b-dashboard-streamlit-fase-4)
+   - 8c. [Doctor — health check operativo](#8c-doctor--health-check-operativo)
 9. [CLI Reference](#9-cli-reference)
 10. [Fonti dati](#10-fonti-dati)
 11. [Valutazione del modello](#11-valutazione-del-modello)
@@ -953,6 +954,39 @@ coperta dai 498 test esistenti).
 
 ---
 
+## 8c. Doctor — health check operativo
+
+`pathos doctor [--network]` — diagnostica read-only in `pathosphere/doctor.py`.
+Nessuna chiamata LLM, nessuna API a pagamento; l'unica rete di default è il
+socket Ollama locale (timeout 3s). Exit code: 0 = nessun FAIL (warning
+ammessi), 1 = almeno un FAIL — usabile in script (`pathos doctor && pathos cycle`).
+
+**5 aree di check** (ogni riga = ✓ ok / ⚠ warn / ✗ fail / · skip):
+
+| Sezione | Cosa verifica | Perché |
+|---|---|---|
+| Prerequisites | `claude` su PATH (FAIL se `reasoning_model=claude`), Ollama raggiungibile + modello pullato, spaCy `xx_ent_wiki_sm` installato | CP-001, CP-003: prerequisiti mai verificati a runtime prima |
+| Config | Solo **presenza** (mai il valore — regola sicurezza CLAUDE.md) di `FIRMS_MAP_KEY`/`RELIEFWEB_APPNAME`; validità `reasoning_model` | chiavi mancanti = ingestori silenziosamente skippati |
+| Freshness | Ultimo dato per fonte ricorrente (rss/gdelt/portwatch/firms/ioda/usgs 48-72h, comtrade 45gg) con hint del comando da lanciare | classe CP-023: degradazione che nessuno nota per giorni |
+| Backlog | Doc in attesa di embedding/dedup/NER, eventi RSS senza geoloc (`geoloc_checked=0`), geocoding pendente, entità senza Wikidata — **stesse query dei moduli pipeline** (embedder/dedup/extract), conteggi identici a ciò che la fase processerebbe | pipeline ferma ≠ pipeline vuota |
+| Agent | Portafogli inizializzati, tesi pending, trade aperti oltre orizzonte tesi, predizioni aperte oltre `horizon_date`, scenario set attivi oltre orizzonte, età ultimo brief (warn > 3gg) | to-do list operativa del giorno |
+
+`--network` aggiunge un probe yfinance (quote SPY) — opt-in perché tocca la rete.
+
+**Difensivo per costruzione**: ogni query DB cattura `sqlite3.OperationalError`
+(tabella/colonna di una migration non ancora applicata → riga `skip`, mai
+crash); i campi Settings introdotti da branch non mergiati sono letti con
+`hasattr`/`getattr` — il comando funziona identico su un DB/config pre- o
+post-merge dei branch in volo (technicals, scenari, backfill storico).
+
+Soglie in `pathosphere/doctor.py`: `BACKLOG_WARN_AT` (dict per check),
+`STALE_BRIEF_DAYS=3`, ore di staleness per fonte in `_FRESHNESS_SPECS`.
+
+Test: `tests/test_doctor.py` (36, tutto mockato — nessun lookup PATH reale,
+nessun socket, fixture autouse `hermetic`).
+
+---
+
 ## 9. CLI Reference
 
 Entry point: `uv run pathos`
@@ -1094,6 +1128,8 @@ pathos
 ├── serve                Avvia dashboard Streamlit (Fase 4, vedi sezione 8b)
 │   ├── --host           [default: localhost]
 │   └── --port           [default: 8501]
+├── doctor              Health check read-only: prerequisiti, config, freshness, backlog, agent (sezione 8c)
+│   └── --network        Aggiunge probe yfinance (opt-in, tocca la rete)
 └── config              Mostra configurazione attiva (.env + defaults)
 ```
 

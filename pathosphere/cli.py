@@ -153,6 +153,47 @@ def config() -> None:
         click.echo(f"  {field_name:<30} = {value}")
 
 
+# ─── doctor ───────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.option("--network", is_flag=True,
+              help="Also probe market data (yfinance) over the network.")
+def doctor(network: bool) -> None:
+    """Read-only health check: prerequisites, config, freshness, backlogs, agent state."""
+    from pathosphere.db.schema import get_connection
+    from pathosphere.doctor import FAIL, OK, SKIP, WARN, has_failures, run_doctor
+
+    settings = get_settings()
+    if not settings.db_path.exists():
+        click.echo("Database not found. Run first: pathos db init")
+        raise SystemExit(1)
+    conn = get_connection(settings.db_path)
+    results = run_doctor(conn, settings, network=network)
+    conn.close()
+
+    icons = {
+        OK: ("✓", "green"),
+        WARN: ("⚠", "yellow"),
+        FAIL: ("✗", "red"),
+        SKIP: ("·", None),
+    }
+    section = None
+    for r in results:
+        if r.section != section:
+            section = r.section
+            click.echo(f"\n{section.upper()}")
+        icon, color = icons[r.status]
+        click.echo(f"  {click.style(icon, fg=color)} {r.name}: {r.detail}")
+    counts = {s: sum(1 for r in results if r.status == s)
+              for s in (OK, WARN, FAIL, SKIP)}
+    click.echo(
+        f"\n{counts[OK]} ok · {counts[WARN]} warn · "
+        f"{counts[FAIL]} fail · {counts[SKIP]} skip"
+    )
+    if has_failures(results):
+        raise SystemExit(1)
+
+
 # ─── serve (Fase 4 dashboard) ──────────────────────────────────────────────────
 
 @cli.command()
