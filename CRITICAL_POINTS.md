@@ -748,3 +748,30 @@ come già presenti su `main` prima di questa sessione).
 indipendenti sui candidati a bassa confidenza (trovati da un solo angolo) — i 3 candidati trovati
 indipendentemente da 2-3 angoli diversi sono stati trattati come già verificati per consenso, senza
 ulteriore verifica dedicata.
+
+## CP-030: `_persist_scenario_set` non transazionale — persistenza parziale possibile (aperto, rischio basso)
+
+**Contesto (2026-07-16, branch `feat/conflict-forecasting`)**: `agent/scenarios.py::_persist_scenario_set`
+inserisce set → per ogni scenario: riga `scenarios` + `add_prediction()` + watchlist. Ma
+`add_prediction()` (predictions.py) fa `conn.commit()` internamente → se un insert successivo fallisce
+(sqlite error, disco pieno), il set resta `active` ma incompleto (N scenari invece di 3-4, predictions
+orfane già committate). Input LLM già validati/normalizzati a monte (probabilità, scope, domini), quindi
+il fallimento richiede un errore infrastrutturale, non un input cattivo.
+
+- **Workaround**: review/resolve gestiscono `prediction_id IS NULL`; un set visibilmente monco si
+  chiude a mano (`UPDATE scenario_sets SET status='resolved'` o si risolve normalmente).
+- **Fix pulito futuro**: variante `add_prediction(..., commit=False)` + transazione unica nel chiamante.
+- **Impatto**: basso (paper predictions, nessun denaro; evento raro).
+
+## CP-031: dashboard pagina Predizioni — KeyError `overall` con predizioni presenti (aperto, pre-esistente)
+
+**Contesto (2026-07-16, osservato durante wiring scenari — NON introdotto da questo branch)**:
+`dashboard/views/predictions.py` usa `calib["overall"]["count"]` ma
+`agent/predictions.py::get_calibration()` non restituisce alcuna chiave `overall` (le chiavi sono
+`total_resolved`, `mean_brier_score`, `mean_time_adjusted_score`, `buckets`, `by_macro_area`,
+`by_prediction_type`). Appena `predictions` ha righe (oggi 3), la pagina va in KeyError.
+
+- **Fix banale**: `calib["total_resolved"] > 0` + metriche top-level. Da fare in sessione dashboard
+  dedicata (file fuori dallo scope del branch scenari).
+- **Nota**: la pagina Scenari nuova legge le probabilità direttamente dalle tabelle, non da
+  `get_calibration()` — non è affetta.

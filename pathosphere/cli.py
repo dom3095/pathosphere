@@ -1684,6 +1684,234 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
     )
 
 
+# ─── scenario (conflict forecasting) ──────────────────────────────────────────
+
+@cli.group()
+def scenario() -> None:
+    """Conflict scenario forecasting (hotspot triage → ACH scenarios)."""
+
+
+@scenario.command("hotspots")
+@click.option("--top", default=10, show_default=True, help="How many hotspots to print.")
+def scenario_hotspots(top: int) -> None:
+    """Rank escalation hotspots from GDELT metrics (deterministic, no LLM)."""
+    from pathosphere.agent.scenarios import compute_hotspots
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    hotspots = compute_hotspots(conn)
+    conn.close()
+
+    if not hotspots:
+        click.echo("No hotspots — gdelt_events too thin (run `pathos ingest gdelt` first).")
+        return
+    click.echo(f"\nTop {min(top, len(hotspots))} escalation hotspots (triage only, not a prediction):\n")
+    for h in hotspots[:top]:
+        click.echo(f"  {h.summary_line()}")
+
+
+@scenario.command("generate")
+@click.option("--country", default=None,
+              help="Force a GDELT FIPS country code (e.g. IS, UP, IR) instead of top hotspots.")
+@click.option("--horizon-days", default=None, type=int,
+              help="Scenario horizon in days (default: from settings, 90).")
+@click.option("--max-hotspots", default=None, type=int,
+              help="How many hotspots to cover (default: from settings, 2 — one Claude call each).")
+@click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
+              help="LLM backend override (default: from REASONING_MODEL in .env).")
+def scenario_generate(country: str | None, horizon_days: int | None,
+                      max_hotspots: int | None, model: str | None) -> None:
+    """Generate ACH conflict scenario sets for the top hotspots."""
+    import asyncio
+    from pathosphere.agent.scenarios import generate_scenarios
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    llm_client = LLMClient(backend=model)
+
+    try:
+        result = asyncio.run(generate_scenarios(
+            conn, llm_client, country=country,
+            horizon_days=horizon_days, max_hotspots=max_hotspots,
+        ))
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nScenario generation complete:\n"
+        f"  Sets       : {result.sets_created} {result.set_ids}\n"
+        f"  Scenarios  : {result.scenarios_created}\n"
+        f"  Predictions: {result.predictions_created}\n"
+        f"  Watchlist  : +{result.watchlist_created} indicators"
+    )
+    for reason in result.skipped:
+        click.echo(f"  Skipped    : {reason}")
+
+
+@scenario.command("list")
+@click.option("--status", default="active",
+              type=click.Choice(["active", "resolved", "all"]), show_default=True)
+def scenario_list(status: str) -> None:
+    """List scenario sets with their probability distributions."""
+    from pathosphere.agent.scenarios import get_scenarios, list_scenario_sets
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    sets = list_scenario_sets(conn, status=None if status == "all" else status)
+
+    if not sets:
+        click.echo(f"No {status} scenario sets.")
+        conn.close()
+        return
+    for s in sets:
+        reviewed = f" | reviewed {s['last_reviewed_at'][:10]}" if s["last_reviewed_at"] else ""
+        click.echo(
+            f"\nSet {s['id']} — {s['country_name'] or s['country']} "
+            f"[{s['status']}] horizon {s['horizon_date']}{reviewed}"
+        )
+        for sc in get_scenarios(conn, s["id"]):
+            outcome = ""
+            if sc["is_outcome"] is not None:
+                outcome = "  ← MATERIALIZED" if sc["is_outcome"] else ""
+            click.echo(f"  [{sc['label']}] p={sc['probability']:.2f}  {sc['title']}{outcome}")
+    conn.close()
+
+
+@scenario.command("show")
+@click.argument("set_id", type=int)
+def scenario_show(set_id: int) -> None:
+    """Full detail for a scenario set (dossier, ACH ratings, indicators)."""
+    import json as _json
+    from pathosphere.agent.scenarios import get_scenario_set, get_scenarios
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    s = get_scenario_set(conn, set_id)
+    if s is None:
+        conn.close()
+        click.echo(f"Scenario set {set_id} not found.")
+        raise SystemExit(1)
+
+    click.echo(
+        f"\nSet {s['id']} — {s['country_name'] or s['country']} [{s['status']}]\n"
+        f"Created {s['created_date']} | horizon {s['horizon_date']}"
+    )
+    if s["summary"]:
+        click.echo(f"\nNet assessment: {s['summary']}")
+    assumptions = _json.loads(s["key_assumptions"] or "[]")
+    if assumptions:
+        click.echo("\nKey assumptions:")
+        for a in assumptions:
+            click.echo(f"  - {a}")
+
+    for sc in get_scenarios(conn, set_id):
+        click.echo(f"\n[{sc['label']}] {sc['title']} — p={sc['probability']:.2f}")
+        if sc["description"]:
+            click.echo(f"  {sc['description']}")
+        if sc["invalidation"]:
+            click.echo(f"  Invalidation: {sc['invalidation']}")
+        if sc["market_implications"]:
+            click.echo(f"  Markets: {sc['market_implications']}")
+        ratings = _json.loads(sc["ach_evidence_json"] or "{}")
+        if ratings:
+            click.echo(f"  ACH: {', '.join(f'{k}={v}' for k, v in sorted(ratings.items()))}")
+        items = conn.execute(
+            "SELECT label, indicator_query, status FROM watchlist_items WHERE scenario_id = ?",
+            (sc["id"],),
+        ).fetchall()
+        for w in items:
+            click.echo(f"  Indicator [{w['status']}]: {w['label']} — '{w['indicator_query']}'")
+        if sc["prediction_id"]:
+            click.echo(f"  Prediction id: {sc['prediction_id']}")
+
+    dossier = _json.loads(s["dossier_json"] or "{}")
+    evidence = dossier.get("evidence", [])
+    if evidence:
+        click.echo("\nEvidence dossier (frozen at generation):")
+        for e in evidence:
+            click.echo(f"  [{e['id']}] ({e['source']}) {e['text']}")
+    conn.close()
+
+
+@scenario.command("review")
+@click.option("--set-id", default=None, type=int,
+              help="Review one set only (default: all active sets).")
+@click.option("--model", default=None, type=click.Choice(["claude", "qwen-local"]),
+              help="LLM backend override (default: from REASONING_MODEL in .env).")
+def scenario_review(set_id: int | None, model: str | None) -> None:
+    """Update probabilities of active sets (indicators + fresh metrics, one LLM call per set)."""
+    import asyncio
+    from pathosphere.agent.scenarios import review_scenarios
+    from pathosphere.db.schema import get_connection
+    from pathosphere.llm.client import LLMClient
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    llm_client = LLMClient(backend=model)
+
+    try:
+        result = asyncio.run(review_scenarios(conn, llm_client, set_id=set_id))
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nScenario review complete:\n"
+        f"  Sets reviewed        : {result.sets_reviewed}\n"
+        f"  Indicators triggered : {result.indicators_triggered}\n"
+        f"  Probabilities revised: {result.probabilities_revised}"
+    )
+    if result.overdue_set_ids:
+        click.echo(
+            f"  OVERDUE (past horizon, resolve manually): {result.overdue_set_ids}"
+        )
+
+
+@scenario.command("resolve")
+@click.argument("set_id", type=int)
+@click.option("--winner", required=True,
+              help="Label of the scenario that materialized (e.g. A).")
+@click.option("--date", "resolved_date", default=None,
+              help="ISO date the outcome became clear (default: today UTC).")
+def scenario_resolve(set_id: int, winner: str, resolved_date: str | None) -> None:
+    """Resolve a set: WINNER materialized, siblings did not (scores all predictions)."""
+    from pathosphere.agent.scenarios import resolve_scenario_set
+    from pathosphere.db.schema import get_connection
+
+    settings = get_settings()
+    _require_db(settings)
+    conn = get_connection(settings.db_path)
+    try:
+        outcome = resolve_scenario_set(conn, set_id, winner, resolved_date)
+    except ValueError as exc:
+        conn.close()
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    conn.close()
+
+    click.echo(
+        f"\nSet {outcome['set_id']} resolved on {outcome['resolved_date']}:\n"
+        f"  Winner     : [{outcome['winner']}]\n"
+        f"  Predictions: {outcome['predictions_resolved']} scored "
+        f"(see `pathos predict calibration`)"
+    )
+
+
 # ─── fundamentals ─────────────────────────────────────────────────────────────
 
 @cli.command("fundamentals")

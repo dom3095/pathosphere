@@ -1,6 +1,37 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: merge `feat/stock-technicals` da `feat/historical-events-backfill`
+## Fase corrente: previsione scenari di conflitto (3g) — branch `feat/conflict-forecasting`
+
+**2026-07-16 — modulo scenari implementato, wired, testato, reviewed:**
+
+- `agent/scenarios.py` (~900 righe) — pipeline completa: `compute_hotspots` (triage
+  deterministico gdelt_events, finestra 14gg vs baseline 90gg, z material conflict + shift quad4 +
+  Goldstein delta + volume surge, score SOLO ranking) → `build_dossier` (evidenze E1..En congelate:
+  metriche, anomalie gdelt, RSS, divergenze, IODA, UCDP prior) → `generate_scenarios` (1 call
+  Claude/hotspot, default 2: 3-4 scenari MECE ACH, probabilità→1, indicatori→watchlist) →
+  `review_scenarios` (trigger indicatori + metriche fresche → `revise_prediction` con rationale;
+  set overdue MAI revisionati) → `resolve_scenario_set` (winner umano → scoring predictions v2).
+- Migrazioni: `scenario_sets`, `scenarios`, `watchlist_items.scenario_id` (+3 indici)
+- Config: `scenario_horizon_days=90`, `scenario_max_hotspots=2`
+- Wiring: CLI gruppo `pathos scenario` (hotspots/generate/list/show/review/resolve); brief con
+  sezione "ACTIVE CONFLICT SCENARIOS"; dashboard pagina "Scenari" (9ª vista)
+- Test: +19 (`tests/test_scenarios.py`) → **650 verdi**; ruff pulito su tutti i file nuovi
+- Code review inline (8 finder subagent morti per limite sessione, come sessione precedente):
+  4 finding — 3 fixati (revisione post-orizzonte bloccata, confronto date normalizzato con `date()`,
+  `--country` uppercased), 1 documentato (CP-030 persistenza parziale). Scoperto e annotato anche
+  CP-031 (pagina Predizioni dashboard: KeyError `overall`, pre-esistente, NON toccato).
+- Smoke reale via subagent: hotspots su DB reale ok, help ok, migrazione ok, view import ok.
+
+**2026-07-17 — allineamento branch**: mergiato `origin/feat/stock-technicals` (che include
+`origin/main` con backfill #15) in `feat/conflict-forecasting`. PR #16 (technicals) in CI,
+merge su main da PR. Questo branch va in PR dopo #16.
+
+**Prossima azione**: push + PR branch `feat/conflict-forecasting`; primo
+`pathos scenario generate` reale (lanciato dall'utente) per validare il prompt su Claude vero.
+
+---
+
+## Fase precedente: enrichment technicals (analisi finanziaria price-action) — branch `feat/stock-technicals`
 
 **2026-07-15 — Risoluzione merge conflicts (3 file):**
 - CRITICAL_POINTS.md: CP-027 combine eventi storico + nota prezzi

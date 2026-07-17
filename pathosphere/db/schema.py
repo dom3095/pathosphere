@@ -492,6 +492,45 @@ _MIGRATIONS = [
     # snapshot rationale as fundamentals_json. Covers ETF/futures/FX where
     # fundamentals degrade to minimal. NULL = price history unavailable.
     "ALTER TABLE theses ADD COLUMN technicals_json TEXT",
+    # conflict scenario forecasting (agent/scenarios.py): one scenario_sets row
+    # per (country, generation run) with the frozen evidence dossier (audit
+    # trail, no lookahead), 3-4 MECE scenarios each linked 1:1 to a `world`
+    # prediction so the existing Tetlock calibration engine scores them.
+    """CREATE TABLE IF NOT EXISTS scenario_sets (
+        id               INTEGER PRIMARY KEY,
+        country          TEXT    NOT NULL,        -- GDELT FIPS code (NOT ISO-2)
+        country_name     TEXT,
+        created_date     TEXT    NOT NULL,        -- ISO date of generation
+        horizon_date     TEXT    NOT NULL,        -- ISO date scenarios resolve by
+        status           TEXT    NOT NULL DEFAULT 'active',  -- active, resolved
+        dossier_json     TEXT,                    -- frozen evidence snapshot (E1..En)
+        key_assumptions  TEXT,                    -- JSON array (Key Assumptions Check)
+        summary          TEXT,                    -- LLM net assessment
+        last_reviewed_at TEXT,
+        resolved_at      TEXT,
+        created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scenario_sets_status ON scenario_sets(status)",
+    "CREATE INDEX IF NOT EXISTS idx_scenario_sets_country ON scenario_sets(country)",
+    """CREATE TABLE IF NOT EXISTS scenarios (
+        id                  INTEGER PRIMARY KEY,
+        set_id              INTEGER NOT NULL REFERENCES scenario_sets(id),
+        label               TEXT    NOT NULL,     -- A/B/C/D
+        title               TEXT    NOT NULL,
+        description         TEXT,
+        probability         REAL    NOT NULL,     -- current belief, revised over time
+        ach_evidence_json   TEXT,                 -- ACH ratings per evidence id
+        invalidation        TEXT,
+        market_implications TEXT,
+        prediction_id       INTEGER REFERENCES predictions(id),
+        is_outcome          INTEGER,              -- NULL open, 1 materialized, 0 not
+        created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scenarios_set ON scenarios(set_id)",
+    # watchlist items can now belong to a scenario instead of a thesis —
+    # same living-watchlist table, second parent (thesis_id stays NULL).
+    "ALTER TABLE watchlist_items ADD COLUMN scenario_id INTEGER REFERENCES scenarios(id)",
+    "CREATE INDEX IF NOT EXISTS idx_watchlist_scenario ON watchlist_items(scenario_id)",
 ]
 
 

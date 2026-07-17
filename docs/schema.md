@@ -344,8 +344,10 @@ graph TD
 | `entities` | 2 | crescita lenta | Deduplicate via `wikidata_qid`; `wikidata_checked=1` dopo lookup |
 | `entity_links` | 2 | crescita lenta | Grafo relazionale entità |
 | `geocode_cache` | 2 | crescita lenta | Cache query Nominatim (miss incluse con lat/lon NULL) |
-| `watchlist_items` | 3 | decine | Indicatori osservabili per scenario ACH |
+| `watchlist_items` | 3 | decine | Indicatori osservabili ACH — parent `thesis_id` O `scenario_id` (l'altro NULL) |
 | `theses` | 3 | 2-3/giorno | Approvate manualmente |
+| `scenario_sets` | 3 | 1-2/run | Set scenari di conflitto per paese (FIPS): `dossier_json` congelato (audit, no lookahead), `key_assumptions`, `horizon_date`, status active/resolved |
+| `scenarios` | 3 | 3-4/set | Scenari MECE: `probability` (rivista nel tempo), `ach_evidence_json` (rating CC/C/N/I/II per evidenza), `invalidation`, `prediction_id` 1:1 → predictions |
 | `portfolios` | 3 | 3 fissi | agent, random, benchmark |
 | `trades` | 3 | 2-3/giorno | `price_open` immutabile dopo apertura |
 | `predictions` | 3 | 2-3/giorno | Risolte vero/falso a scadenza |
@@ -404,6 +406,21 @@ time_adjusted_score = 0 if outcome_eventual = false (evento non accaduto)
 - `time_adjusted_score` primaria (operativa, sensibile a timing)
 - `brier_score` secondaria (Tetlock-compatibile, pre-v2 legacy)
 - `get_calibration()` reporta entrambe le medie breakdown per bucket/macro_area/prediction_type
+
+### Scenari di conflitto (MECE → multi-class scoring)
+
+```
+scenario_sets (1 per paese/run, dossier_json congelato alla generazione)
+  └── scenarios (3-4 MECE, probabilità sommano a 1)
+        ├── prediction_id 1:1 → predictions (macro_area='world', domini conflitto_armato+tensione_militare)
+        └── watchlist_items.scenario_id (indicatori osservabili, status active→triggered→expired)
+
+Risoluzione: esattamente uno scenario materializza (is_outcome=1) → la sua
+prediction risolve outcome_eventual=1, i fratelli 0. Un set MECE di binarie
+con un solo vero = multi-class Brier corretto, riusando il motore v2.
+Revisioni probabilità SOLO entro horizon_date (post-orizzonte = flag OVERDUE,
+mai revise — proteggere il Brier dall'hindsight).
+```
 
 ---
 

@@ -1,6 +1,6 @@
 # Pathosphere — Roadmap
 
-Stato aggiornato: 2026-07-07.
+Stato aggiornato: 2026-07-16.
 
 ---
 
@@ -11,7 +11,7 @@ Stato aggiornato: 2026-07-07.
 | **0** | Fondamenta | ✅ Completa |
 | **1** | Ingestione | ✅ Completa |
 | **2** | Semantica | ✅ Completa |
-| **3** | Agent e valutazione | ✅ Completa (3a–3f) |
+| **3** | Agent e valutazione | ✅ Completa (3a–3g) |
 | **4** | Interfaccia | ⬜ Futuro |
 
 ---
@@ -167,6 +167,29 @@ pathos predict calibration
 **Migration:** v1 rows backfilled as macro_area='world', prediction_type='geopolitical', outcome_on_time=outcome, outcome_eventual=outcome. Idempotent via `uv run pathos db init`.
 
 - 39 test in `tests/test_predictions.py` (test_revise_prediction, test_get_calibration, etc.)
+
+### 3g. Previsione scenari di conflitto ✅ (2026-07-16, branch `feat/conflict-forecasting`)
+
+**`pathosphere/agent/scenarios.py`** — pipeline analitica strutturata (wiki §8.9):
+
+- **Triage hotspot deterministico** (no LLM): per paese FIPS da `gdelt_events`, finestra 14gg vs
+  baseline 90gg — z material conflict, shift quota quad4, deterioramento Goldstein, surge volume.
+  Solo selezione dell'attenzione, mai predizione (principio core-agentico-non-quant).
+- **Dossier di evidenze congelato** (`dossier_json`, id E1..En citabili): metriche + anomalie GDELT +
+  cluster RSS + divergenze narrative + IODA + prior UCDP.
+- **Generazione ACH** (1 call Claude/hotspot, default 2/run): 3-4 scenari MECE a 90gg, rating per
+  evidenza, probabilità che sommano a 1, indicatori osservabili → `watchlist_items.scenario_id`,
+  invalidazione, key assumptions.
+- **Scoring via predictions v2**: ogni scenario = 1 prediction world/geopolitical (domini
+  conflitto_armato+tensione_militare) → Brier/time-adjusted/calibrazione gratis.
+- **Review superforecaster** (1 call/set): indicatori triggerati + metriche fresche → revisioni
+  con rationale (`revise_prediction`). Set oltre orizzonte: flag OVERDUE, MAI revisionati.
+- **Risoluzione umana**: `pathos scenario resolve <id> --winner X` → winner true, fratelli false.
+- Tabelle: `scenario_sets`, `scenarios`, `watchlist_items.scenario_id`. CLI: `pathos scenario
+  hotspots|generate|list|show|review|resolve`. Wiring: sezione "ACTIVE CONFLICT SCENARIOS" nel brief,
+  pagina "Scenari" in dashboard. NON nel ciclo notturno (task Claude on-demand).
+- 19 test (`tests/test_scenarios.py`, LLM mockato). Metodologia: ACLED CAST / VIEWS (triage),
+  Heuer ACH + Indicators & Warnings (ragionamento), Tetlock (scoring).
 
 ---
 
