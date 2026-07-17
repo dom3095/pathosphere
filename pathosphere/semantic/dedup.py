@@ -19,6 +19,7 @@ from loguru import logger
 DEFAULT_SIMILARITY = 0.92
 DEFAULT_TIME_WINDOW_H = 72
 DEFAULT_KNN = 20
+BATCH_SIZE = 32
 
 
 @dataclass
@@ -46,8 +47,17 @@ def dedup_documents(
     similarity: float = DEFAULT_SIMILARITY,
     time_window_hours: float = DEFAULT_TIME_WINDOW_H,
     knn: int = DEFAULT_KNN,
+    batch_size: int = BATCH_SIZE,
 ) -> DedupResult:
-    """Mark near-duplicates among embedded, unchecked docs."""
+    """Mark near-duplicates among embedded, unchecked docs.
+
+    Commits per batch (CP-012), same pattern as embedder.py, instead of one
+    transaction for the whole run — on a large backfill (169k docs, brute-
+    force KNN, hours), a Ctrl+C or crash mid-run only loses the in-flight
+    batch: docs already committed with dedup_checked=1 are not re-processed
+    on retry, since the initial SELECT's `WHERE dedup_checked = 0` filter is
+    re-evaluated fresh on the next call.
+    """
     result = DedupResult()
     l2_thresh = _l2_threshold(similarity)
     time_delta = timedelta(hours=time_window_hours)
@@ -67,82 +77,90 @@ def dedup_documents(
 
     logger.info(f"Dedup: checking {len(rows)} docs (similarity≥{similarity})")
 
-    with conn:
-        for row in rows:
-            doc_id = row["id"]
-            doc_pub = _parse_dt(row["published_at"])
+    for batch_start in range(0, len(rows), batch_size):
+        batch = rows[batch_start : batch_start + batch_size]
 
-            vec_row = conn.execute(
-                "SELECT embedding FROM vec_documents WHERE document_id = ?", (doc_id,)
-            ).fetchone()
+        with conn:
+            for row in batch:
+                doc_id = row["id"]
+                doc_pub = _parse_dt(row["published_at"])
 
-            if vec_row is None:
-                conn.execute(
-                    "UPDATE raw_documents SET dedup_checked = 1 WHERE id = ?", (doc_id,)
-                )
-                result.docs_checked += 1
-                continue
-
-            try:
-                neighbors = conn.execute(
-                    """
-                    SELECT document_id, distance
-                    FROM vec_documents
-                    WHERE embedding MATCH ? AND k = ?
-                    ORDER BY distance
-                    """,
-                    (vec_row["embedding"], knn),
-                ).fetchall()
-            except Exception as exc:
-                logger.warning(f"KNN query failed for doc {doc_id}: {exc}")
-                conn.execute(
-                    "UPDATE raw_documents SET dedup_checked = 1 WHERE id = ?", (doc_id,)
-                )
-                result.docs_checked += 1
-                continue
-
-            marked = False
-            for nb in neighbors:
-                nb_id = nb["document_id"]
-                nb_dist = nb["distance"]
-
-                if nb_id == doc_id:
-                    continue
-                if nb_dist > l2_thresh:
-                    break  # results sorted by distance
-
-                if nb_id >= doc_id:
-                    continue  # only older docs can be canonical
-
-                nb_row = conn.execute(
-                    "SELECT published_at, is_duplicate FROM raw_documents WHERE id = ?",
-                    (nb_id,),
+                vec_row = conn.execute(
+                    "SELECT embedding FROM vec_documents WHERE document_id = ?", (doc_id,)
                 ).fetchone()
 
-                if nb_row is None or nb_row["is_duplicate"]:
-                    continue  # skip — it's itself a duplicate
+                if vec_row is None:
+                    conn.execute(
+                        "UPDATE raw_documents SET dedup_checked = 1 WHERE id = ?", (doc_id,)
+                    )
+                    result.docs_checked += 1
+                    continue
 
-                # Time window check
-                nb_pub = _parse_dt(nb_row["published_at"])
-                if doc_pub and nb_pub:
-                    if abs(doc_pub - nb_pub) > time_delta:
+                try:
+                    neighbors = conn.execute(
+                        """
+                        SELECT document_id, distance
+                        FROM vec_documents
+                        WHERE embedding MATCH ? AND k = ?
+                        ORDER BY distance
+                        """,
+                        (vec_row["embedding"], knn),
+                    ).fetchall()
+                except Exception as exc:
+                    logger.warning(f"KNN query failed for doc {doc_id}: {exc}")
+                    conn.execute(
+                        "UPDATE raw_documents SET dedup_checked = 1 WHERE id = ?", (doc_id,)
+                    )
+                    result.docs_checked += 1
+                    continue
+
+                marked = False
+                for nb in neighbors:
+                    nb_id = nb["document_id"]
+                    nb_dist = nb["distance"]
+
+                    if nb_id == doc_id:
                         continue
+                    if nb_dist > l2_thresh:
+                        break  # results sorted by distance
 
-                conn.execute(
-                    "UPDATE raw_documents SET is_duplicate = 1, duplicate_of = ?, dedup_checked = 1 WHERE id = ?",
-                    (nb_id, doc_id),
-                )
-                result.duplicates_found += 1
-                marked = True
-                break
+                    if nb_id >= doc_id:
+                        continue  # only older docs can be canonical
 
-            if not marked:
-                conn.execute(
-                    "UPDATE raw_documents SET dedup_checked = 1 WHERE id = ?",
-                    (doc_id,),
-                )
+                    nb_row = conn.execute(
+                        "SELECT published_at, is_duplicate FROM raw_documents WHERE id = ?",
+                        (nb_id,),
+                    ).fetchone()
 
-            result.docs_checked += 1
+                    if nb_row is None or nb_row["is_duplicate"]:
+                        continue  # skip — it's itself a duplicate
+
+                    # Time window check
+                    nb_pub = _parse_dt(nb_row["published_at"])
+                    if doc_pub and nb_pub:
+                        if abs(doc_pub - nb_pub) > time_delta:
+                            continue
+
+                    conn.execute(
+                        "UPDATE raw_documents SET is_duplicate = 1, duplicate_of = ?, dedup_checked = 1 WHERE id = ?",
+                        (nb_id, doc_id),
+                    )
+                    result.duplicates_found += 1
+                    marked = True
+                    break
+
+                if not marked:
+                    conn.execute(
+                        "UPDATE raw_documents SET dedup_checked = 1 WHERE id = ?",
+                        (doc_id,),
+                    )
+
+                result.docs_checked += 1
+
+        logger.info(
+            f"Dedup progress: {min(batch_start + batch_size, len(rows))}/{len(rows)} checked, "
+            f"{result.duplicates_found} duplicates so far"
+        )
 
     logger.info(
         f"Dedup complete: {result.docs_checked} checked, {result.duplicates_found} duplicates"

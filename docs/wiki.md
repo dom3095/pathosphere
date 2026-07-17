@@ -29,6 +29,9 @@ Sistema personale di intelligence OSINT. Paper trading virtuale come metrica di 
    - 5.1 [GDELT 2.0](#51-gdelt-20)
    - 5.2 [RSS multi-blocco](#52-rss-multi-blocco)
    - 5.3 [PortWatch / Comtrade / USGS](#53-portwatch--comtrade--usgs)
+   - 5.4 [IODA (blackout internet)](#54-ioda-blackout-internet)
+   - 5.5 [Backfill storico eventi](#55-backfill-storico-eventi-ucdp--who-don--reliefweb--wikidata)
+   - 5.6 [Export Parquet](#56-export-parquet)
 6. [Pipeline semantica (Fase 2)](#6-pipeline-semantica-fase-2)
    - 6.1 [Embedding](#61-embedding)
    - 6.2 [Dedup semantica](#62-dedup-semantica)
@@ -119,6 +122,8 @@ Tutte opzionali — i default funzionano out-of-the-box.
 | `OLLAMA_HOST` | `http://localhost:11434` | Endpoint Ollama locale |
 | `OLLAMA_MODEL` | `qwen3:4b` | Modello per lavoro di massa |
 | `EMBED_MODEL_NAME` | `intfloat/multilingual-e5-small` | Modello embedding (HuggingFace) |
+| `FIRMS_MAP_KEY` | — | NASA FIRMS (registrazione gratuita); senza chiave l'ingest firms viene saltato |
+| `RELIEFWEB_APPNAME` | — | ReliefWeb v2 (registrazione gratuita); senza appname l'ingest reliefweb viene saltato |
 
 ---
 
@@ -195,12 +200,17 @@ pathosphere/
 ├── llm/
 │   └── client.py       LLMClient: Claude SDK + Qwen-local (Ollama). OpenAI-compatible. ✅
 ├── agent/
-│   ├── brief.py        Brief mattutino: divergenze + anomalie → Claude → briefs. ✅
+│   ├── brief.py        Brief mattutino: divergenze + anomalie + scenari attivi → Claude → briefs. ✅
 │   ├── thesis.py       Generatore tesi fast path (1 Claude call). ✅
 │   ├── debate.py       Pipeline debate 4-step (Qwen×13 + Claude×1). ✅
+│   ├── scenarios.py    Previsione scenari di conflitto: triage hotspot → dossier → ACH (Claude). ✅
+│   ├── predictions.py  Predizioni v2 (world/economic, Brier + time-adjusted). ✅
 │   └── approval.py     Approvazione/rifiuto tesi: list, show, approve, reject. ✅
 └── market/
-    └── prices.py       fetch_price(ticker) via yfinance EOD. ✅
+    ├── prices.py       fetch_price(ticker) via yfinance EOD. ✅
+    ├── fundamentals.py Snapshot fondamentali (ratio, Altman Z, Piotroski F). ✅
+    ├── technicals.py   Snapshot price-action (momentum, RSI, SMA, 52w). ✅
+    └── trading.py      Paper trading EOD (agent/random/benchmark). ✅
 ```
 
 ### 3.3 Flusso dati
@@ -252,8 +262,10 @@ A/B testing possibile: stesso giorno, tesi da Qwen3 4B vs Claude, paper trading 
 | `narrative_divergences` | 100-5k | Divergenza narrativa per blocco geopolitico |
 | `entities` | 500-10k | Paesi, aziende, commodity, infrastrutture |
 | `entity_links` | 1k-50k | Grafo relazioni (depends_on, supplies, sanctions…) |
-| `watchlist_items` | 10-200 | Indicatori osservabili per scenario (ACH) |
+| `watchlist_items` | 10-200 | Indicatori osservabili (ACH) — parent: `thesis_id` O `scenario_id` |
 | `theses` | 10-500 | Tesi con catena causale, strumento, invalidazione |
+| `scenario_sets` | 1-2/run | Set di scenari di conflitto per paese: dossier congelato, key assumptions, orizzonte |
+| `scenarios` | 3-4/set | Scenari MECE con probabilità, ACH ratings, invalidazione, link 1:1 a `predictions` |
 | `trades` | 50-2k | Paper trading (prezzo registrato alla DECISIONE) |
 | `portfolios` | 3 | agent · random · benchmark |
 | `predictions` | 20-500 | Anticipazioni non finanziarie (calibrazione Tetlock) |
@@ -523,7 +535,36 @@ uv run pathos ingest ioda --start 2026-01-01       # bootstrap storico
 
 **API (2026-07):** endpoint corretto `https://api.ioda.inetintel.cc.gatech.edu/v2` (il vecchio host `ioda.inetintel.cc.gatech.edu/api/v2` risponde HTML SPA con 200). Query singola limitata a <100 giorni → range lunghi spezzati automaticamente in chunk da 90 giorni (`IODA_MAX_CHUNK_DAYS`). Risposta reale annidata `{"data": [[{...}]]}` — gestita insieme alle shape `{"data": {"signals": [...]}}` e `{"data": [...]}`.
 
-### 5.5 Export Parquet
+### 5.5 Backfill storico eventi (UCDP / WHO DON / ReliefWeb / Wikidata)
+
+**Stato: ✅ Implementato** — `ingest/ucdp.py`, `ingest/who_don.py`, `ingest/reliefweb.py`, `ingest/econ_crises.py` (CP-027, parte eventi)
+
+Quattro fonti aperte, gratuite e verificabili per popolare la mappa con eventi storici **realmente accaduti e geolocalizzati**. GDELT è escluso di proposito: i suoi documenti sono sintetici da codici CAMEO, senza prosa reale (CP-016) — inutilizzabili per mappa e clustering. Tutte e quattro le fonti scrivono direttamente in `events` (niente `raw_documents`/embedding: lo storico è statico, serve da ancoraggio per mappa e future "situazioni", non da input di clustering).
+
+| Fonte | Copertura | event_type | origin | Accesso |
+|---|---|---|---|---|
+| UCDP GED (CSV zip ~29 MB) | Conflitti armati 1989→, lat/lon precisi | `conflict` | `ucdp` | aperto (l'API REST richiede token, il download CSV no) |
+| WHO Disease Outbreak News (OData API) | Epidemie 1996→, prosa reale in `Overview` | `epidemic` | `who_don` | aperto |
+| ReliefWeb v2 (UN OCHA) | Disastri naturali 1981→, coordinate paese | `hazard` | `reliefweb` | serve `RELIEFWEB_APPNAME` in `.env` (registrazione gratuita, skip graceful se assente — pattern FIRMS) |
+| Wikidata SPARQL | Crisi economiche/finanziarie (Q3733076/Q290178/Q176494, P580/P585, P17) | `economic` | `wikidata` | aperto |
+
+```bash
+uv run pathos ingest ucdp                            # scarica zip, filtro ≥25 morti (~16k eventi)
+uv run pathos ingest ucdp --min-deaths 100           # solo eventi maggiori (~3k)
+uv run pathos ingest ucdp --csv-path ged.csv --start 2010-01-01   # CSV locale + range
+uv run pathos ingest who-don                         # full history al primo run, poi resume incrementale
+uv run pathos ingest reliefweb --start 2000-01-01    # richiede RELIEFWEB_APPNAME
+uv run pathos ingest econ-crises                     # one-off, poche centinaia di ancoraggi
+```
+
+**Note:**
+- Dedup idempotente `(title, first_seen)` su tutte e quattro; rilanci sicuri.
+- UCDP: severity a bucket di morti (≥25→2, ≥100→3, ≥250→4, ≥1000→5); il CSV (250 MB raw) è letto in streaming.
+- WHO DON: paese estratto dal titolo (separatore en-dash "–") → `location_name`; lat/lon NULL, li risolve il geocoder della fase extract. Resume incrementale da `max(first_seen)`.
+- Wikidata: crisi multi-paese (>3) salvate come `location_name='global'` senza punto; ogni evento porta il QID nel summary per verificabilità.
+- Terremoti storici: già coperti da `pathos ingest usgs --start` (§5.3).
+
+### 5.6 Export Parquet
 
 **Stato: ✅ Implementato** — `export/parquet.py`
 
@@ -677,13 +718,15 @@ Due step indipendenti e riprendibili:
 **File:** `pathosphere/semantic/extract.py`  
 **Comando:** `uv run pathos extract`
 
-Tre step indipendenti e riprendibili:
+Step indipendenti e riprendibili:
 
 | Step | Funzione | Output tabelle |
 |---|---|---|
 | NER (spaCy `xx_ent_wiki_sm`) | `extract_entities` | `entities` + `document_entities` |
+| Geolocalizzazione RSS — euristica (CP-022) | `geolocate_rss_events` | `events.location_name` |
 | Geocoding (Nominatim) | `geocode_events` | `events.lat/lon` + `geocode_cache` |
 | Wikidata QID | `link_wikidata` | `entities.wikidata_qid` + `canonical_name` |
+| Geolocalizzazione RSS — fallback Qwen (CP-022, opt-in) | `geolocate_ambiguous_events_qwen` | `events.location_name` + `events.geoloc_checked` |
 
 **Parametri:**
 
@@ -693,10 +736,23 @@ Tre step indipendenti e riprendibili:
 | `--max-lookups` | 50 | Budget lookup Nominatim + Wikidata per run |
 | `--skip-geocode` | off | Salta Nominatim (solo NER + Wikidata) |
 | `--skip-wikidata` | off | Salta Wikidata (solo NER + geocoding) |
+| `--geolocate-qwen` | off | Attiva lo Step 2 Qwen (vedi sotto) — lento, opt-in esplicito |
+| `--geoloc-limit` | 20 | Budget chiamate Qwen per run (`--geolocate-qwen`), riprendibile |
 
 **NER:** modello `xx_ent_wiki_sm` (~30 MB), multilingua. Label map: `PER→person`, `ORG→company`, `LOC→location`, `MISC→other`. Ogni doc viene troncato a 2000 caratteri (title + body head). Flag `ner_done=1` segna i doc già processati → riprendibile.
 
-**Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup).
+**Geolocalizzazione RSS (CP-022):** solo gli ingestor geo-nativi (USGS/FIRMS/PortWatch) scrivono `location_name` dal dato grezzo — nulla lo derivava per eventi `origin='rss'` clusterizzati (0/1996 prima del fix). Due step, validati in `notebooks/study_19_rss_event_geolocation.ipynb`:
+
+- **Step 1 — euristica** (`geolocate_rss_events`, gratis, istantanea, nessuna rete, gira sempre in `pathos extract` prima di `geocode_events`): per ogni evento RSS senza `location_name`, prende le entità `location`/`country` menzionate nei documenti del cluster e applica una regola attore/bersaglio sul set "grandi potenze" — calcolato **a runtime**, non una lista fissa: le top-8 country/location entity per numero di documenti distinti nel corpus (`_compute_major_powers`, soglia sul gradino naturale della distribuzione osservato nel notebook).
+  - 0 paesi menzionati → `skip_none` (nessuna azione)
+  - 1 solo paese → `located`, scrive `location_name`
+  - 2+ paesi, tutti "grande potenza" → `skip_bilateral` (relazione USA-Iran ecc., non ancorata a un luogo — nessuna azione)
+  - 1 major + 1 minor → `located` sul minor (ipotesi: major = attore, minor = bersaglio)
+  - Tutto il resto (1 major + 2+ minor, 2+ major + minor...) → `ambiguous`, lasciato per lo Step 2
+  - Sul DB reale in questa sessione: vedi CP-022 in `CRITICAL_POINTS.md` per i numeri esatti di classificazione.
+- **Step 2 — fallback Qwen locale** (`geolocate_ambiguous_events_qwen`, **non** nel flusso di default di `pathos extract` — comando esplicito `pathos extract --geolocate-qwen [--geoloc-limit N]`): per gli eventi `ambiguous`, un prompt title-only a Qwen3 4B via `LLMClient(backend="qwen-local")` (`json_mode=True`) chiede `location_country`/`actor_countries`/`via_countries` e distingue bersaglio-tramite-terzo-paese (es. "USA→Cuba via Venezuela" → Cuba) e relazioni bilaterali senza bersaglio (→ null, nessuna scrittura). **Lento** — 46.7s/chiamata misurato a macchina scarica (era 90-113s nel notebook sotto pressione di memoria) — quindi batch esplicito con budget piccolo (`--geoloc-limit`, default 20), non sincrono nel flusso interattivo. Riprendibile via `events.geoloc_checked`: un evento è marcato `1` appena *esaminato* (location trovata o "nessun bersaglio" confermato — entrambe risposte definitive, mai ririprovate), resta `0` solo su fallimento di rete/JSON malformato (log warning, batch continua, evento ritentato al prossimo run).
+
+**Geocoding:** Nominatim lookup per eventi con `location_name` non nullo e `lat IS NULL`. Rate: 1 req/s (usage policy). Cache in `geocode_cache` (include misses → no rilookup). Invariato da CP-022 — riceve `location_name` già popolato dallo Step 1/2 sopra.
 
 **Wikidata:** `wbsearchentities` API per entità ordinate per `mentions DESC` (priorità alle più citate). Rate: 1 req/s (`WIKIDATA_DELAY_S`), delay rispettato anche su errore. Su HTTP 429 il run si interrompe subito (le entità restanti restano `wikidata_checked=0` → ritentate al ciclo successivo). Stoplist `GENERIC_ENTITY_STOPLIST` (~110 nomi comuni/ruoli/demonimi es. `CRIMINAL`, `MILITARY`, `MALE`): marcati `wikidata_checked=1` senza lookup (e QID legacy sbagliati azzerati), così il budget va a entità vere. Conflict on `UNIQUE(wikidata_qid)` gestito: marca `wikidata_checked=1` senza sovrascrivere (merge futura work).
 
@@ -723,7 +779,7 @@ INGEST → EMBED → EXTRACT → CLUSTER → GRAPH → BRIEF
 |---|---|---|---|
 | `INGEST` | `_phase_ingest` | `pathos ingest gdelt/rss/…` | Scarica GDELT (+ anomalie Goldstein CP-016) + RSS 52 fonti (48 attive) + PortWatch/Comtrade/USGS/FIRMS/IODA |
 | `EMBED` | `_phase_embed` | `pathos embed` | Embedding e5-small + dedup semantica KNN |
-| `EXTRACT` | `_phase_extract` | `pathos extract` | NER (spaCy) + geocoding Nominatim + Wikidata QID |
+| `EXTRACT` | `_phase_extract` | `pathos extract` | NER (spaCy) + geolocalizzazione RSS euristica (CP-022) + geocoding Nominatim + Wikidata QID |
 | `CLUSTER` | `_phase_cluster` | `pathos cluster` | Union-find clustering → eventi |
 | `GRAPH` | `_phase_graph` | `pathos graph` | Grafo co-occorrenze → entity_links; divergenza narrativa → narrative_divergences |
 | `BRIEF` | `_phase_brief` | `pathos brief` | Genera brief mattutino + tesi (Claude SDK) |
@@ -815,9 +871,26 @@ result = await client.complete(messages, json_mode=True)
 
 Cambiare backend = una riga di config. A/B testing: stesso giorno, tesi da Qwen3 4B vs Claude, il paper trading misura la differenza.
 
+**Isolamento subprocess (`claude` backend, CP-026)**: `_run_claude_subprocess` invoca `claude -p
+--safe-mode --tools= PROMPT` — `--safe-mode` disabilita CLAUDE.md/hook/skill/plugin del repo per
+quella chiamata (senza, il processo erediterebbe il caveman-mode e le istruzioni da coding-agent di
+questo stesso file, contaminando l'output con meta-commentario tipo "salvato in scratchpad") **senza**
+rompere l'auth OAuth/abbonamento (a differenza di `--bare`, che richiede `ANTHROPIC_API_KEY` esplicita
+e non legge mai OAuth/keychain). `--tools=` disabilita l'accesso a strumenti file/bash — ogni chiamata
+resta una pura completion testuale.
+
+**Fence-stripping automatico (CP-026)**: quando `json_mode=True`, `complete()` applica
+`_strip_json_fence()` alla risposta prima di restituirla — i modelli non rispettano sempre l'istruzione
+"no markdown fences" nel system prompt; centralizzato qui invece che ripetuto in ogni chiamante
+(`thesis.py`, `debate.py`, `extract.py`).
+
 ### 8.2 Brief mattutino — `pathosphere/agent/brief.py` ✅
 
-Legge dal DB: divergenze narrative (`divergence_score > 0.5`), entità hub (`entity_links`), anomalie recenti (portwatch/firms/usgs/ioda). 1 chiamata Claude → brief strutturato salvato in `briefs` + file `data/briefs/YYYY-MM-DD.md`.
+Legge dal DB: **eventi RSS recenti** (`origin='rss'`, ordinati per copertura fonti — CP-025, sempre
+popolato indipendentemente dalle divergenze), divergenze narrative (`divergence_score > 0.5`,
+spesso vuoto — è un segnale specifico, non il canale primario di contenuto), entità hub
+(`entity_links`), anomalie recenti (portwatch/firms/usgs/ioda). 1 chiamata Claude → brief strutturato
+salvato in `briefs` + file `data/briefs/YYYY-MM-DD.md`.
 
 ```bash
 uv run pathos brief                        # oggi, tutti i segnali
@@ -830,16 +903,37 @@ uv run pathos brief --dry-run              # solo conteggi, no LLM
 **Fast path** (`pathos thesis generate`): 1 Claude call → N tesi primarie + alternative. Ogni tesi: `title`, `causal_chain` (JSON), `instrument`, `direction`, `horizon_days`, `confidence`, `invalidation`, `watchlist_items`.
 
 **Debate pipeline** (`pathos thesis debate`): 4 step sequenziali:
-1. Research — 6 personas × Qwen (Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris)
+1. Research — 6 personas × Qwen (Beijing/Washington/Moscow/Riyadh/Jerusalem/Paris), a batch di 2 (non tutte parallele — un solo modello Qwen in memoria su Ollama, CP-029)
 2. Divergence detection — Qwen identifica 2-3 disaccordi strutturali
-3. Critique — ogni persona risponde ai punti di divergenza (Qwen)
+3. Critique — ogni persona risponde ai punti di divergenza (Qwen), stesso batching di 2
 4. Synthesis — Claude genera tesi con `debate_context` (supporters/opponents)
+
+**LENTO (CP-029)**: ~5+ min/chiamata Qwen misurati su prompt reale (318.7s, non i 46-113s di un prompt
+di classificazione minuscolo) — 13 chiamate totali ⇒ **60-90+ minuti** end-to-end. La latenza per
+chiamata inoltre **cresce nel corso della sessione** (~370s a inizio run → >900s dopo ~50 min, causa
+non isolata): timeout per-chiamata Qwen a **1800s** con **1 retry automatico** su `ReadTimeout`
+(`llm/client.py`). Lanciare SOLO in background/overnight
+(`caffeinate -i uv run pathos thesis debate &`), mai interattivo. Preferire
+`pathos thesis generate` (fast path, 1 sola chiamata Claude) quando serve rapidità.
 
 `price_snapshot` = prezzo EOD yfinance al momento della generazione (no-lookahead bias).
 
+**Auto-open a soglia di confidence (2026-07-14)**: dopo la review fondamentali (§8.6b — così una tesi
+contraddetta dai fondamentali beneficia comunque di quel contesto prima dell'apertura), ogni tesi con
+`confidence ≥ settings.auto_open_confidence_threshold` (default 0.6, in `config.py`) viene
+**auto-approvata e il paper trade aperto in autonomia** — stessa sequenza esatta del flusso manuale
+(`approve_thesis` → `create_thesis_prediction` → `open_agent_trade` → `link_thesis_prediction_to_trade`),
+soldi virtuali, l'umano rivede/chiude dopo invece di approvare prima. Sotto soglia: resta `pending`
+per approvazione manuale come sempre. Degrado: se l'approvazione riesce ma l'apertura trade fallisce
+(es. portafogli non inizializzati), la tesi resta `approved` ma non tradata — non torna `pending` —
+completabile dopo con `pathos trade open <id>`, stesso stato in cui finirebbe un flusso manuale con
+`approve` riuscito e `trade open` fallito. Disattivabile per singolo run: `--no-auto-open`; soglia
+override: `--auto-open-threshold N`.
+
 ### 8.4 Flusso approvazione — `pathosphere/agent/approval.py` ✅
 
-Human-in-the-loop: l'agent propone, l'utente decide.
+Human-in-the-loop **sotto la soglia di auto-open** (§8.3) — sopra soglia l'agent propone e apre, la
+revisione umana avviene dopo.
 
 ```bash
 uv run pathos thesis list                  # tesi pending (tabella: id/title/inst/dir/price/horizon/conf)
@@ -913,6 +1007,172 @@ pathos predict calibration
 - `pathos trade open <thesis_id>` → link oldest unresolved economic prediction a trade via `link_thesis_prediction_to_trade()`
 - Migrazione: `outcome` legacy specchia `outcome_on_time` per retrocompatibilità; pre-v2 righe auto-backfillate come `macro_area='world'` + `prediction_type='geopolitical'`
 
+### 8.7 Fondamentali (enrichment) — `pathosphere/market/fundamentals.py` ✅
+
+**Livello di contesto, non motore decisionale**: arricchisce ogni tesi con i
+fondamentali del ticker proposto dall'LLM. Nessuna soglia automatica di
+rifiuto — decide l'agent/l'umano; il modulo fornisce solo dati + testo
+interpretativo.
+
+**Cosa calcola** (`fetch_fundamentals(ticker) → FundamentalsSnapshot | None`):
+- Ratio da `yfinance .info`: P/E trailing/forward, P/B, EV/EBITDA, D/E (in %,
+  convenzione yfinance), ROE, current ratio, revenue/earnings growth, margine
+- **Altman Z-score** (5 fattori, soglie standard: >2.99 safe, <1.81 distress) —
+  calcolato SOLO se tutti i componenti presenti; **skippato con flag
+  `not_applicable` per settore finanziario** (leva = core business)
+- **Piotroski F-score** (0-9) sui due anni più recenti — ogni test scorato solo
+  se i dati esistono; riporta `piotroski_testable` (quanti dei 9 avevano dati)
+- `data_quality`: full | partial | minimal | none
+- `render_fundamentals_text(snap)`: blocco testuale prompt-ready deterministico
+  (template, no LLM — dato numerico, zero costo, testabile) con caveat espliciti
+
+**Contratto di degradazione** (identico a `fetch_price`): `None` solo su
+fallimento totale; dati parziali → snapshot con campi `None` + `warnings`;
+ETF/index/FX → snapshot minimale flaggato; mai eccezioni. Dati mancanti per
+non-USA/small-cap = caso ATTESO (limiti noti yfinance), non errore.
+
+**Aggancio in `generate_theses`**: dopo `fetch_price`, ogni ticker proposto
+riceve `fetch_fundamentals` (con cache intra-run); snapshot+testo salvati in
+`theses.fundamentals_json`. Se ≥1 tesi ha fondamentali → **1 call LLM batch
+extra** ("fundamentals review"): 2-3 frasi per tesi (supporta/contraddice/
+neutrale + rischi bilancio) salvate come `llm_assessment` nel JSON. Qualsiasi
+fallimento della review → warning, tesi salvate comunque senza assessment.
+Disattivabile con `--no-fundamentals`.
+
+**Ispezione manuale**: `pathos fundamentals TICKER`. In `pathos thesis show`
+la sezione Fundamentals mostra testo + assessment LLM.
+
+**SEC EDGAR rimandato a v2**: mapping ticker→CIK + copertura solo USA-filer +
+delay filing ~45gg = complessità > valore per un enrichment layer v1.
+
+**Limiti noti**: yfinance statements spesso vuoti/disallineati per non-USA e
+small-cap (issue #2584), rate-limit su scraping non autenticato, ratio
+comparabili solo intra-settore (il testo renderizzato lo dichiara).
+
+### 8.8 Technicals (enrichment) — `pathosphere/market/technicals.py` ✅
+
+**Livello di contesto price-action, complementare ai fondamentali**: i
+fondamentali valgono solo per quote_type EQUITY e degradano a minimal per
+ETF/future/FX — esattamente gli strumenti che un desk geopolitico propone di
+più (BZ=F, ITA, FRO). Lo storico prezzi esiste per tutto ciò che è quotato:
+i technicals coprono quel buco. Stesso principio: **descrittivo, mai
+decisionale** — nessun segnale buy/sell, niente soglie.
+
+**Cosa calcola** (`fetch_technicals(ticker) → TechnicalsSnapshot | None`,
+1 anno di barre daily EOD yfinance, `auto_adjust=True`):
+- Momentum: rendimenti 1w/1m/3m/6m/1y (offset in giorni di borsa: 5/21/63/126;
+  1y = intera finestra, solo se ≥240 barre ≈ vero anno di borsa — sotto, il
+  testo etichetta il range come "N-bar window" invece di "52w", con warning)
+- Volatilità 21gg annualizzata; **RSI(14)** con smoothing Wilder (serie piatta
+  — titolo sospeso/illiquido — → None, non un finto 100 overbought)
+- Distanza prezzo da SMA 20/50/200 (frazione, None se finestra non coperta)
+- Range 52w: % da massimo, % sopra minimo; **max drawdown** nella finestra
+- Volume: rapporto media 21gg / media 63gg (None per FX/indici senza volume)
+- `data_quality`: full (≥200 barre) | partial (≥60) | minimal
+- `render_technicals_text(snap)`: template deterministico prompt-ready con
+  caveat esplicito ("descriptive price action only — not a trading signal")
+
+**Contratto di degradazione** identico a fundamentals: `None` solo su
+fallimento totale (<2 barre); storico corto → campi None + warnings; mai
+eccezioni. **No-lookahead by construction**: solo barre EOD fino al fetch,
+snapshot congelato alla generazione tesi, mai aggiornato.
+
+**Aggancio in `generate_theses` e `run_debate`**: stato condiviso
+`_MarketEnrichment` (thesis.py — cache per layer + coda review, riusato
+identico da debate.py: niente closures duplicate, no drift tra pipeline).
+Snapshot+testo in `theses.technicals_json`. La review LLM batch è una
+**"market review" unica** (fundamentals + technicals nello stesso prompt —
+**zero call LLM extra** rispetto a prima): l'assessment finisce in
+`fundamentals_json.llm_assessment` se presente, altrimenti in
+`technicals_json.llm_assessment` (caso ETF/future senza fondamentali).
+**Riuso prezzo**: `_price_snapshot()` prende il last close già scaricato dai
+technicals (stesso close EOD auto-adjusted di `fetch_price`) — una sola
+chiamata history yfinance per ticker; fallback `fetch_price` se technicals
+disattivati/assenti. Disattivabile con `--no-technicals` (indipendente da
+`--no-fundamentals`).
+
+**Ispezione manuale**: `pathos technicals TICKER`. In `pathos thesis show`
+sezione Technicals dopo Fundamentals.
+
+**Limiti noti**: EOD only (nessun intraday); RSI/SMA descrittivi su orizzonti
+7-30gg delle tesi event-driven — un evento invalida qualsiasi trend, il caveat
+nel testo lo dichiara; yfinance stesso rate-limit dei fondamentali.
+
+---
+
+### 8.9 Previsione scenari di conflitto — `pathosphere/agent/scenarios.py` ✅
+
+**Pipeline analitica strutturata in stile ufficio di intelligence** (2026-07-16).
+Metodologia ancorata allo stato dell'arte: triage numerico ispirato a
+[ACLED CAST](https://acleddata.com/methodology/cast-methodology) /
+[VIEWS](https://viewsforecasting.org/) (feature di escalation su finestre vs
+baseline), ragionamento con **Analysis of Competing Hypotheses** (Heuer) +
+Key Assumptions Check + Indicators & Warnings, aggiornamento probabilistico
+stile superforecaster (Tetlock). Il triage numerico è SOLO selezione
+dell'attenzione (principio "l'LLM vede solo il meglio" + "core agentico, non
+quant"): la previsione vera è il ragionamento di Claude, misurato dal motore
+predictions v2 esistente.
+
+**1. Triage hotspot** (`compute_hotspots`, deterministico, no LLM, no rete):
+per ogni paese in `gdelt_events` (codici **FIPS 10-4**, non ISO-2!), finestra
+14gg vs baseline trailing 90gg — z-score conteggi giornalieri material
+conflict (baseline piatta + salto → z=4 cap), shift quota quad4/(quad3+quad4),
+deterioramento Goldstein medio, surge di volume (log-ratio). Score composito
+pesato 0.35/0.25/0.25/0.15, componenti normalizzate [0,1]. Guardie:
+≥30 eventi in finestra, ≥30 giorni di baseline. No lookahead (`as_of`
+iniettabile). `pathos scenario hotspots` per ispezione.
+
+**2. Dossier** (`build_dossier`): snapshot di evidenze congelato per hotspot —
+metriche GDELT, anomalie `gdelt_anomaly`, cluster RSS (titolo/località LIKE
+nome paese), divergenze narrative sugli stessi eventi (la divergenza è
+segnale), blackout IODA, prior strutturale UCDP se backfillato. Ogni item ha
+id `E1..En` citabile dalla matrice ACH. Persistito in
+`scenario_sets.dossier_json` = audit trail immutabile di cosa sapevamo.
+
+**3. Generazione** (`generate_scenarios`, **1 call Claude per hotspot**,
+default 2 hotspot/run → budget 2-3 task/giorno rispettato): 3-4 scenari
+**MECE** a orizzonte `settings.scenario_horizon_days` (90), ciascuno con
+rating ACH per evidenza (CC/C/N/I/II), probabilità che sommano a 1
+(rinormalizzate difensivamente, garbage → uniforme), 2-3 **indicatori
+osservabili** nei nostri stream (→ `watchlist_items.scenario_id`),
+invalidazione, implicazioni di mercato, scope. Key assumptions sul set.
+Paese con set già attivo → skip (si aggiorna via review, non si duplica).
+Rifiuto/JSON malformato del LLM → skip loggato, mai crash (stesso contratto
+di thesis.py).
+
+**4. Scoring — aggancio predictions v2**: ogni scenario spawna una prediction
+`world`/`geopolitical` (domini `conflitto_armato` + `tensione_militare`,
+1:1 via `scenarios.prediction_id`). Un set MECE di predizioni binarie dove
+esattamente una risolve vera = score probabilistico multi-classe corretto →
+Brier + time-adjusted + calibrazione per bucket **gratis** dal motore
+esistente.
+
+**5. Review** (`review_scenarios`, 1 call Claude per set attivo): ricalcola
+metriche correnti, matcha le `indicator_query` della watchlist sugli eventi
+nuovi (match ≥ metà dei termini, item scatta una volta sola →
+status='triggered'), Claude rivede la distribuzione → delta > 0.01 applicati
+a `scenarios.probability` E `revise_prediction()` (storia revisioni
+auditabile). **Set oltre l'orizzonte: solo flag OVERDUE, mai revisionati**
+(una probabilità cambiata a finestra chiusa avvelenerebbe il Brier).
+
+**6. Risoluzione** (`resolve_scenario_set`, umana): si nomina lo scenario
+materializzato → winner true, fratelli false, tutte le predictions scorate,
+watchlist residua expired, set chiuso. `pathos predict calibration` mostra
+il risultato.
+
+**Wiring**: brief mattutino include sezione "ACTIVE CONFLICT SCENARIOS"
+(il brief nota quali scenari i segnali del giorno favoriscono, senza
+riassegnare probabilità); dashboard pagina "Scenari"; CLI gruppo
+`pathos scenario` (hotspots/generate/list/show/review/resolve). NON è nel
+ciclo notturno (`pathos cycle`): generazione e review sono task Claude
+on-demand, come thesis generate.
+
+**Limiti dichiarati**: mappa FIPS→nome parziale (fallback codice raw, il LLM
+gestisce FIPS); matching indicatori keyword-based volutamente semplice;
+evidenze RSS via LIKE sul nome paese (recall imperfetto senza country-code
+sugli eventi RSS); risoluzione interamente umana (nessun auto-resolve).
+Test: 19 in `tests/test_scenarios.py` (LLM mockato, no rete).
+
 ---
 
 ## 8b. Dashboard Streamlit (Fase 4)
@@ -929,7 +1189,7 @@ gli oggetti `sqlite3.Connection` non sono thread-safe e `cache_resource` è
 condiviso tra sessioni/thread Streamlit — aprire un file locale è comunque
 economico.
 
-**8 pagine:**
+**9 pagine:**
 | Pagina | Contenuto | Fonte dati |
 |---|---|---|
 | Overview | Conteggi tabelle, freschezza dati, stato fasi 0-4 | tutte |
@@ -937,6 +1197,7 @@ economico.
 | Narrazioni | Divergenza media per coppia di blocchi + top eventi | `narrative_divergences` |
 | Grafo entità | Top-N entità hub per grado + sottografo indotto (layout circolare, no dipendenza layout aggiuntiva) | `entities`, `entity_links` (già risolti via `canonical_entity_id`, vedi `graph.py::build_entity_links`) |
 | Tesi | Tab pending/approved/rejected, bottoni Approva/Rifiuta/Apri trade — **stesso comportamento della CLI** (`approve_thesis` + `create_thesis_prediction` su approvazione) | `theses`, `watchlist_items` |
+| Scenari | Set di scenari di conflitto: distribuzione probabilità (bar chart), indicatori watchlist, dossier evidenze | `scenario_sets`, `scenarios`, `watchlist_items` |
 | Portafogli | Curva equity (cash iniziale + P&L realizzato cumulato + punto live), trade aperti | `trades`, `portfolios` (via `market.trading`) |
 | Predizioni | Curva di calibrazione Tetlock (accuratezza osservata vs probabilità dichiarata per bucket), liste aperte/risolte | `predictions` (via `agent.predictions.get_calibration`) |
 | Brief | Storico brief mattutini, selezione per data | `briefs` |
@@ -1037,13 +1298,23 @@ pathos
 │   │   ├── --baseline-days Finestra baseline [default: 30]
 │   │   ├── --z-threshold   Soglia z-score [default: 2.0]
 │   │   └── --min-detections Floor rilevazioni per anomalia [default: 50]
-│   └── ioda            Blackout internet IODA (BGP, 24 paesi) → internet_metrics + eventi drop
-│       ├── --days          Giorni recenti [default: 1]
-│       ├── --start / --end Bootstrap storico (date fisse YYYY-MM-DD)
-│       ├── --countries     ISO-2 comma-separated [default: tutti 24]
-│       ├── --baseline-days Finestra baseline [default: 30]
-│       ├── --z-threshold   Soglia z-score [default: 2.5]
-│       └── --datasource    bgp | active [default: bgp]
+│   ├── ioda            Blackout internet IODA (BGP, 24 paesi) → internet_metrics + eventi drop
+│   │   ├── --days          Giorni recenti [default: 1]
+│   │   ├── --start / --end Bootstrap storico (date fisse YYYY-MM-DD)
+│   │   ├── --countries     ISO-2 comma-separated [default: tutti 24]
+│   │   ├── --baseline-days Finestra baseline [default: 30]
+│   │   ├── --z-threshold   Soglia z-score [default: 2.5]
+│   │   └── --datasource    bgp | active [default: bgp]
+│   ├── ucdp            Backfill conflitti storici UCDP GED 1989→ → events (conflict)
+│   │   ├── --min-deaths    Soglia morti (best estimate) [default: 25]
+│   │   ├── --start / --end Range su date_start (YYYY-MM-DD)
+│   │   └── --csv-path      CSV GED già scaricato (salta il download ~29 MB)
+│   ├── who-don         Epidemie WHO Disease Outbreak News 1996→ → events (epidemic)
+│   │   └── --start / --end Backfill (default: resume incrementale, full al primo run)
+│   ├── reliefweb       Disastri ReliefWeb v2 1981→ → events (hazard, richiede RELIEFWEB_APPNAME)
+│   │   └── --start / --end Backfill (default: resume incrementale, full al primo run)
+│   └── econ-crises     Crisi economiche/finanziarie da Wikidata → events (economic)
+│       └── --start / --end Range (YYYY-MM-DD)
 ├── export
 │   └── parquet         Export tabelle principali → Parquet partizionato
 │       ├── --tables        Subset (es. raw_documents,events) [default: tutte]
@@ -1077,19 +1348,40 @@ pathos
 │   ├── --model         claude|qwen-local [default: da .env]
 │   └── --dry-run       Mostra solo conteggi segnali, no LLM
 ├── thesis              Generazione e approvazione tesi
-│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call)
+│   ├── generate        Genera N tesi da brief (fast path, 1 Claude call + 1 market review batch)
 │   │   ├── --date      Data brief [default: oggi UTC]
 │   │   ├── --n         Numero tesi primarie [default: 3]
-│   │   └── --model     claude|qwen-local
+│   │   ├── --model     claude|qwen-local
+│   │   ├── --no-fundamentals  Salta enrichment fondamentali (no yfinance, no review call)
+│   │   └── --no-technicals    Salta enrichment technicals (price-action)
 │   ├── debate          Genera tesi via debate pipeline (Qwen×13 + Claude×1)
 │   │   ├── --date      Data brief
-│   │   └── --n         Numero tesi primarie [default: 3]
+│   │   ├── --n         Numero tesi primarie [default: 3]
+│   │   ├── --no-fundamentals  Come thesis generate
+│   │   └── --no-technicals    Come thesis generate
 │   ├── list            Lista tesi filtrate per status
 │   │   └── --status    pending|approved|rejected|closed|all [default: pending]
-│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist
+│   ├── show <id>       Dettaglio completo: trigger, causal chain, persona notes, debate context, watchlist, fondamentali, technicals
 │   ├── approve <id>    Approva tesi pending (valida ticker yfinance, warn non blocca)
 │   └── reject <id>     Rifiuta tesi pending con motivazione
 │       └── --reason    Motivazione (obbligatoria, loggata in theses.rejection_reason)
+├── scenario            Previsione scenari di conflitto (triage hotspot → ACH, §8.9)
+│   ├── hotspots        Ranking escalation per paese da gdelt_events (deterministico, no LLM)
+│   │   └── --top           Quanti stampare [default: 10]
+│   ├── generate        Genera set di scenari ACH per i top hotspot (1 call Claude/hotspot)
+│   │   ├── --country       Forza un codice paese FIPS GDELT (es. IS, UP, IR)
+│   │   ├── --horizon-days  Orizzonte scenari [default: settings, 90]
+│   │   ├── --max-hotspots  Quanti hotspot coprire [default: settings, 2]
+│   │   └── --model         claude|qwen-local [default: REASONING_MODEL]
+│   ├── list            Set con distribuzione probabilità
+│   │   └── --status        active|resolved|all [default: active]
+│   ├── show <set_id>   Dettaglio: net assessment, key assumptions, ACH, indicatori, dossier
+│   ├── review          Aggiorna probabilità set attivi (indicatori + metriche fresche, 1 call/set)
+│   │   ├── --set-id        Solo un set [default: tutti gli attivi]
+│   │   └── --model         claude|qwen-local
+│   └── resolve <set_id>  Chiude il set: --winner materializzato, fratelli falsi → scoring predictions
+│       ├── --winner        Label scenario materializzato (obbligatorio, es. A)
+│       └── --date          Data esito [default: oggi UTC]
 ├── portfolio           Gestione portafogli virtuali (paper trading)
 │   ├── init            Crea agent/random/benchmark ($100k); benchmark apre SPY trade
 │   └── status          P&L realizzato + non realizzato per portfolio (fetch prezzi live)
@@ -1125,6 +1417,8 @@ pathos
 │   │   └── --resolved-date      YYYY-MM-DD (obbligatorio — actual event date or eval date)
 │   └── calibration       Dual-metric: time-adjusted score (primaria) + Brier (secondaria)
 │       └── breakdown per bucket probabilità, macro_area, prediction_type
+├── fundamentals <ticker>  Snapshot fondamentali (ratio, Altman Z, Piotroski F) — ispezione manuale
+├── technicals <ticker>    Snapshot price-action (momentum, RSI, SMA, 52w range) — ispezione manuale
 ├── serve                Avvia dashboard Streamlit (Fase 4, vedi sezione 8b)
 │   ├── --host           [default: localhost]
 │   └── --port           [default: 8501]
@@ -1156,8 +1450,12 @@ pathos
 |---|---|---|---|
 | GDELT 2.0 | Conflitti/politica (multilingua) | 15 min | ✅ |
 | RSS multi-blocco | Notizie 7 blocchi geopolitici | Asincrono | ✅ |
-| ACLED, UCDP | Conflitti armati | Settimanale | ⬜ |
-| WHO DON, ProMED | Epidemie | Quotidiana | ⬜ |
+| UCDP GED | Conflitti armati storici 1989→ | One-off (backfill) | ✅ |
+| ACLED | Conflitti armati | Settimanale | ⬜ |
+| WHO DON | Epidemie 1996→ | Backfill + resume incrementale | ✅ |
+| ProMED | Epidemie | Quotidiana | ⬜ |
+| ReliefWeb (UN OCHA) | Disastri naturali 1981→ | Backfill + resume incrementale | ✅ (richiede appname) |
+| Wikidata SPARQL | Crisi economiche storiche | One-off (backfill) | ✅ |
 | IMF PortWatch | Traffico chokepoint marittimo | Quotidiana | ✅ |
 | UN Comtrade | Flussi commerciali (HS code) | Mensile | ✅ |
 | USGS | Terremoti | Realtime | ✅ |

@@ -19,6 +19,7 @@ from pathosphere.dashboard.views import (
     overview,
     portfolios,
     predictions,
+    scenarios,
     theses,
 )
 
@@ -30,6 +31,7 @@ _PAGES = {
     "Narrazioni": narratives,
     "Grafo entità": entity_graph,
     "Tesi": theses,
+    "Scenari": scenarios,
     "Portafogli": portfolios,
     "Predizioni": predictions,
     "Brief": briefs,

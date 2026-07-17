@@ -7,7 +7,7 @@ LLM abstraction with two backends:
 from __future__ import annotations
 
 import asyncio
-import json
+import re
 import subprocess
 from typing import Literal
 
@@ -20,6 +20,14 @@ Backend = Literal["claude", "qwen-local"]
 
 _OLLAMA_BASE = "http://localhost:11434/v1"
 _QWEN_MODEL = "qwen3:4b"
+
+# CP-029: per-call latency on qwen3:4b (M1 8GB, CPU-bound) is highly variable
+# and grows over a long session (~370s early → >900s after ~50 min in the same
+# run, cause not yet isolated — thermal throttling vs. concurrent processes).
+# 1800s absorbs the worst observed spikes; one retry distinguishes a transient
+# spike from a hard limit without adding real complexity.
+_QWEN_TIMEOUT_S = 1800
+_QWEN_READ_TIMEOUT_RETRIES = 1
 
 _JSON_SYSTEM = (
     "Respond ONLY with valid JSON. Do not include markdown fences, "
@@ -64,9 +72,11 @@ class LLMClient:
             messages = _inject_json_system(messages)
 
         if self._backend == "claude":
-            return await self._complete_claude(messages)
+            raw = await self._complete_claude(messages)
         else:
-            return await self._complete_qwen(messages, model=model)
+            raw = await self._complete_qwen(messages, model=model)
+
+        return _strip_json_fence(raw) if json_mode else raw
 
     # ──────────────────────────────────────────────────────────────────────────
     # Claude via Agent SDK subprocess
@@ -98,29 +108,64 @@ class LLMClient:
 
         logger.debug(f"LLM/qwen → {url} model={mdl}")
 
-        async with httpx.AsyncClient(timeout=120) as client:
-            try:
-                resp = await client.post(url, json=payload)
-                resp.raise_for_status()
-            except httpx.HTTPStatusError as exc:
-                logger.error(
-                    f"LLM/qwen HTTP {exc.response.status_code}: {exc.response.text[:200]}"
-                )
-                raise
-            except httpx.ConnectError:
-                raise RuntimeError(
-                    f"Cannot reach Ollama at {_OLLAMA_BASE}. "
-                    "Is the server running? (`ollama serve`)"
-                )
+        for attempt in range(_QWEN_READ_TIMEOUT_RETRIES + 1):
+            async with httpx.AsyncClient(timeout=_QWEN_TIMEOUT_S) as client:
+                try:
+                    resp = await client.post(url, json=payload)
+                    resp.raise_for_status()
+                except httpx.ReadTimeout:
+                    if attempt >= _QWEN_READ_TIMEOUT_RETRIES:
+                        raise
+                    logger.warning(
+                        f"LLM/qwen ReadTimeout after {_QWEN_TIMEOUT_S}s "
+                        f"(attempt {attempt + 1}), retrying once"
+                    )
+                    continue
+                except httpx.HTTPStatusError as exc:
+                    logger.error(
+                        f"LLM/qwen HTTP {exc.response.status_code}: {exc.response.text[:200]}"
+                    )
+                    raise
+                except httpx.ConnectError:
+                    raise RuntimeError(
+                        f"Cannot reach Ollama at {_OLLAMA_BASE}. "
+                        "Is the server running? (`ollama serve`)"
+                    )
 
-        data = resp.json()
-        content: str = data["choices"][0]["message"]["content"]
-        logger.debug(f"LLM/qwen response ({len(content)} chars)")
-        return content
+            data = resp.json()
+            content: str = data["choices"][0]["message"]["content"]
+            logger.debug(f"LLM/qwen response ({len(content)} chars)")
+            return content
+
+        raise AssertionError("unreachable")  # pragma: no cover
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
+
+
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
+
+
+def _strip_json_fence(raw: str) -> str:
+    """Extract a ```json ... ``` (or bare ``` ... ```) fenced block from the
+    response, ignoring any prose before or after it.
+
+    The json_mode system prompt explicitly says "no markdown fences" and "no
+    text outside the JSON structure", but models don't reliably honour
+    either (observed on the real thesis-generation pipeline, CP-026 —
+    including trailing prose AFTER the closing fence, e.g.
+    '```json\\n{...}\\n```\\nHope this helps!', which an
+    anchored-to-end-of-string match would miss). Searches for the first
+    fenced block anywhere in the string instead of anchoring the whole
+    string, so leading and trailing text around the fence are both
+    discarded. Centralized here so every current and future json_mode
+    caller gets clean JSON without repeating this. No-op if there's no
+    fence at all (returns the input stripped, unchanged shape).
+    """
+    stripped = raw.strip()
+    m = _JSON_FENCE_RE.search(stripped)
+    return m.group(1).strip() if m else stripped
 
 
 def _inject_json_system(messages: list[dict]) -> list[dict]:
@@ -154,10 +199,23 @@ def _messages_to_text(messages: list[dict]) -> str:
 def _run_claude_subprocess(prompt: str) -> str:
     """Run `claude -p PROMPT` synchronously and return stdout.
 
+    `--safe-mode` disables CLAUDE.md/hooks/skills/plugins for this call —
+    without it, the subprocess inherits this repo's CLAUDE.md (caveman-mode
+    tone instructions, coding-session framing) and produces contaminated
+    output for what should be a plain text completion (observed on the
+    2026-07-14 first real run: brief content prefixed/suffixed with
+    conversational meta-commentary — "saved to scratchpad", "tell me if you
+    want this wired into brief.py" — see CP-026 in CRITICAL_POINTS.md).
+    `--tools=` disables tool access so this stays a pure text completion,
+    never an agentic session with file/bash side effects. Deliberately NOT
+    `--bare`: that also skips OAuth/keychain auth (API-key only), which
+    would break this project's subscription-credit auth (no
+    ANTHROPIC_API_KEY set here by design — see CLAUDE.md LLM strategy).
+
     Raises RuntimeError if the process exits non-zero.
     """
     result = subprocess.run(
-        ["claude", "-p", prompt],
+        ["claude", "-p", "--safe-mode", "--tools=", prompt],
         capture_output=True,
         text=True,
         timeout=300,

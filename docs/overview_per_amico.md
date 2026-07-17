@@ -266,6 +266,36 @@ Questo è il metodo di [Philip Tetlock](https://en.wikipedia.org/wiki/Philip_E._
 
 ---
 
+## Scenari di conflitto (come un ufficio di intelligence)
+
+Novità 2026-07: il sistema costruisce anche **set di scenari alternativi sui conflitti**,
+con le tecniche usate dagli analisti di intelligence veri:
+
+```
+1. TRIAGE (matematica, gratis)     Quali paesi stanno scaldando? Confronto
+                                   ultimi 14 giorni vs 90 giorni di baseline
+                                   sui dati GDELT (conflitto materiale, tono).
+2. DOSSIER (evidenze congelate)    Tutto ciò che sappiamo su quel teatro,
+                                   con un ID per ogni evidenza (E1, E2…).
+3. SCENARI (Claude, ragionamento)  3-4 futuri alternativi che coprono tutte le
+                                   possibilità (de-escalation / status quo /
+                                   escalation limitata / guerra aperta), ognuno
+                                   con probabilità e "matrice ACH": quanto ogni
+                                   evidenza è coerente con ogni scenario.
+4. INDICATORI (watchlist vivente)  Segnali osservabili che farebbero salire o
+                                   scendere ogni scenario — controllati a ogni
+                                   review sui dati nuovi.
+5. VERDETTO (umano)                A scadenza si dichiara quale scenario si è
+                                   avverato → tutte le probabilità vengono
+                                   scorate col metodo Tetlock di cui sopra.
+```
+
+Il metodo è la [Analysis of Competing Hypotheses](https://en.wikipedia.org/wiki/Analysis_of_competing_hypotheses)
+della CIA (Heuer): invece di innamorarsi di UNA previsione, si tengono in piedi
+tutte le ipotesi rivali e si misura quale resiste meglio alle evidenze.
+
+---
+
 ## Stato di avanzamento
 
 ### Roadmap completa

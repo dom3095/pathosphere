@@ -197,6 +197,7 @@ def _phase_extract() -> None:
     from pathosphere.semantic.extract import (
         extract_entities,
         geocode_events,
+        geolocate_rss_events,
         link_wikidata,
     )
 
@@ -207,6 +208,16 @@ def _phase_extract() -> None:
     logger.info(
         f"EXTRACT/NER: {ner.docs_processed} docs, +{ner.entities_created} entities, "
         f"{ner.mentions_recorded} mentions"
+    )
+
+    # CP-022: free heuristic, no network — must run before geocode_events()
+    # so RSS events have location_name populated for it to pick up. Without
+    # this, the nightly cycle geocodes nothing for origin='rss' events even
+    # though `pathos extract` (manual) does — same bug the CLI command fixed.
+    geoloc = geolocate_rss_events(conn)
+    logger.info(
+        f"EXTRACT/GEOLOC: {geoloc.located} located, {geoloc.ambiguous} ambiguous, "
+        f"{geoloc.skip_bilateral} skip_bilateral, {geoloc.skip_none} skip_none"
     )
 
     geo = geocode_events(conn, user_agent=settings.nominatim_user_agent)

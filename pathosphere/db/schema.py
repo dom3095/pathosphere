@@ -83,6 +83,7 @@ CREATE TABLE IF NOT EXISTS events (
     lat             REAL,
     lon             REAL,
     resolved_at     TEXT,
+    geoloc_checked  INTEGER NOT NULL DEFAULT 0, -- 1 after Qwen geoloc fallback examined this event (CP-022)
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -470,6 +471,66 @@ _MIGRATIONS = [
     # internal coherence for inspection. Resolve via COALESCE(story_id, id).
     "ALTER TABLE events ADD COLUMN story_id INTEGER REFERENCES events(id)",
     "CREATE INDEX IF NOT EXISTS idx_event_story ON events(story_id)",
+    # fundamentals enrichment: JSON snapshot (ratios, Altman Z, Piotroski F,
+    # rendered text, optional LLM assessment) captured at thesis-generation
+    # time — 1:1 with the thesis, no cross-thesis queries → JSON column,
+    # not a dedicated table. NULL = fundamentals unavailable (expected for
+    # non-US/small-cap/ETF instruments).
+    "ALTER TABLE theses ADD COLUMN fundamentals_json TEXT",
+    # geoloc_checked (CP-022): distinguishes "not yet examined by the Qwen
+    # geolocation fallback" (0) from "examined, no target location found"
+    # (1, location_name stays NULL) for RSS events the cheap heuristic in
+    # geolocate_rss_events() left ambiguous or skip_bilateral/skip_none. Same
+    # not-yet/done convention as raw_documents.ner_done/dedup_checked — needed
+    # so geolocate_ambiguous_events_qwen() doesn't re-call the LLM on events
+    # already resolved to "no location" every run.
+    "ALTER TABLE events ADD COLUMN geoloc_checked INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_events_geoloc_checked ON events(geoloc_checked)",
+    # technicals enrichment: JSON snapshot of price-action context (returns,
+    # volatility, RSI, SMA distances, 52w range, rendered text, optional LLM
+    # assessment) captured at thesis-generation time — same 1:1-with-thesis
+    # snapshot rationale as fundamentals_json. Covers ETF/futures/FX where
+    # fundamentals degrade to minimal. NULL = price history unavailable.
+    "ALTER TABLE theses ADD COLUMN technicals_json TEXT",
+    # conflict scenario forecasting (agent/scenarios.py): one scenario_sets row
+    # per (country, generation run) with the frozen evidence dossier (audit
+    # trail, no lookahead), 3-4 MECE scenarios each linked 1:1 to a `world`
+    # prediction so the existing Tetlock calibration engine scores them.
+    """CREATE TABLE IF NOT EXISTS scenario_sets (
+        id               INTEGER PRIMARY KEY,
+        country          TEXT    NOT NULL,        -- GDELT FIPS code (NOT ISO-2)
+        country_name     TEXT,
+        created_date     TEXT    NOT NULL,        -- ISO date of generation
+        horizon_date     TEXT    NOT NULL,        -- ISO date scenarios resolve by
+        status           TEXT    NOT NULL DEFAULT 'active',  -- active, resolved
+        dossier_json     TEXT,                    -- frozen evidence snapshot (E1..En)
+        key_assumptions  TEXT,                    -- JSON array (Key Assumptions Check)
+        summary          TEXT,                    -- LLM net assessment
+        last_reviewed_at TEXT,
+        resolved_at      TEXT,
+        created_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scenario_sets_status ON scenario_sets(status)",
+    "CREATE INDEX IF NOT EXISTS idx_scenario_sets_country ON scenario_sets(country)",
+    """CREATE TABLE IF NOT EXISTS scenarios (
+        id                  INTEGER PRIMARY KEY,
+        set_id              INTEGER NOT NULL REFERENCES scenario_sets(id),
+        label               TEXT    NOT NULL,     -- A/B/C/D
+        title               TEXT    NOT NULL,
+        description         TEXT,
+        probability         REAL    NOT NULL,     -- current belief, revised over time
+        ach_evidence_json   TEXT,                 -- ACH ratings per evidence id
+        invalidation        TEXT,
+        market_implications TEXT,
+        prediction_id       INTEGER REFERENCES predictions(id),
+        is_outcome          INTEGER,              -- NULL open, 1 materialized, 0 not
+        created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_scenarios_set ON scenarios(set_id)",
+    # watchlist items can now belong to a scenario instead of a thesis —
+    # same living-watchlist table, second parent (thesis_id stays NULL).
+    "ALTER TABLE watchlist_items ADD COLUMN scenario_id INTEGER REFERENCES scenarios(id)",
+    "CREATE INDEX IF NOT EXISTS idx_watchlist_scenario ON watchlist_items(scenario_id)",
 ]
 
 
@@ -483,6 +544,20 @@ def migrate_db(conn: sqlite3.Connection) -> None:
             pass  # column or index already exists
 
 
+# CP-010 follow-up: get_connection() below runs migrate_db() on every call,
+# not just `pathos db init` — necessary the FIRST time a process opens a
+# given db_path (a pulled DB with new columns must not crash), but repeating
+# the full ~20-statement execute+commit+except sweep on every call is pure
+# no-op cost once a path is known-migrated for this process. Reviewed as an
+# efficiency finding: cycle/orchestrator.py opens 6 connections per
+# `pathos cycle` run, and the Streamlit dashboard opens a fresh connection
+# on every page rerun (long-lived process, many reruns). Per-process cache
+# only — a concurrent process still migrates once on its own first call,
+# which is correct (no cross-process coordination needed for an idempotent,
+# additive-only migration list).
+_migrated_paths: set[Path] = set()
+
+
 def get_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
@@ -493,6 +568,15 @@ def get_connection(db_path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA foreign_keys = ON")
+    # CP-010: migrate on every connection, not just `pathos db init` — a pulled
+    # DB with pre-existing tables but missing new columns must not crash with
+    # "no such column" on the first query that touches them. Idempotent
+    # (migrate_db swallows "already exists" OperationalError). Cached per
+    # resolved path so repeat connections in the same process skip the sweep.
+    resolved = db_path.resolve()
+    if resolved not in _migrated_paths:
+        migrate_db(conn)
+        _migrated_paths.add(resolved)
     return conn
 
 

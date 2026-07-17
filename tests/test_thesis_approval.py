@@ -14,10 +14,12 @@ from unittest.mock import MagicMock, patch
 
 from pathosphere.agent.approval import (
     approve_thesis,
+    approve_thesis_with_prediction,
     format_causal_chain,
     get_thesis,
     get_watchlist_items,
     list_theses,
+    open_trade_and_link,
     reject_thesis,
     validate_ticker,
 )
@@ -347,3 +349,80 @@ def test_list_includes_fast_and_debate_theses(tmp_db):
     sources = {r["debate_id"] for r in rows}
     assert None in sources
     assert debate_id in sources
+
+
+# ── approve_thesis_with_prediction / open_trade_and_link (CP-028 review) ──────
+# Single source of truth shared by `pathos thesis approve`/`pathos trade open`
+# and thesis.py's `_maybe_auto_open` — replacing two hand-duplicated copies of
+# this exact sequence, one of which (auto-open) was silently missing ticker
+# validation.
+
+def test_approve_thesis_with_prediction_success(tmp_db):
+    tid = _insert_thesis(tmp_db, instrument="USO")
+    mock_info = MagicMock()
+    mock_info.last_price = 75.0
+
+    with patch("pathosphere.agent.approval.yf.Ticker") as mock_yf:
+        mock_yf.return_value.fast_info = mock_info
+        result = approve_thesis_with_prediction(tmp_db, tid)
+
+    assert result.thesis["status"] == "approved"
+    assert result.ticker_valid is True
+    assert result.prediction is not None
+    assert result.prediction_error is None
+
+    pred_row = tmp_db.execute(
+        "SELECT * FROM predictions WHERE trade_id IS NULL AND macro_area='economic'"
+    ).fetchone()
+    assert pred_row is not None
+
+
+def test_approve_thesis_with_prediction_bad_ticker_still_approves(tmp_db):
+    """CP-028 fix: the auto-open path previously skipped this validation
+    entirely — must warn but not block approval, same as the manual CLI path."""
+    tid = _insert_thesis(tmp_db, instrument="FAKEXYZ999")
+    mock_info = MagicMock()
+    mock_info.last_price = None
+
+    with patch("pathosphere.agent.approval.yf.Ticker") as mock_yf:
+        mock_yf.return_value.fast_info = mock_info
+        result = approve_thesis_with_prediction(tmp_db, tid)
+
+    assert result.ticker_valid is False
+    assert result.thesis["status"] == "approved"  # not blocked
+
+
+def test_approve_thesis_with_prediction_no_ticker_skips_validation(tmp_db):
+    tid = _insert_thesis(tmp_db, instrument=None)
+    result = approve_thesis_with_prediction(tmp_db, tid)
+    assert result.ticker_valid is None
+    assert result.thesis["status"] == "approved"
+
+
+def test_approve_thesis_with_prediction_not_pending_raises(tmp_db):
+    tid = _insert_thesis(tmp_db)
+    approve_thesis(tmp_db, tid)
+    with pytest.raises(ValueError):
+        approve_thesis_with_prediction(tmp_db, tid)
+
+
+def test_open_trade_and_link_success(tmp_db):
+    from pathosphere.market.trading import init_portfolios
+
+    tid = _insert_thesis(tmp_db, instrument="USO", status="approved")
+
+    with patch("pathosphere.market.trading.fetch_price", return_value=75.0):
+        init_portfolios(tmp_db)
+        result = open_trade_and_link(tmp_db, tid)
+
+    assert result.ticker == "USO"
+    trade = tmp_db.execute(
+        "SELECT * FROM trades WHERE thesis_id = ?", (tid,)
+    ).fetchone()
+    assert trade is not None
+
+
+def test_open_trade_and_link_no_portfolios_raises(tmp_db):
+    tid = _insert_thesis(tmp_db, instrument="USO", status="approved")
+    with pytest.raises(ValueError, match="Portfolios not initialized"):
+        open_trade_and_link(tmp_db, tid)

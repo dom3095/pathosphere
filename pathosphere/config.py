@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     # NASA FIRMS (free MAP_KEY from https://firms.modaps.eosdis.nasa.gov/api/)
     firms_map_key: str | None = None
 
+    # ReliefWeb (free appname from https://apidoc.reliefweb.int/parameters#appname)
+    reliefweb_appname: str | None = None
+
     # Tor SOCKS proxy for geo-blocked feeds (e.g. RT, sanctioned in the EU).
     # Tor Browser exposes 9150; a standalone tor daemon uses 9050.
     tor_socks_proxy: str = "socks5://127.0.0.1:9150"
@@ -42,6 +45,20 @@ class Settings(BaseSettings):
     # Predictions v2: timing penalty per day of |resolved_date - horizon_date|
     # in time_adjusted_score (0.001 → ~1000 days off = full penalty)
     timing_penalty_alpha: float = 0.001
+
+    # Theses at/above this confidence auto-approve + auto-open a paper trade
+    # at generation time (virtual money, human reviews/closes after — see
+    # CLAUDE.md "Human-in-the-loop"). Below threshold: stays pending for
+    # manual approval, as before. Calibrated 2026-07-14 against the first
+    # real thesis-generate run (0.62/0.58/0.55 observed confidences).
+    auto_open_confidence_threshold: float = 0.6
+
+    # Conflict scenario forecasting (agent/scenarios.py): horizon of each
+    # scenario set and how many top hotspots one `pathos scenario generate`
+    # run covers (one Claude call per hotspot — sized for the 2-3 reasoning
+    # tasks/day budget).
+    scenario_horizon_days: int = 90
+    scenario_max_hotspots: int = 2
 
     @field_validator("log_level")
     @classmethod
