@@ -1,8 +1,37 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-13 ~ 19:30 — CP-022 aperto e validato (notebook), Fase 4 Dashboard implementata*
-*(2026-07-17: sezione doctor aggiunta in cima da sessione autonoma su branch `feat/doctor`,
-base main — le sessioni 14→16 luglio vivono negli HANDOFF dei branch feat/* non ancora mergiati)*
+*Aggiornato: 2026-07-17 sera — TUTTE le PR mergiate (#14→#19), main allineata, zero PR aperte.
+Sessione notturna autonoma in corso (docs-sync + CP-030 + CP-023).*
+
+## Sessione 2026-07-17 sera/notte — riallineamento post-merge (autonoma)
+
+**Stato repo al cut-off**: main contiene TUTTO il lavoro delle sessioni 13→17 luglio.
+PR mergiate in ordine: #14 fundamentals → #15 backfill storico → #16 technicals →
+#17 scenari conflitto → #18 doctor → #19 fix CP-031 dashboard. Zero PR aperte, zero
+branch in volo. Le sezioni sotto che dicono "DA MERGIARE" / "PR in volo" / "NON mergiato"
+sono storiche — non più vere.
+
+**CP ancora aperti** (fonte: `CRITICAL_POINTS.md`):
+- **CP-029** — `pathos thesis debate` mai completato end-to-end (3 run falliti). Timeout
+  1800s + retry implementati e in main, MA validazione richiede run reale lanciato
+  DALL'UTENTE a macchina scarica (no sessioni Claude Code parallele). Prompt di ripresa
+  più sotto in questo file.
+- **CP-030** — `_persist_scenario_set` non transazionale (rischio basso, fix noto:
+  `add_prediction(commit=False)` + transazione unica). In lavorazione stanotte.
+- **CP-023** — fundamentals yfinance: degradazione silenziosa, nessun retry/backoff.
+  In lavorazione stanotte (solo parte retry/log; cross-check EDGAR resta v2).
+- **CP-024** — launchd non parte (permessi macOS): serve azione manuale dell'utente.
+- **CP-027 parte prezzi** — storico prezzi per backtest: aperto, sessione dedicata.
+- Minori/di design: CP-001/002/003 (mitigati da `pathos doctor`), CP-006/007/009/013/017.
+
+**Lavoro reale in attesa dell'UTENTE** (regola run-ingest-self, non dell'agent):
+1. `pathos scenario generate` — primo run reale (valida prompt ACH su Claude vero)
+2. `caffeinate -i uv run pathos thesis debate` — a macchina scarica (CP-029)
+3. Batch geoloc Qwen: `pathos extract --geolocate-qwen --geoloc-limit 200` ripetuto
+   (~1324 eventi ambigui residui)
+4. Backfill storico reale (UCDP/WHO/ReliefWeb — serve `RELIEFWEB_APPNAME` registrato)
+
+---
 
 ## Sessione 2026-07-17 notte — `pathos doctor` (autonoma, branch `feat/doctor`)
 

@@ -1,6 +1,21 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: previsione scenari di conflitto (3g) — branch `feat/conflict-forecasting`
+## Fase corrente: manutenzione post-merge — sessione notturna autonoma 2026-07-17
+
+**Stato**: tutte le PR mergiate (#14→#19), main allineata, zero PR aperte. Fasi 0-4
+complete + scenari conflitto + technicals + doctor + backfill storico in main.
+
+**Task notte 2026-07-17** (branch separati da main, PR aperte, MAI merge autonomo):
+1. `chore/docs-sync-post-merge` — questo riallineamento docs
+2. `fix/cp030` — `_persist_scenario_set` transazionale
+3. `fix/cp023` — retry/backoff yfinance + log degradazione visibile
+
+**Prossima azione (utente)**: primo `pathos scenario generate` reale; run `thesis debate`
+a macchina scarica (CP-029); batch geoloc Qwen; review/merge PR della notte.
+
+---
+
+## Fase precedente: previsione scenari di conflitto (3g) — branch `feat/conflict-forecasting` (MERGIATA, PR #17)
 
 **2026-07-16 — modulo scenari implementato, wired, testato, reviewed:**
 
