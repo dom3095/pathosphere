@@ -1,93 +1,24 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-15 — NUOVO: enrichment technicals (analisi finanziaria price-action) su branch `feat/stock-technicals` (da `feat/historical-events-backfill`), 628 test verdi. CP-029 ancora aperto: run debate id=4 lanciato dall'utente, esito da verificare.*
+*Aggiornato: 2026-07-15 — due branch paralleli in merge: enrichment technicals (PR #16, 631 verdi), backfill storico eventi (CP-027 parte 1, da lanciare). CP-029 timeout 1800s+retry committato, attende run reale.*
 
-## Sessione 2026-07-15 — enrichment technicals (branch `feat/stock-technicals`)
+## Sessione 2026-07-15 — enrichment technicals (PR #16)
 
-Branch: `feat/stock-technicals` (creato da `feat/historical-events-backfill`, il più recente — su
-richiesta esplicita). Richiesta: "modulo di analisi finanziaria delle azioni in borsa, integrato
-nel flusso". I fondamentali (bilanci) esistevano già (PR #14) — costruita la metà mancante:
-**analisi price-action/tecnica**, complementare per design (i fondamentali valgono solo per
-EQUITY e degradano a minimal proprio su ETF/future/FX — BZ=F, ITA, FRO — dove invece lo storico
-prezzi esiste sempre).
+Branch: `feat/stock-technicals` (creato da `feat/historical-events-backfill`). Richiesta: analisi price-action/tecnica complementare ai fondamentali (i fondamentali valgono solo su EQUITY; ETF/future/FX hanno storico prezzi sempre).
 
-**Cosa è stato fatto**:
-- `pathosphere/market/technicals.py`: `fetch_technicals(ticker)` — 1 anno daily yfinance
-  (`auto_adjust=True`) → momentum 1w/1m/3m/6m/1y (offset giorni di borsa), volatilità 21gg
-  annualizzata, RSI-14 Wilder, distanze SMA 20/50/200, range 52w, max drawdown, rapporto volume
-  21/63gg; `data_quality` full≥200/partial≥60/minimal; `render_technicals_text()` template
-  deterministico (no LLM) con caveat "not a trading signal". Contratto degradazione identico a
-  fundamentals: None solo su fallimento totale (<2 barre), mai eccezioni. **Descrittivo, mai
-  decisionale** (principio "core = agent semantico, non quant" rispettato).
-- Migration `theses.technicals_json` (stesso razionale 1:1-snapshot di fundamentals_json).
-- Integrazione in ENTRAMBE le pipeline (`thesis.py::generate_theses` + `debate.py::_persist_theses`
-  che ne riusa gli helper — no drift): cache intra-run separata, `--no-technicals` indipendente
-  da `--no-fundamentals`.
-- **Review LLM unificata**: `_run_fundamentals_review` → `_run_market_review` — fundamentals +
-  technicals nello STESSO prompt batch, quindi **zero call LLM extra** rispetto a prima.
-  Assessment salvato in `fundamentals_json.llm_assessment`; fallback `technicals_json` quando i
-  fondamentali mancano (caso ETF/future) — prima quelle tesi non ricevevano alcun assessment.
-- CLI: `pathos technicals <ticker>` (ispezione manuale), sezione Technicals in `thesis show`.
-- Test: 22 unit (`tests/test_technicals.py`, yfinance mockato) + 3 integrazione in `test_thesis.py`
-  (technicals-only con fallback assessment, entrambi i layer con review unica, flag disabilitato);
-  patch `fetch_technicals` aggiunto a tutti i test esistenti di thesis/debate (evita rete in pytest).
-  **628 verdi** (era 603). Ruff: 9 violazioni pre-esistenti invariate, 0 nuove.
-- Prova reale via subagent: `pathos technicals AAPL` numeri plausibili (RSI 62, +15.4% su SMA200),
-  ticker inesistente degrada pulito con exit 1, `--no-technicals` presente in entrambi gli help.
-- Docs: wiki §8.8 + CLI ref, roadmap 3c, schema.md (colonna), LOOP_STATE, questo handoff.
+**Cosa è stato fatto**: `pathosphere/market/technicals.py` → 1y daily yfinance: momentum, RSI, SMA, drawdown, volume; integration in `thesis.py`/`debate.py` con market review unificata (0 call LLM extra). CLI: `pathos technicals <ticker>`, sezione in `thesis show`, `--no-technicals` flag. **631 verdi** (628→631 dopo code-review inline). Tutti 5 finding della review fixati (RSI flat, closures condivise, doppio fetch eliminato, label onesta).
 
-**Limiti dichiarati**: EOD only; RSI/SMA su orizzonti tesi 7-30gg sono contesto, non predizione
-(caveat nel testo renderizzato); stesso rate-limit yfinance dei fondamentali (fetch sequenziale,
-nessun retry v1); snapshot congelato alla generazione (coerente no-lookahead).
-
-**Code review post-PR (stessa sessione, `/code-review --level high`)**: gli 8 finder subagent
-sono falliti per limite sessione (reset 4:10) — review completata INLINE nel thread principale
-(meno profonda di 8 agent indipendenti; opzionale rilanciarla a quota resettata). 5 finding,
-nessun bug bloccante, **tutti fixati su richiesta utente** (2° commit su PR #16):
-1. RSI serie piatta → era 100 (finto overbought per titoli sospesi/illiquidi) → ora None
-2. Closures `_enrich/_enrich_tech/_queue_review` duplicate thesis↔debate (stessa classe di
-   drift CP-028) → estratta `_MarketEnrichment` in thesis.py, riusata da debate.py
-3. Doppio download yfinance (fetch_price 5d + technicals 1y) → `_price_snapshot()` riusa il
-   last close dei technicals (stesso close EOD auto-adjusted), fallback fetch_price;
-   `fetch_price` non più importato in debate.py
-4. Voce morta `"1y": 252` in `_RETURN_WINDOWS` → rimossa (1y = intera finestra)
-5. Label "1y"/"52w" su finestre 200-239 barre → soglia `_FULL_YEAR_BARS=240`: sotto, 1y=None,
-   warning esplicito, testo dice "N-bar window" invece di "52w"
-Test: **631 verdi** (+3: RSI flat, finestra corta full-quality, prezzo riusato/no seconda call).
-Ruff: 3 violazioni pre-esistenti sui file toccati, 0 nuove.
-
-**Prossima azione**: PR #16 in review/merge. Poi: primo `thesis generate` reale con entrambi i
-layer (primo esercizio vero della market review unificata). Restano aperti: CP-029 (esito run
-debate id=4), backfill storico da lanciare (branch precedente), parte 2 CP-027 (serie storiche
-prezzi — parzialmente coperta ora dal fetch 1y dei technicals, ma non persistita).
+**Prossima azione**: PR #16 review/merge.
 
 ---
 
-## Sessione 2026-07-14 (3ª) — backfill storico eventi (CP-027 parte 1)
+## Sessione 2026-07-14 (3ª) — backfill storico eventi (CP-027 parte 1, branch `feat/historical-events-backfill`)
 
-Branch: `feat/historical-events-backfill` (creato da `feat/fundamentals-analysis`, che resta su PR #14 non mergiata).
+4 nuovi ingestori: UCDP GED (conflitti 1989→), WHO DON (epidemie 1996→), ReliefWeb v2 (disastri 1981→, serve `RELIEFWEB_APPNAME`), Wikidata SPARQL (crisi economiche). Tutto in `events` diretto (no embedding). **603 verdi**, 19 test nuovi.
 
-**Cosa è stato fatto**: 4 nuovi ingestori per eventi storici reali, geolocalizzati, da fonti aperte/
-gratuite/verificabili — GDELT scartato di proposito (documenti sintetici CAMEO senza prosa, CP-016):
+**Prossima azione**: utente lancia backfill reale; registra appname ReliefWeb; commit+PR.
 
-| Comando | Fonte | Copertura | Note |
-|---|---|---|---|
-| `pathos ingest ucdp` | UCDP GED CSV zip (aperto) | conflitti 1989→ | `--min-deaths 25` → ~15.8k eventi; `--csv-path` riusa download |
-| `pathos ingest who-don` | WHO DON OData API | epidemie 1996→ | resume incrementale; paese dal titolo, geocode in extract |
-| `pathos ingest reliefweb` | ReliefWeb v2 | disastri 1981→ | **serve RELIEFWEB_APPNAME in .env** (registrazione gratuita, non fatta); senza → skip |
-| `pathos ingest econ-crises` | Wikidata SPARQL | crisi economiche | QID nel summary; multi-paese → 'global' |
-
-Tutto in `events` diretto (no raw_documents/embedding — storico statico, non input clustering).
-Nessuna modifica schema. 19 test nuovi (`tests/test_historical_sources.py`) → **603 verdi**, ruff
-pulito sui file nuovi (6 violazioni cli.py pre-esistenti su main, verificate).
-
-**Prossima azione**: (1) l'utente lancia il backfill reale da terminale (CSV UCDP già scaricato in
-scratchpad sessione, altrimenti il comando lo riscarica); (2) registrare appname ReliefWeb; (3) commit
-+ PR del branch; (4) parte 2 di CP-027 (serie storiche prezzi) resta aperta.
-
----
-
-*Sessione precedente (2026-07-14 notte, 2ª) — CP-029 ANCORA APERTO: timeout 1800s + retry automatico implementati e testati, manca SOLO la validazione con run reale lanciato dall'utente (branch `feat/fundamentals-analysis`, PR #14). Run id=4 lanciato dall'utente stanotte, esito da verificare con la query sotto.*
+**Nota**: CP-029 timeout 1800s+retry già committato e testato (584→631 verdi in main), attende run reale dell'utente per validazione end-to-end.
 
 ## ⚠️ PROMPT DI RIPRESA — leggi questo per primo
 
