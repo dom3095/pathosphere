@@ -166,7 +166,7 @@ download → dedup (GDELT è ridondante: stesso evento in decine di articoli) �
 **MVP verticale**: task 1-4 + embeddings/clustering + brief mattutino su filiera semiconduttori (pochi attori, chokepoint chiari, geopolitica intensa). Il resto a strati.
 
 ## Stato attuale
-**Fasi 0, 1, 2, 3, 4 completate** (Fase 4 Dashboard Streamlit su branch `feat/streamlit-dashboard`, non ancora mergiata — vedi HANDOFF).
+**Fasi 0, 1, 2, 3, 4 completate e TUTTE in main** (PR #12→#19 mergiate: dashboard, fundamentals, backfill storico, technicals, scenari conflitto, doctor). Zero branch in volo. Aperti: CP-029 (debate, serve run reale utente), CP-023/024/027-prezzi e minori — vedi `CRITICAL_POINTS.md`.
 
 Vedi `LOOP_STATE.md` per stato esatto e `HANDOFF.md` per dettaglio sessione corrente.
 
