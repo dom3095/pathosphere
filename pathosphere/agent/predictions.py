@@ -220,11 +220,14 @@ def add_prediction(
     impact_scope: str | None = None,
     thesis_id: int | None = None,
     trade_id: int | None = None,
+    commit: bool = True,
 ) -> sqlite3.Row:
     """Insert a new prediction with its domains. Returns the inserted row.
 
     world    → origin_scope, impact_scope and at least one domain required.
     economic → thesis_id required; trade_id optional (set at trade open).
+    commit=False lets a caller compose the insert into its own transaction
+    (e.g. scenario-set persistence, CP-030) — the caller then owns commit/rollback.
     Raises ValueError on any invalid or incoherent field.
     """
     _validate_probability(probability)
@@ -273,7 +276,8 @@ def add_prediction(
         "INSERT INTO prediction_domains (prediction_id, domain, is_primary) VALUES (?, ?, ?)",
         [(prediction_id, d, 1 if d == primary else 0) for d in domains],
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return get_prediction(conn, prediction_id)  # type: ignore[arg-type]
 
 
