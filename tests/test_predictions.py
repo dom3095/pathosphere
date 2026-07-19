@@ -214,6 +214,21 @@ def test_add_requires_at_least_one_domain(tmp_db):
                        domains=[], origin_scope="locale", impact_scope="locale")
 
 
+def test_add_commit_false_lets_caller_roll_back(tmp_db):
+    """CP-030: commit=False composes into the caller's transaction."""
+    row = _add(tmp_db, commit=False)
+    assert row["id"] is not None
+    tmp_db.rollback()
+    assert tmp_db.execute("SELECT COUNT(*) FROM predictions").fetchone()[0] == 0
+    assert tmp_db.execute("SELECT COUNT(*) FROM prediction_domains").fetchone()[0] == 0
+
+
+def test_add_default_commit_survives_rollback(tmp_db):
+    _add(tmp_db)
+    tmp_db.rollback()
+    assert tmp_db.execute("SELECT COUNT(*) FROM predictions").fetchone()[0] == 1
+
+
 def test_add_invalid_domain(tmp_db):
     with pytest.raises(ValueError, match="taxonomy"):
         _add(tmp_db, domains=["astrologia"])

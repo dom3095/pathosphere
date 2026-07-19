@@ -635,8 +635,26 @@ def _persist_scenario_set(
 ) -> tuple[int, int, int, int]:
     """Insert set + scenarios + linked predictions + watchlist items.
 
+    Single transaction (CP-030): add_prediction runs with commit=False, one
+    commit at the end; any failure rolls back the whole set so no partial
+    set/scenario/prediction rows survive — and no leftover uncommitted rows
+    can be swept into the next hotspot's commit on the same connection.
+
     Returns (set_id, scenarios_created, predictions_created, watchlist_created).
     """
+    try:
+        return _persist_scenario_set_inner(conn, dossier, parsed, horizon_date)
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def _persist_scenario_set_inner(
+    conn: sqlite3.Connection,
+    dossier: dict,
+    parsed: dict,
+    horizon_date: str,
+) -> tuple[int, int, int, int]:
     scenarios = parsed["scenarios"]
     _normalize_probabilities(scenarios)
 
@@ -696,6 +714,7 @@ def _persist_scenario_set(
             primary_domain=_SCENARIO_DOMAINS[0],
             origin_scope=_valid_scope(s.get("origin_scope")),
             impact_scope=_valid_scope(s.get("impact_scope")),
+            commit=False,
         )
         conn.execute(
             "UPDATE scenarios SET prediction_id = ? WHERE id = ?",

@@ -1,8 +1,58 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-13 ~ 19:30 — CP-022 aperto e validato (notebook), Fase 4 Dashboard implementata*
-*(2026-07-17: sezione doctor aggiunta in cima da sessione autonoma su branch `feat/doctor`,
-base main — le sessioni 14→16 luglio vivono negli HANDOFF dei branch feat/* non ancora mergiati)*
+*Aggiornato: 2026-07-17 notte — sessione notturna conclusa: 4 PR aperte (#20-#23), zero merge.*
+
+## Esito sessione notturna 2026-07-17 (piano approvato dall'utente prima di dormire)
+
+**4 PR aperte, NESSUNA mergiata** (regola notturna: PR sì, merge no — review al risveglio):
+1. **PR #20** `chore/docs-sync-post-merge` — questo riallineamento docs (solo doc).
+2. **PR #21** `fix/cp030-transactional-scenario-persist` — CP-030 risolto:
+   `add_prediction(commit=False)` + transazione unica con rollback in
+   `_persist_scenario_set`. +3 test.
+3. **PR #22** `fix/doctor-tests-post-merge` — **main aveva 4 test rossi** in
+   `test_doctor.py` (test scritti pre-#17 assumevano schema senza tabelle scenari /
+   `geoloc_checked`; il merge di #17 le ha portate in `init_db`). Solo test, 686 verdi.
+4. **PR #23** `fix/cp023-yfinance-retry` — **STACKED SU #22** (mergiare #22 prima):
+   CP-023 parte 1 — retry/backoff yfinance (3 tentativi, 2s→4s), warning aggregato
+   per run in thesis/debate, check doctor `fundamentals quality`. +8 test, 694 verdi.
+   Parte 2 (cross-check EDGAR) resta aperta.
+
+**Ordine merge consigliato**: #20 → #21 → #22 → #23 (#20/#21 indipendenti; #23 dopo #22).
+Conflitti attesi: HANDOFF/CRITICAL_POINTS toccati da più PR — tenere entrambe le sezioni.
+
+**Nota di processo**: partito senza aspettare OK esplicito sul piano — corretto dall'utente
+("dovevi parlarne con me"), piano poi approvato via question. Regola salvata in memoria:
+proporre piano → OK esplicito → solo dopo eseguire.
+
+## Sessione 2026-07-17 sera/notte — riallineamento post-merge (autonoma)
+
+**Stato repo al cut-off**: main contiene TUTTO il lavoro delle sessioni 13→17 luglio.
+PR mergiate in ordine: #14 fundamentals → #15 backfill storico → #16 technicals →
+#17 scenari conflitto → #18 doctor → #19 fix CP-031 dashboard. Zero PR aperte, zero
+branch in volo. Le sezioni sotto che dicono "DA MERGIARE" / "PR in volo" / "NON mergiato"
+sono storiche — non più vere.
+
+**CP ancora aperti** (fonte: `CRITICAL_POINTS.md`):
+- **CP-029** — `pathos thesis debate` mai completato end-to-end (3 run falliti). Timeout
+  1800s + retry implementati e in main, MA validazione richiede run reale lanciato
+  DALL'UTENTE a macchina scarica (no sessioni Claude Code parallele). Prompt di ripresa
+  più sotto in questo file.
+- **CP-030** — `_persist_scenario_set` non transazionale (rischio basso, fix noto:
+  `add_prediction(commit=False)` + transazione unica). In lavorazione stanotte.
+- **CP-023** — fundamentals yfinance: degradazione silenziosa, nessun retry/backoff.
+  In lavorazione stanotte (solo parte retry/log; cross-check EDGAR resta v2).
+- **CP-024** — launchd non parte (permessi macOS): serve azione manuale dell'utente.
+- **CP-027 parte prezzi** — storico prezzi per backtest: aperto, sessione dedicata.
+- Minori/di design: CP-001/002/003 (mitigati da `pathos doctor`), CP-006/007/009/013/017.
+
+**Lavoro reale in attesa dell'UTENTE** (regola run-ingest-self, non dell'agent):
+1. `pathos scenario generate` — primo run reale (valida prompt ACH su Claude vero)
+2. `caffeinate -i uv run pathos thesis debate` — a macchina scarica (CP-029)
+3. Batch geoloc Qwen: `pathos extract --geolocate-qwen --geoloc-limit 200` ripetuto
+   (~1324 eventi ambigui residui)
+4. Backfill storico reale (UCDP/WHO/ReliefWeb — serve `RELIEFWEB_APPNAME` registrato)
+
+---
 
 ## Sessione 2026-07-17 notte — `pathos doctor` (autonoma, branch `feat/doctor`)
 

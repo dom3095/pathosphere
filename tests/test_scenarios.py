@@ -331,6 +331,29 @@ def test_generate_scenarios_unknown_country_raises(tmp_db):
         _generate(tmp_db, _mock_llm(_SCENARIO_LLM_RESPONSE), country="ZZ")
 
 
+def test_persist_failure_rolls_back_entire_set(tmp_db, monkeypatch):
+    """CP-030: a failure while persisting scenario N must not leave the set,
+    earlier scenarios, their predictions or watchlist rows behind."""
+    import pathosphere.agent.scenarios as scen
+
+    _seed_escalating_country(tmp_db, "IS")
+    real_add = scen.add_prediction
+    calls = itertools.count(1)
+
+    def flaky_add(conn, *args, **kwargs):
+        if next(calls) == 2:
+            raise ValueError("boom on second scenario")
+        return real_add(conn, *args, **kwargs)
+
+    monkeypatch.setattr(scen, "add_prediction", flaky_add)
+    with pytest.raises(ValueError, match="boom on second scenario"):
+        _generate(tmp_db, _mock_llm(_SCENARIO_LLM_RESPONSE), max_hotspots=1)
+
+    for table in ("scenario_sets", "scenarios", "predictions",
+                  "prediction_domains", "watchlist_items"):
+        assert tmp_db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0, table
+
+
 # ── review loop ───────────────────────────────────────────────────────────────
 
 def _make_active_set(tmp_db) -> int:
