@@ -166,7 +166,7 @@ download → dedup (GDELT è ridondante: stesso evento in decine di articoli) �
 **MVP verticale**: task 1-4 + embeddings/clustering + brief mattutino su filiera semiconduttori (pochi attori, chokepoint chiari, geopolitica intensa). Il resto a strati.
 
 ## Stato attuale
-**Fasi 0, 1, 2, 3, 4 completate e TUTTE in main** (PR #12→#19 mergiate: dashboard, fundamentals, backfill storico, technicals, scenari conflitto, doctor). Zero branch in volo. Aperti: CP-029 (debate, serve run reale utente), CP-023/024/027-prezzi e minori — vedi `CRITICAL_POINTS.md`.
+**Fasi 0, 1, 2, 3, 4 completate e TUTTE in main** (PR #12→#22 mergiate: dashboard, fundamentals, backfill storico, technicals, scenari conflitto, doctor, CP-030). In volo: PR #24 (`fix/cp023-yfinance-retry` — CP-023 parte 1 + ruff 170→0 + doc sync). Aperti: CP-029 (debate, serve run reale utente), CP-023-parte2/024/027-prezzi e minori — vedi `CRITICAL_POINTS.md`. Collo di bottiglia ora: esercizio reale del sistema, non codice.
 
 Vedi `LOOP_STATE.md` per stato esatto e `HANDOFF.md` per dettaglio sessione corrente.
 

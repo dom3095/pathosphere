@@ -1,6 +1,37 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-17 notte — sessione notturna conclusa: 4 PR aperte (#20-#23), zero merge.*
+*Aggiornato: 2026-07-19 — PR notturne #20/#21/#22 mergiate; #23 chiusa e riaperta come PR #24 (+ igiene ruff/doc); in attesa review.*
+
+## Sessione 2026-07-19 — chiusura ciclo PR + igiene repo
+
+**Stato repo**: #20 (docs), #21 (CP-030), #22 (fix test doctor) mergiate su main.
+PR #23 chiusa senza merge → riaperta come **PR #24** su stesso branch
+`fix/cp023-yfinance-retry` (CP-023 parte 1: retry/backoff yfinance, warning aggregato
+per-run, check doctor "fundamentals quality"). Branch aggiornato: main mergiata dentro
+(zero conflitti — il commit duplicato del fix test doctor si riconcilia da solo), 697 verdi.
+
+**Igiene aggiunta a PR #24**:
+- **Ruff 170→0 errori**: prima nessuna config → default su tutto il repo. Ora
+  `[tool.ruff]` in `pyproject.toml` con `extend-exclude = ["notebooks", ".agents"]`
+  (notebook = record storici delle indagini, non si riscrivono; `.agents` = script
+  vendored skill caveman). Su prodotto+test: 33 auto-fix (F401 import, F541 f-string,
+  E401 import multipli) + 11 manuali (F841 variabili assegnate mai usate — codice morto
+  vero in `cli.py` e `cycle/loop.py`, assegnazioni superflue nei test; E741 `l`→`lbl`).
+- **Doc sync**: roadmap (tabella Fase 4 ✅ + riga Fase 5 pianificata, data), LOOP_STATE,
+  questo header, CLAUDE.md stato attuale (dashboard è in main, non più su branch).
+
+**Prossima azione raccomandata**: review + merge PR #24. Poi il collo di bottiglia NON è
+più codice — è esercizio reale (vedi lista sotto, invariata).
+
+**Lavoro reale in attesa dell'UTENTE** (regola run-ingest-self):
+1. `pathos scenario generate` — primo run reale (valida prompt ACH su Claude vero)
+2. `caffeinate -i uv run pathos thesis debate` — a macchina scarica (CP-029)
+3. Batch geoloc Qwen: `pathos extract --geolocate-qwen --geoloc-limit 200` ripetuto (~1324 residui)
+4. Backfill storico (serve `RELIEFWEB_APPNAME` registrato)
+5. CP-024 launchd — permessi macOS, azione manuale
+
+**CP aperti dopo questa sessione**: CP-023 parte 2 (EDGAR, v2), CP-024 (launchd),
+CP-027 parte prezzi, CP-029 (debate da validare con run reale). Minori: CP-006/007/009/013/017.
 
 ## Esito sessione notturna 2026-07-17 (piano approvato dall'utente prima di dormire)
 

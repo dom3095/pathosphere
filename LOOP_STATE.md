@@ -1,6 +1,24 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: manutenzione post-merge — sessione notturna autonoma 2026-07-17
+## Fase corrente: chiusura ciclo PR notturne + igiene repo — 2026-07-19
+
+**Stato**: #20/#21/#22 mergiate su main. #23 chiusa senza merge → riaperta come
+**PR #24** (`fix/cp023-yfinance-retry`, stesso branch, main mergiata dentro, 697 verdi).
+Sulla stessa PR #24 aggiunta igiene repo:
+- **Ruff 170→0**: config `[tool.ruff]` in pyproject (exclude `notebooks/` = record storici,
+  `.agents/` = script skill vendored); 33 auto-fix su prodotto+test; 11 fix manuali
+  (F841 variabili morte in cli.py/loop.py/test, E741 rename `l`→`lbl`). Zero errori.
+- **Doc sync**: roadmap (Fase 4 ✅ in tabella, riga Fase 5), HANDOFF header, questo file,
+  CLAUDE.md stato attuale.
+
+**Prossima azione (utente)**: review/merge PR #24; poi esercizio reale del sistema —
+`pathos scenario generate` (primo run vero), `caffeinate -i uv run pathos thesis debate`
+a macchina scarica (CP-029), batch geoloc Qwen (~1324 residui), backfill storico
+(serve `RELIEFWEB_APPNAME`), fix launchd CP-024 (manuale macOS).
+
+---
+
+## Fase precedente: manutenzione post-merge — sessione notturna autonoma 2026-07-17
 
 **Stato**: tutte le PR mergiate (#14→#19), main allineata, zero PR aperte. Fasi 0-4
 complete + scenari conflitto + technicals + doctor + backfill storico in main.
