@@ -19,7 +19,7 @@ from the prose pipeline separately (`semantic/embedder.py:NON_PROSE_ORIGINS`).
 Tables read: gdelt_events. Tables written: events.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from loguru import logger
 

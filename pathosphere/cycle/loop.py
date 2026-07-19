@@ -13,7 +13,7 @@ Design:
 
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -148,7 +148,6 @@ def run_autonomous_loop(
 
                 if retry >= max_retries:
                     # Phase failed after all retries
-                    msg = f"{phase.name}: {last_error}"
                     error_log.append({
                         "timestamp": datetime.utcnow().isoformat(),
                         "phase": phase.name,

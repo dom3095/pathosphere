@@ -5,7 +5,6 @@ No real I/O calls — real phases mocked where needed.
 
 from unittest.mock import patch
 
-import pytest
 
 from pathosphere.cycle.orchestrator import (
     PHASE_ORDER,

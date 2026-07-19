@@ -39,6 +39,11 @@ pathos = "pathosphere.cli:cli"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.ruff]
+# notebooks/ = record storici delle indagini (non si riscrivono a posteriori);
+# .agents/ = script vendored delle skill caveman, non codice del progetto.
+extend-exclude = ["notebooks", ".agents"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"

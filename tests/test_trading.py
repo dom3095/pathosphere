@@ -20,7 +20,6 @@ from pathosphere.market.trading import (
     CloseTradeResult,
     InitResult,
     OpenTradeResult,
-    PortfolioStatus,
     _direction_mult,
     _thesis_to_direction,
     _trade_costs,

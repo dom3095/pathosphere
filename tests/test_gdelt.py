@@ -5,14 +5,11 @@ No real HTTP calls — all in-process or mocked.
 
 import io
 import zipfile
-from datetime import date, datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from pathosphere.ingest.gdelt import (
-    QUAD_CONFLICT,
-    IngestResult,
     _extract_csv,
     _parse_rows,
     _safe_float,

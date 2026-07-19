@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pathosphere.agent.thesis import (
-    ThesisResult,
     _build_prompt,
     _load_brief,
     _maybe_auto_open,

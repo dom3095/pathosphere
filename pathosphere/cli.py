@@ -1513,25 +1513,25 @@ def thesis_show(thesis_id: int) -> None:
     if thesis["rejection_reason"]:
         click.echo(f"Rej. reason : {thesis['rejection_reason']}")
 
-    click.echo(f"\n── Trigger ──────────────────────────────────────────────")
+    click.echo("\n── Trigger ──────────────────────────────────────────────")
     click.echo(chain.get("trigger_summary") or "(none)")
 
-    click.echo(f"\n── Causal chain ─────────────────────────────────────────")
+    click.echo("\n── Causal chain ─────────────────────────────────────────")
     for i, step in enumerate(chain.get("steps", []), 1):
         click.echo(f"  {i}. {step}")
 
-    click.echo(f"\n── Invalidation ─────────────────────────────────────────")
+    click.echo("\n── Invalidation ─────────────────────────────────────────")
     click.echo(thesis["invalidation"] or "(none)")
 
     persona_notes = chain.get("persona_notes") or {}
     if persona_notes:
-        click.echo(f"\n── Persona notes ────────────────────────────────────────")
+        click.echo("\n── Persona notes ────────────────────────────────────────")
         for persona, note in persona_notes.items():
             click.echo(f"  [{persona}] {note}")
 
     debate_ctx = chain.get("debate_context") or {}
     if debate_ctx:
-        click.echo(f"\n── Debate context ───────────────────────────────────────")
+        click.echo("\n── Debate context ───────────────────────────────────────")
         supporters = debate_ctx.get("supporters", [])
         opponents = debate_ctx.get("opponents", [])
         if supporters:
@@ -2216,7 +2216,6 @@ def trade_list(portfolio_name: str | None, closed: bool) -> None:
         click.echo(f"No {state} trades{' in ' + portfolio_name if portfolio_name else ''}.")
         return
 
-    state_label = "closed" if closed else "open"
     click.echo(f"\n{'ID':>4}  {'Port':<10}  {'Ticker':<7}  {'Dir':<5}  {'Qty':>10}  {'Open':>8}  {'Close':>8}  {'P&L':>9}")
     click.echo("─" * 80)
     for r in rows:

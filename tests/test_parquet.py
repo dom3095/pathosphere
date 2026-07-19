@@ -1,9 +1,8 @@
 """Tests for Parquet export."""
 
 import pyarrow.parquet as pq
-import pytest
 
-from pathosphere.export.parquet import ExportResult, export_to_parquet
+from pathosphere.export.parquet import export_to_parquet
 
 
 def _seed_documents(conn, n: int = 3) -> None:

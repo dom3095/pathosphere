@@ -57,7 +57,7 @@ class MockNer:
         self.calls.append(text)
         for key, ents in self.mapping.items():
             if key in text:
-                return FakeDoc([FakeEnt(t, l) for t, l in ents])
+                return FakeDoc([FakeEnt(t, lbl) for t, lbl in ents])
         return FakeDoc([])
 
 
@@ -300,7 +300,7 @@ def test_canonicalize_bare_surname_merges_when_dominant(tmp_db):
     """Bare 'Khamenei' (honorific-stripped from some mention) merges into the
     dominant full-name candidate when it clears the dominance ratio."""
     id_ali = _insert_person(tmp_db, "Ali Khamenei", mentions=20)
-    id_mojtaba = _insert_person(tmp_db, "Mojtaba Khamenei", mentions=2)
+    _insert_person(tmp_db, "Mojtaba Khamenei", mentions=2)
     id_bare = _insert_person(tmp_db, "Khamenei", mentions=5)
     tmp_db.commit()
 
@@ -317,8 +317,8 @@ def test_canonicalize_bare_surname_merges_when_dominant(tmp_db):
 def test_canonicalize_bare_surname_skipped_when_ambiguous(tmp_db):
     """Bare 'Khamenei' stays unmerged when no candidate dominates (mentions
     too close to call) — a missed merge beats a wrong one."""
-    id_ali = _insert_person(tmp_db, "Ali Khamenei", mentions=10)
-    id_mojtaba = _insert_person(tmp_db, "Mojtaba Khamenei", mentions=9)
+    _insert_person(tmp_db, "Ali Khamenei", mentions=10)
+    _insert_person(tmp_db, "Mojtaba Khamenei", mentions=9)
     id_bare = _insert_person(tmp_db, "Khamenei", mentions=5)
     tmp_db.commit()
 
@@ -765,7 +765,7 @@ def test_wikidata_non_429_error_continues(tmp_db):
 
 def test_wikidata_prioritises_most_mentioned(tmp_db):
     doc = _insert_doc(tmp_db, url="https://x.com/1")
-    minor = _insert_entity(tmp_db, "Minor Corp")
+    _insert_entity(tmp_db, "Minor Corp")
     major = _insert_entity(tmp_db, "Major Corp")
     tmp_db.execute(
         "INSERT INTO document_entities (document_id, entity_id, mentions) VALUES (?, ?, 9)",
@@ -823,7 +823,7 @@ def test_wikidata_marks_duplicate_as_alias(tmp_db):
 
 def test_extract_strips_html_from_body(tmp_db):
     """NER input should have HTML tags stripped before processing."""
-    doc_id = _insert_doc(
+    _insert_doc(
         tmp_db,
         url="https://example.com/article",
         title="Article Title",

@@ -10,14 +10,12 @@ import struct
 import sqlite3
 
 import numpy as np
-import pytest
 
 from pathosphere.semantic.graph import (
     GraphResult,
     DivergenceResult,
     build_entity_links,
     compute_narrative_divergences,
-    deserialize,
 )
 from pathosphere.semantic.embedder import EMBED_DIM
 
