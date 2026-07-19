@@ -231,9 +231,9 @@ def test_backlog_excludes_non_prose_origins(tmp_db, settings):
 
 
 def test_geoloc_backlog_skips_on_pre_migration_db(tmp_db, settings):
-    # simulate a pre-migration DB (no events.geoloc_checked, CP-022):
-    # the check must degrade to SKIP, not crash
-    tmp_db.execute("DROP INDEX IF EXISTS idx_events_geoloc_checked")
+    # a pre-CP-022 DB has no events.geoloc_checked: the check must degrade
+    # to SKIP, not crash (current schema ships the column, so strip it)
+    tmp_db.execute("DROP INDEX idx_events_geoloc_checked")
     tmp_db.execute("ALTER TABLE events DROP COLUMN geoloc_checked")
     res = _by_name(run_doctor(tmp_db, settings))[("backlog", "rss geolocation")]
     assert res.status == SKIP
@@ -331,10 +331,10 @@ def test_open_prediction_within_horizon_ok(tmp_db, settings):
 
 
 def test_scenarios_skip_when_tables_absent(tmp_db, settings):
-    # simulate a pre-migration DB (scenario tables absent):
-    # the check must degrade to SKIP, not crash
-    tmp_db.execute("DROP TABLE IF EXISTS scenarios")
-    tmp_db.execute("DROP TABLE IF EXISTS scenario_sets")
+    # a pre-#17 DB has no scenario tables: the check must degrade to SKIP,
+    # not crash (current schema ships them, so drop them)
+    tmp_db.execute("DROP TABLE scenarios")
+    tmp_db.execute("DROP TABLE scenario_sets")
     res = _by_name(run_doctor(tmp_db, settings))[("agent", "conflict scenarios")]
     assert res.status == SKIP
 
