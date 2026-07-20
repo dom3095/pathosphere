@@ -191,6 +191,16 @@ Titolo: "{title}"
 
 Rispondi SOLO con il JSON: {{"location_country": ..., "actor_countries": [...], "via_countries": [...]}}"""
 
+_GEOLOC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "location_country": {"type": ["string", "null"]},
+        "actor_countries": {"type": "array", "items": {"type": "string"}},
+        "via_countries": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["location_country", "actor_countries", "via_countries"],
+}
+
 # Generic common nouns / roles / demonyms that GDELT-derived NER surfaces in
 # ALL CAPS with huge mention counts. Linking them wastes the lookup budget and
 # produces wrong QIDs ("MALE" → Malé). Matched case-insensitively.
@@ -1513,6 +1523,7 @@ async def geolocate_ambiguous_events_qwen(
             raw = await llm_client.complete(
                 [{"role": "user", "content": _GEOLOC_PROMPT_TMPL.format(title=title)}],
                 json_mode=True,
+                json_schema=_GEOLOC_SCHEMA,
             )
             location_country = _parse_qwen_geoloc_response(raw)
         except Exception as exc:

@@ -842,3 +842,44 @@ il fallimento richiede un errore infrastrutturale, non un input cattivo.
   dedicata (file fuori dallo scope del branch scenari).
 - **Nota**: la pagina Scenari nuova legge le probabilità direttamente dalle tabelle, non da
   `get_calibration()` — non è affetta.
+
+---
+
+## CP-032: output JSON di Qwen non vincolato — solo istruzione testuale, mai schema — **PARZIALMENTE RISOLTO 2026-07-20** (session esercizio reale)
+
+**Contesto**: durante il primo `pathos thesis debate` reale della sessione (id=5, CP-029), la
+divergence detection ha prodotto JSON non parsabile una volta (`Expecting value: line 1 column 0`,
+gestito con warning + lista vuota, nessun crash) e lo stesso errore è comparso nello stesso giorno
+sul batch `--geolocate-qwen` (`RSS geoloc/Qwen failed for event 121959: Expecting value: line 1
+column 0`). Fino a oggi `json_mode=True` (`llm/client.py`) iniettava solo un prompt testuale
+"rispondi SOLO con JSON valido" — nessun vincolo lato server, Qwen3 4B può comunque sbagliare
+sintassi su prompt complessi (confronto 6 analisi, ecc.).
+
+**Fix**: `LLMClient.complete()` accetta ora `json_schema: dict | None` — se passato, per il backend
+qwen-local viene inoltrato come `response_format: {"type": "json_schema", "json_schema": {...}}`
+all'endpoint OpenAI-compatible di Ollama (decoding vincolato a grammatica, non solo istruzione a
+parole). Applicato ai 4 call site con evidenza di fallimento reale: `debate.py` (_run_research,
+_run_divergence_detection, _run_critique — tutti Qwen-only) e `extract.py` (`_GEOLOC_SCHEMA` sul
+fallback Qwen della geolocalizzazione RSS). Per il backend claude il parametro non fa nulla di
+speciale (nessun errore osservato su quel path finora, non serve).
+
+**Rete di sicurezza (nessuna verifica live disponibile)**: al momento del fix, l'unico Ollama
+raggiungibile stava servendo il batch geoloc overnight (`-np 1`, una richiesta alla volta) — una
+sonda di verifica si è accodata e ha superato 120s di timeout senza risposta. **Non verificato dal
+vivo se questa build di Ollama (0.31.1) onora `response_format`/`json_schema` sull'endpoint
+OpenAI-compat.** Per questo `_complete_qwen` intercetta un eventuale `HTTPStatusError` 400 e
+ritenta UNA volta senza `response_format` (log warning, non crash) — se il server rifiuta il
+vincolo, il comportamento degrada a quello di prima (solo prompt testuale), non rompe la pipeline.
+
+**Non toccato**: `_market_review_prompt` (thesis.py/debate.py, condiviso con backend claude) e i
+prompt di `scenarios.py`/`thesis.py` `_build_prompt` (generazione tesi/scenari) — schemi nidificati
+più complessi (narrative libere, ACH ratings, causal chain), usati anche col backend claude
+(nessun fallimento osservato lì), e nessuna evidenza di parse-fail reale su questi path finora.
+Estendere lo schema a questi resta opzionale, non urgente.
+
+**Verificato**: 700 test verdi (4 nuovi in `test_llm_client.py`: response_format nel payload,
+omesso quando schema=None, fallback su 400, più mock signature aggiornata in `test_debate.py`).
+Ruff pulito. **Azione**: prossimo run reale (batch geoloc o debate) confermerà se il 400-fallback
+scatta mai — se sì, verificare la versione Ollama minima che supporta lo schema e/o il formato
+esatto atteso; se non scatta mai, il vincolo è attivo e la classe di errore osservata oggi
+dovrebbe sparire.

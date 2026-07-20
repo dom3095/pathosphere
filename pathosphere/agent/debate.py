@@ -174,11 +174,26 @@ Return JSON:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+_RESEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_concerns": {"type": "array", "items": {"type": "string"}},
+        "opportunities": {"type": "array", "items": {"type": "string"}},
+        "key_actors": {"type": "array", "items": {"type": "string"}},
+        "narrative": {"type": "string"},
+        "risk_assessment": {"type": "string", "enum": ["high", "medium", "low"]},
+        "market_implications": {"type": "string"},
+    },
+    "required": ["key_concerns", "opportunities", "key_actors", "narrative",
+                 "risk_assessment", "market_implications"],
+}
+
+
 async def _run_research(
     qwen: LLMClient, persona_key: str, persona_cfg: dict, brief_content: str
 ) -> tuple[str, dict]:
     messages = _research_prompt(persona_key, persona_cfg, brief_content)
-    raw = await qwen.complete(messages, json_mode=True)
+    raw = await qwen.complete(messages, json_mode=True, json_schema=_RESEARCH_SCHEMA)
     try:
         return persona_key, json.loads(raw)
     except json.JSONDecodeError:
@@ -225,11 +240,34 @@ Return JSON with 2-3 divergence points (the most important structural disagreeme
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+_DIVERGENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "divergence_points": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "personas_for": {"type": "array", "items": {"type": "string"}},
+                    "personas_against": {"type": "array", "items": {"type": "string"}},
+                    "personas_neutral": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id", "title", "description"],
+            },
+        }
+    },
+    "required": ["divergence_points"],
+}
+
+
 async def _run_divergence_detection(
     qwen: LLMClient, analyses: dict[str, dict]
 ) -> list[dict]:
     messages = _divergence_prompt(analyses)
-    raw = await qwen.complete(messages, json_mode=True)
+    raw = await qwen.complete(messages, json_mode=True, json_schema=_DIVERGENCE_SCHEMA)
     try:
         data = json.loads(raw)
         return data.get("divergence_points", [])
@@ -276,6 +314,26 @@ For each divergence point, state your position. Return JSON:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+_CRITIQUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "responses": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "divergence_id": {"type": "string"},
+                    "stance": {"type": "string", "enum": ["support", "oppose", "nuance"]},
+                    "argument": {"type": "string"},
+                },
+                "required": ["divergence_id", "stance", "argument"],
+            },
+        }
+    },
+    "required": ["responses"],
+}
+
+
 async def _run_critique(
     qwen: LLMClient,
     persona_key: str,
@@ -284,7 +342,7 @@ async def _run_critique(
     divergence_points: list[dict],
 ) -> tuple[str, dict]:
     messages = _critique_prompt(persona_key, persona_cfg, own_analysis, divergence_points)
-    raw = await qwen.complete(messages, json_mode=True)
+    raw = await qwen.complete(messages, json_mode=True, json_schema=_CRITIQUE_SCHEMA)
     try:
         return persona_key, json.loads(raw)
     except json.JSONDecodeError:

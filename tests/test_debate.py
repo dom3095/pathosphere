@@ -314,7 +314,7 @@ def test_run_debate_full(tmp_db):
 
     call_count = [0]
 
-    async def mock_qwen_complete(messages, *, json_mode=False, model=None):
+    async def mock_qwen_complete(messages, *, json_mode=False, model=None, json_schema=None):
         call_count[0] += 1
         # Research calls (6) → return research JSON
         # Divergence call (1) → return divergence JSON

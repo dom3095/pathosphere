@@ -60,23 +60,31 @@ class LLMClient:
         *,
         model: str | None = None,
         json_mode: bool = False,
+        json_schema: dict | None = None,
     ) -> str:
         """Call the backend and return the assistant message as a string.
 
         Args:
-            messages:  OpenAI-style chat messages (role/content dicts).
-            model:     Optional model override (only used by qwen-local backend).
-            json_mode: Prepend a system prompt that enforces JSON-only output.
+            messages:    OpenAI-style chat messages (role/content dicts).
+            model:       Optional model override (only used by qwen-local backend).
+            json_mode:   Prepend a system prompt that enforces JSON-only output.
+            json_schema: JSON Schema the response must conform to. Enforced
+                server-side for qwen-local (Ollama `response_format`,
+                grammar-constrained decoding — not just a prose instruction);
+                a no-op for claude beyond the json_mode prose ask (passing it
+                there is harmless, just doesn't add server-side enforcement).
+                Implies json_mode (fence-stripping still applies).
         """
-        if json_mode:
+        want_json = json_mode or json_schema is not None
+        if want_json:
             messages = _inject_json_system(messages)
 
         if self._backend == "claude":
             raw = await self._complete_claude(messages)
         else:
-            raw = await self._complete_qwen(messages, model=model)
+            raw = await self._complete_qwen(messages, model=model, json_schema=json_schema)
 
-        return _strip_json_fence(raw) if json_mode else raw
+        return _strip_json_fence(raw) if want_json else raw
 
     # ──────────────────────────────────────────────────────────────────────────
     # Claude via Agent SDK subprocess
@@ -100,13 +108,33 @@ class LLMClient:
     # Qwen-local via Ollama OpenAI-compatible API
 
     async def _complete_qwen(
-        self, messages: list[dict], *, model: str | None
+        self, messages: list[dict], *, model: str | None, json_schema: dict | None = None
     ) -> str:
         mdl = model or _QWEN_MODEL
-        url = f"{_OLLAMA_BASE}/chat/completions"
         payload: dict = {"model": mdl, "messages": messages, "stream": False}
+        if json_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": "output", "schema": json_schema},
+            }
 
-        logger.debug(f"LLM/qwen → {url} model={mdl}")
+        try:
+            return await self._post_qwen(payload)
+        except httpx.HTTPStatusError as exc:
+            if json_schema is None or exc.response.status_code != 400:
+                raise
+            # Ollama/model rejected the schema constraint (not yet observed
+            # live — added 2026-07-20 without a live confirmation that this
+            # Ollama build honours response_format, since the local model was
+            # busy with an overnight geoloc batch at the time). Degrade to
+            # unconstrained JSON mode rather than fail the whole call.
+            logger.warning("LLM/qwen response_format rejected (400) — retrying without schema")
+            payload.pop("response_format")
+            return await self._post_qwen(payload)
+
+    async def _post_qwen(self, payload: dict) -> str:
+        url = f"{_OLLAMA_BASE}/chat/completions"
+        logger.debug(f"LLM/qwen → {url} model={payload['model']}")
 
         for attempt in range(_QWEN_READ_TIMEOUT_RETRIES + 1):
             async with httpx.AsyncClient(timeout=_QWEN_TIMEOUT_S) as client:
