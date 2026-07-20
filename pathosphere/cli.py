@@ -1395,13 +1395,18 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
     conn = get_connection(settings.db_path)
     llm_client = LLMClient(backend=model)
 
-    result = asyncio.run(generate_theses(
-        conn, llm_client, brief_date=brief_date, n=n,
-        enrich_fundamentals=not no_fundamentals,
-        enrich_technicals=not no_technicals,
-        auto_open=not no_auto_open,
-        auto_open_threshold=auto_open_threshold,
-    ))
+    try:
+        result = asyncio.run(generate_theses(
+            conn, llm_client, brief_date=brief_date, n=n,
+            enrich_fundamentals=not no_fundamentals,
+            enrich_technicals=not no_technicals,
+            auto_open=not no_auto_open,
+            auto_open_threshold=auto_open_threshold,
+        ))
+    except ValueError as exc:
+        # precondition errors (e.g. missing brief) — actionable message, no traceback
+        conn.close()
+        raise click.ClickException(str(exc))
     conn.close()
 
     if result.theses_created == 0 and result.refusal_reason:
@@ -1697,15 +1702,20 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
     )
     click.echo("Step 1/4 — Research (6 personas, batches of 2)...")
 
-    result = asyncio.run(
-        run_debate(
-            conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n,
-            enrich_fundamentals=not no_fundamentals,
-            enrich_technicals=not no_technicals,
-            auto_open=not no_auto_open,
-            auto_open_threshold=auto_open_threshold,
+    try:
+        result = asyncio.run(
+            run_debate(
+                conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n,
+                enrich_fundamentals=not no_fundamentals,
+                enrich_technicals=not no_technicals,
+                auto_open=not no_auto_open,
+                auto_open_threshold=auto_open_threshold,
+            )
         )
-    )
+    except ValueError as exc:
+        # precondition errors (e.g. missing brief) — actionable message, no traceback
+        conn.close()
+        raise click.ClickException(str(exc))
     conn.close()
 
     click.echo(
