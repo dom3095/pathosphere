@@ -1,6 +1,25 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: chiusura ciclo PR notturne + igiene repo — 2026-07-19
+## Fase corrente: primo esercizio reale end-to-end — 2026-07-19/20
+
+**Stato**: su richiesta utente, lanciati i 5 punti del "resta a te" (scenario generate, thesis debate,
+geoloc Qwen, backfill storico, CP-024) sotto `caffeinate`, sul branch `fix/cp023-yfinance-retry`
+(nessun nuovo branch, come richiesto). Dettaglio completo in `HANDOFF.md`.
+
+**Esiti**: CP-029 chiuso (2 run completi confermati, id=4+id=5); 1 bug fixato (`cli.py`, traceback
+pulito su precondizioni ValueError in thesis generate/debate, commit `6ab76f4`); scenari generati per
+la prima volta con Claude vero (Bahrain, Vietnam — qualità alta); backfill storico incrementale
+(+1 WHO DON); geoloc Qwen batch in corso (ritmo confermato ~90s/evento, solo overnight);
+CP-024 riconfermato bloccato (azione utente).
+
+**Prossima azione (utente)**: review/merge PR #24 (ora comprende anche fix cli.py + doc). Poi:
+lanciare geoloc Qwen overnight per smaltire backlog (2181 eventi), registrare `RELIEFWEB_APPNAME`,
+concedere Full Disk Access per CP-024, continuare a lanciare `thesis debate`/`scenario generate`
+periodicamente per accumulare dati di calibrazione (Brier/time-adjusted) — l'unica metrica che conta.
+
+---
+
+## Fase precedente: chiusura ciclo PR notturne + igiene repo — 2026-07-19
 
 **Stato**: #20/#21/#22 mergiate su main. #23 chiusa senza merge → riaperta come
 **PR #24** (`fix/cp023-yfinance-retry`, stesso branch, main mergiata dentro, 697 verdi).

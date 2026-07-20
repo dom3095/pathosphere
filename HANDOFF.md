@@ -1,6 +1,44 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-19 — PR notturne #20/#21/#22 mergiate; #23 chiusa e riaperta come PR #24 (+ igiene ruff/doc); in attesa review.*
+*Aggiornato: 2026-07-19/20 — PR #24 in attesa review; primo esercizio reale end-to-end del sistema (scenari, debate CP-029 chiuso, backfill, geoloc); CP-024 confermato ancora bloccato (azione utente).*
+
+## Sessione 2026-07-19/20 — primo esercizio reale end-to-end (autonoma, su richiesta, branch `fix/cp023-yfinance-retry`)
+
+**Contesto**: sistema costruito (fasi 0-4) ma quasi mai eserciziato con dati/run reali. Utente ha
+lanciato 5 azioni sotto `caffeinate -i uv run pathos ...`, chiesto di leggere gli output e fixare
+i problemi emersi, restando sullo stesso branch.
+
+1. **Backfill storico**: `ucdp` (385,918 righe lette, 15,840 tenute ≥25 morti, +0 eventi nuovi — già
+   presenti da run precedenti), `who-don` (+1 evento), `econ-crises` (+0). `reliefweb` saltato:
+   `RELIEFWEB_APPNAME` non registrato (azione utente, resta in lista).
+2. **`pathos scenario generate`** — primo run reale mai fatto: 58 hotspot candidati, top 2 (Bahrain,
+   Vietnam) → 2 scenario set, 8 scenari MECE, 8 predictions, 24 indicatori watchlist. Prompt ACH
+   validato su Claude vero — qualità alta (net assessment, key assumptions, invalidazione, ACH rating
+   E1-E4 per scenario, tutti coerenti).
+3. **`pathos thesis debate`** — **CP-029 chiuso**: vedi `CRITICAL_POINTS.md`. Run id=5 completo in
+   ~82 minuti, 6 tesi, 2 auto-open. Scoperta laterale: run id=4 (14/07) era già completo ma mai
+   verificato/marcato — CP-029 restava "aperto" per pura mancanza di controllo, non per un problema
+   reale residuo.
+   - **Bug trovato e fixato**: primo tentativo di debate crashava con traceback Python pieno
+     (`ValueError: No brief found for 2026-07-19`) invece di un messaggio pulito — `run_debate`/
+     `generate_theses` alzano `ValueError` per precondizioni mancanti ma il CLI non lo intercettava
+     (i comandi `scenario` già lo fanno). Fix in `pathosphere/cli.py`: `try/except ValueError` →
+     `click.ClickException`, stesso pattern. Commit `6ab76f4`, 51 test debate+thesis verdi.
+   - Lanciato `pathos brief` come precondizione (mancava per oggi), poi rilanciato il debate.
+4. **Batch geoloc Qwen** (`pathos extract --geolocate-qwen --geoloc-limit 200`): in corso in
+   background al momento di questo aggiornamento — euristica 0 nuovi risolti su 2181 (già tutti
+   passati per l'euristica in run precedenti), fallback Qwen al ritmo di **~86-90s/evento**, coerente
+   con la stima già in CP-022 (90-113s) — nessuna sorpresa, confermato che il backfill completo
+   (~2181 eventi ambigui, cresciuti da 1324 per nuova ingestione) è **plausibile solo overnight**,
+   non in sessione interattiva. Wikidata linking rate-limited (429) durante lo stesso giro — comportamento
+   difensivo già previsto (abort pulito, retry al prossimo ciclo).
+5. **CP-024 (launchd)** — ri-diagnosticato: stato identico a prima, `EX_CONFIG`/`Operation not
+   permitted` su `.venv/bin/activate`, causa TCC macOS su `/bin/bash`, zero fix possibile via codice.
+   Confermato in `CRITICAL_POINTS.md`, resta azione esclusiva utente (Full Disk Access).
+
+**Netto**: 1 bug reale trovato e fixato (traceback debate/generate), 1 CP chiuso per verifica mai
+fatta (CP-029), 1 CP riconfermato aperto (CP-024), nessuna sorpresa sulla latenza Qwen (già
+documentata). Portafogli/tesi ora hanno dati reali freschi (debate id=5: 6 tesi, 2 trade auto-aperti).
 
 ## Sessione 2026-07-19 — chiusura ciclo PR + igiene repo
 

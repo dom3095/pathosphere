@@ -462,6 +462,12 @@ nessuno lancia il comando manualmente.
 **Azione:** nessuna per l'agent — segnalato per azione utente. Dopo la concessione permessi, verificare
 con `launchctl kickstart -k gui/$(id -u)/com.pathosphere.loop` e controllare che `launchd.log` si popoli.
 
+**Re-diagnosi (2026-07-19)**: stato invariato — `launchctl print gui/501/com.pathosphere.loop` conferma
+`last exit code = 78: EX_CONFIG`, `launchd_error.log` ancora `Operation not permitted` su
+`.venv/bin/activate`, `launchd.log` (stdout) ancora vuoto. Nessun fix di codice possibile: è TCC/privacy
+macOS su un binario di sistema (`/bin/bash`), non sul progetto. Confermato ancora aperto, azione resta
+esclusivamente utente.
+
 ---
 
 ## CP-025: brief mattutino senza contenuto narrativo nei giorni senza divergenze — **RISOLTO 2026-07-14**
@@ -547,7 +553,7 @@ correggere.
 
 ---
 
-## CP-029: `pathos thesis debate` — non la concorrenza, è la velocità del modello, variabile e crescente nel tempo — **APERTO, in handoff** (3 run reali falliti, id 1/2/3; timeout 1800s + retry implementati, da validare con run reale)
+## CP-029: `pathos thesis debate` — non la concorrenza, è la velocità del modello, variabile e crescente nel tempo — **RISOLTO 2026-07-19** (2 run completi consecutivi: id=4 il 14/07, id=5 il 19/07 — mai marcato chiuso nonostante id=4 riuscito)
 
 **Contesto (2026-07-14)**: primo run reale di `pathos thesis debate` (mai lanciato prima d'ora — verificato,
 nessuna traccia nei log). Crashato allo Step 1 (research) con `httpx.ReadTimeout` dopo esattamente 120.0s
@@ -637,10 +643,18 @@ nessun run nuovo dopo id=3, ultimo status sempre `failed`.
 3. Accettare il costo e lanciare overnight con margine molto ampio, monitorando `data/logs/` al mattino
    invece di aspettare in sessione.
 
-**Azione**: prossimo run reale lanciato manualmente dall'utente (vedi prompt di ripresa in
-`HANDOFF.md`) — CP-029 si chiude SOLO con `debates.status='complete'` verificato nel DB. Peggior caso
-teorico con nuovi parametri: 13 chiamate × 1800s × 2 tentativi ≈ 13h — improbabile, ma lanciare
-overnight con `caffeinate`.
+**Chiusura (2026-07-19)**: verificato nel DB `debates.status` — id=4 (14/07, 21:28:51) **già completo**,
+mai controllato/registrato all'epoca (HANDOFF continuava a dire "3 run falliti, da validare"). Rilanciato
+un run reale sotto `caffeinate -i uv run pathos thesis debate` (macchina non totalmente scarica, sessione
+Claude Code attiva in parallelo — condizione peggiore, non quella ideale mai testata): **id=5, completo**,
+partito 17:53:29 finito 19:15:58 → **~82 minuti**, nessun timeout/retry scattato, 6 tesi (3 primarie + 3
+alternative), 2 auto-open a soglia confidence, 17 watchlist items. Due run completi consecutivi (id=4, id=5)
+bastano a chiudere: timeout 1800s + retry (fix 2026-07-14 notte) tengono. Nota minore emersa in id=5:
+`_run_divergence_detection` (Qwen) ha prodotto JSON non parsabile una volta → gestito come da design
+(warning + lista vuota, nessun crash, fence-stripping già centralizzato in `llm/client.py`), risultato
+`Divergences: 0` invece di 2-3 — limite di qualità del 4B su un confronto a 6 vie, non un bug.
+Opzione 2 (isolare la causa della latenza crescente) resta non investigata — non bloccante, il timeout
+ampio la assorbe comunque.
 
 ---
 
