@@ -16,6 +16,15 @@ CP-024 riconfermato bloccato (azione utente).
 batch geoloc riavviato apposta col fix, 200/200 chiamate, zero schema-rejection, errore
 0.5% (era ~1/10-15 pre-fix). Backlog geoloc sceso da 2181 a **1336** (`pathos doctor` verificato).
 
+**Aggiornamento 2026-07-21/22 — CP-033 (2 round `/code-review` sui fix)**: primo round sul branch
+intero (9 finding, tutti applicati: BriefNotFoundError dedicata, retry statement indipendenti,
+doctor query allargata, tenacity, capability cache Qwen). Secondo round SUI FIX del primo (per
+verificare che i fix stessi non avessero introdotto bug) — trovato e fixato 1 bug reale (guardia
+warning morta, duplicati contraddittori in fundamentals.py), documentato 1 tradeoff non menzionato
+(latenza 3x), fixato 1 resource-leak cosmetico (`conn.close()` in `finally`), aggiornato wiki.md
+stale. Aperto **CP-034** (fuori scope, `scenarios.py` non toccato da questo branch): stesso
+bug-pattern trovato per analogia in `scenario_review` — sessione dedicata futura.
+
 **Prossima azione (utente)**: review/merge PR #24 (ora comprende: CP-023 retry yfinance, igiene
 ruff/doc, fix cli.py precondizioni, CP-032 structured output). Poi: altri batch geoloc per
 smaltire il resto del backlog, registrare `RELIEFWEB_APPNAME`, concedere Full Disk Access per

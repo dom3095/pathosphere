@@ -1404,10 +1404,10 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
             auto_open_threshold=auto_open_threshold,
         ))
     except BriefNotFoundError as exc:
-        conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
-    conn.close()
+    finally:
+        conn.close()
 
     if result.theses_created == 0 and result.refusal_reason:
         click.echo(
@@ -1714,10 +1714,10 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
             )
         )
     except BriefNotFoundError as exc:
-        conn.close()
         click.echo(f"Error: {exc}")
         raise SystemExit(1)
-    conn.close()
+    finally:
+        conn.close()
 
     click.echo(
         f"\nDebate complete:\n"

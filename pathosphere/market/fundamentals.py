@@ -346,6 +346,11 @@ def fetch_fundamentals(ticker: str) -> FundamentalsSnapshot | None:
     # unsupported for this instrument) discarded siblings that fetched fine
     # on every attempt, losing data the codebase otherwise treats as usable
     # (Piotroski F scores with whatever subset of the three is available).
+    # Tradeoff accepted: worst case (a shared root cause — e.g. a session-
+    # level rate-limit — fails all three) now sleeps up to ~18s (3 × ~6s)
+    # instead of the old bundled ~6s. Correctness (not silently losing a
+    # statement that actually succeeded) wins over the tripled latency
+    # ceiling, same time-over-quality precedent as CP-029's 1800s timeout.
     balance, balance_exc = _with_retries("balance_sheet", ticker, lambda: tk.balance_sheet)
     income, income_exc = _with_retries("financials", ticker, lambda: tk.financials)
     cashflow, cashflow_exc = _with_retries("cashflow", ticker, lambda: tk.cashflow)
@@ -368,7 +373,11 @@ def fetch_fundamentals(ticker: str) -> FundamentalsSnapshot | None:
     statements_ok = any(
         df is not None and not df.empty for df in (balance, income, cashflow)
     )
-    if not statements_ok and "statements fetch failed" not in " ".join(snap.warnings):
+    # Only say "empty" when nothing actually failed (fetches succeeded but
+    # returned empty frames, e.g. non-US ticker) — checking the `failed`
+    # dict directly instead of string-matching the warning text above
+    # avoids the two drifting out of sync if either message is reworded.
+    if not statements_ok and not failed:
         snap.warnings.append("financial statements empty on yfinance")
 
     # ── Altman Z (skip for financials — leverage is their core business) ──

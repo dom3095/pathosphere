@@ -1,6 +1,40 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-21 — PR #24 in attesa review; esercizio reale end-to-end concluso: CP-029 e CP-032 chiusi e confermati dal vivo, CP-024 confermato ancora bloccato (azione utente).*
+*Aggiornato: 2026-07-21/22 — PR #24 in attesa review; 2 round di `/code-review` sui fix (CP-033), tutti i bug reali risolti; CP-034 aperto (pre-esistente, fuori scope, trovato per analogia in scenario_review).*
+
+## Secondo round code-review sui fix di CP-033 (2026-07-21/22)
+
+Su richiesta utente, `/code-review --effort high 4b19d8b..HEAD` sul commit di fix del primo round
+(review-fixes-di-review-fixes). 6 finding verificati, applicati:
+- **Bug reale trovato e fixato**: `fundamentals.py` — la guardia "financial statements empty"
+  string-matchava il vecchio testo "statements fetch failed"; il fix del primo round aveva
+  rinominato il warning in "statements fetch partially failed" senza aggiornare la guardia →
+  warning duplicati/contraddittori quando tutti e 3 gli statement falliscono. Fix: check diretto
+  sul dict `failed` invece di string-matching fragile sul testo. Nuovo test di regressione.
+- **Tradeoff non documentato**: split in 3 retry indipendenti (fix precedente) triplica il
+  worst-case di sleep (6s→18s) per il caso a causa condivisa (rate-limit di sessione, il più
+  realistico secondo i commenti CP-023 stessi) — non menzionato da nessuna parte. Fix: commento
+  esplicito nel codice + wiki.md.
+- **`conn.close()` saltato**: se un'eccezione diversa da `BriefNotFoundError` propaga, `conn.close()`
+  (dopo il try/except, stessa indentazione) non veniva mai eseguito. Fix: spostato in `finally` in
+  entrambi i comandi (`thesis_generate`/`thesis_debate`). Severità reale bassa (processo fresco per
+  invocazione CLI) ma fix corretto e a costo zero.
+- **Doc stale**: wiki.md descriveva ancora il modello di retry pre-fix (bundled, non 3 indipendenti)
+  e il campione doctor pre-fix ("tesi arricchite" invece di "con ticker proposto"). Aggiornato.
+- **Latente, non fixato**: `_mentions_schema` (llm/client.py) con match `"schema" in text` largo —
+  rischio teorico di misclassificare un json_schema malformato come "capability non supportata".
+  Nessuna esposizione reale oggi (solo 4 schemi statici hand-written nel codebase) — lasciato,
+  annotato per quando/se si introducono schemi dinamici.
+- **CP-034 aperto (fuori scope)**: per analogia con `BriefNotFoundError`, verificato se lo stesso
+  pattern (catch ValueError largo che nasconde bug reali) esiste altrove in cli.py. `scenario_generate`
+  REFUTATO (ogni altro ValueError è già guardato localmente). `scenario_review` CONFERMATO: chiama
+  `revise_prediction`→`_get_open_prediction` non guardato, che può alzare ValueError per motivi di
+  integrità dati distinti dalle 2 precondizioni documentate — stesso bug-pattern del round precedente,
+  ma in un file (`scenarios.py`) non toccato da questo branch. Documentato, non fixato — sessione dedicata.
+
+**Verificato**: 706 test verdi, ruff pulito.
+
+## Chiusura CP-032 (2026-07-21) — batch geoloc riavviato per validare lo schema JSON
 
 ## Chiusura CP-032 (2026-07-21) — batch geoloc riavviato per validare lo schema JSON
 

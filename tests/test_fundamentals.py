@@ -290,6 +290,29 @@ def test_statements_failure_retries_then_degrades(monkeypatch):
     assert len(delays) == 2
 
 
+def test_statements_all_fail_no_duplicate_contradictory_warning(monkeypatch):
+    """Regression: the 'financial statements empty on yfinance' guard used
+    to string-match the OLD 'statements fetch failed' warning text; once the
+    per-statement fix reworded it to 'statements fetch partially failed',
+    the guard silently stopped matching and both warnings (one saying
+    'failed', one implying 'just empty') got appended together whenever all
+    three statements failed. Only the specific per-statement failure message
+    should appear."""
+    monkeypatch.setattr("pathosphere.market.fundamentals._sleep", lambda _delay: None)
+    tk = MagicMock()
+    tk.info = dict(_INFO_FULL)
+    type(tk).balance_sheet = PropertyMock(side_effect=Exception("down"))
+    type(tk).financials = PropertyMock(side_effect=Exception("down"))
+    type(tk).cashflow = PropertyMock(side_effect=Exception("down"))
+
+    with patch("pathosphere.market.fundamentals.yf.Ticker", return_value=tk):
+        snap = fetch_fundamentals("NVDA")
+
+    assert snap is not None
+    assert any("statements fetch partially failed" in w for w in snap.warnings)
+    assert not any("financial statements empty on yfinance" in w for w in snap.warnings)
+
+
 def test_statements_partial_failure_keeps_successful_statement(monkeypatch):
     """CP-032 review fix regression test: balance_sheet keeps fetching fine
     on every attempt while financials permanently fails — the pre-fix code

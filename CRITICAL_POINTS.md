@@ -929,3 +929,27 @@ già abbastanza basso che il design esistente (skip + retry al prossimo batch) r
 
 **Verificato**: 705 test verdi (11 nuovi: regressione statement parziali, doctor total-failure,
 llm client body-check + capability cache), ruff pulito.
+
+---
+
+## CP-034: `pathos scenario review` — ValueError di `revise_prediction` non distinto da precondizione (aperto, pre-esistente)
+
+**Contesto**: seconda review (`/code-review` sui fix di CP-033) — verifica per analogia: se `BriefNotFoundError`
+serviva a distinguere una precondizione banale da un bug reale di pipeline in `thesis_debate`, lo stesso
+pattern (`except ValueError` largo) esiste altrove? Trovato in `scenario_generate` REFUTATO (ogni altro
+ValueError interno è già guardato/catturato localmente, verificato leggendo `generate_scenarios` per intero).
+Trovato in **`scenario_review` CONFERMATO**: `review_scenarios` (scenarios.py) chiama `revise_prediction`
+(non guardato da try/except locale) che internamente chiama `_get_open_prediction` — questa può alzare
+`ValueError` per "Prediction {id} not found" o "already resolved" (bug di integrità dati: es. `prediction_id`
+di uno scenario che punta a una prediction risolta/cancellata per altra via), condizione diversa e più seria
+delle due precondizioni documentate ("set not found"/"not active", righe 939/941). `cli.py` cattura tutto
+con lo stesso `except ValueError` largo (~riga 1919) e mostra lo stesso messaggio pulito, nascondendo un bug
+vero. Nota aggiuntiva del verificatore: c'è anche un `UPDATE scenarios SET probability = ...` (riga ~1005-1008)
+senza wrapper transazionale/rollback in questo path, a differenza di `_persist_scenario_set`.
+
+**Impatto**: basso/medio — condizione rara (richiede uno scenario con `prediction_id` orfano), ma se capita
+nasconde un vero bug di integrità sotto un messaggio "set not found"-style.
+
+**Azione**: non fixato in questo branch (fuori scope — `scenarios.py` non è toccato da CP-023/032/033).
+Sessione dedicata futura: applicare lo stesso pattern `BriefNotFoundError`-style (eccezione dedicata per le
+2 precondizioni documentate di `review_scenarios`) + valutare wrapper transazionale sull'update probability.
