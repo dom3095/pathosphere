@@ -893,3 +893,39 @@ batch prima del riavvio. Campione singolo insufficiente per confermare la causa 
 residuo 0.5% (sospetto non verificato: carattere `\xa0` non-ASCII nel titolo), ma il tasso è
 già abbastanza basso che il design esistente (skip + retry al prossimo batch) resta sufficiente
 — nessun fix ulteriore necessario ora.
+
+---
+
+## CP-033: code review PR #24 — 9 finding, tutti applicati — **RISOLTO 2026-07-21**
+
+**Contesto**: `/code-review --effort high` sul branch prima del merge (8 angoli + verifica indipendente
+1-voto). 9 finding sopravvissuti (6 CONFIRMED, 3 PLAUSIBLE), tutti applicati su richiesta utente.
+
+**Fix applicati** (dettaglio commit `f2fe2c7`):
+- `cli.py`: `BriefNotFoundError(ValueError)` dedicata (`thesis.py`) invece di `except ValueError`
+  generico in `thesis_generate`/`thesis_debate` — il catch largo inghiottiva anche il ValueError
+  reale di `debate.py::_run_synthesis` ("Synthesis returned invalid JSON") sotto lo stesso
+  messaggio pulito del banale brief-mancante, perdendo traceback su un bug vero dopo 13 chiamate
+  Qwen già spese. Idioma errori riportato a `click.echo+SystemExit(1)` (10 altri punti nel file,
+  stesso problema) invece di un terzo pattern (`click.ClickException`) introdotto e mai
+  riconciliato.
+- `fundamentals.py`: `balance_sheet`/`financials`/`cashflow` ora ritentati indipendentemente
+  (3 chiamate `_with_retries` separate) invece di bundle in una closure — un fallimento
+  permanente su una gamba non scarta più le altre già ottenute con successo (regressione vs
+  comportamento pre-CP-023, che teneva dati parziali per Piotroski F/Altman Z).
+- `doctor.py`: check "fundamentals quality" — query allargata a `WHERE instrument IS NOT NULL`,
+  i fallimenti totali (`fundamentals_json` NULL) ora contano nel WARN invece di essere esclusi
+  dal campione (bucket `no_data` separato, testo onesto sull'ambiguità con `--no-fundamentals`).
+- `_MarketEnrichment.docs()` (`thesis.py`) ora `async def`, offload via `asyncio.to_thread` —
+  i sleep di backoff CP-023 (fino a ~12s/ticker) bloccavano l'event loop dentro pipeline async.
+- `fundamentals.py`: `_with_retries` ora wrappa `tenacity.Retrying` (dipendenza già presente,
+  già usata in `ingest/gdelt.py`) invece di un secondo loop hand-rolled duplicato.
+- `llm/client.py`: fallback su rifiuto schema Qwen ora ispeziona il body del 400
+  (`_mentions_schema`) prima di assumere sia schema-related — un 400 non correlato (nome modello
+  sbagliato, richiesta malformata) ora propaga normalmente invece di essere ritentato in silenzio.
+  Cache di capability per-istanza (`self._schema_unsupported`) — una volta confermato il rifiuto,
+  le chiamate successive sullo stesso client saltano il probe, mitigando anche l'accumulo di
+  timeout doppio segnalato come PLAUSIBLE minore.
+
+**Verificato**: 705 test verdi (11 nuovi: regressione statement parziali, doctor total-failure,
+llm client body-check + capability cache), ruff pulito.
