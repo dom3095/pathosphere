@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pathosphere.agent.thesis import (
-    ThesisResult,
+    BriefNotFoundError,
     _build_prompt,
     _load_brief,
     _maybe_auto_open,
@@ -237,7 +237,7 @@ def test_generate_theses_full(tmp_db):
 
 def test_generate_theses_no_brief_raises(tmp_db):
     mock_client = MagicMock()
-    with pytest.raises(ValueError, match="No brief found"):
+    with pytest.raises(BriefNotFoundError, match="No brief found"):
         asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2000-01-01"))
 
 
@@ -691,3 +691,26 @@ def test_generate_theses_auto_open_flag_disabled(tmp_db):
     assert result.auto_opened_ids == []
     rows = tmp_db.execute("SELECT status FROM theses").fetchall()
     assert all(r["status"] == "pending" for r in rows)
+
+
+# ── CP-023: per-run fundamentals degradation summary ─────────────────────────
+
+def test_market_enrichment_degradation_counts():
+    from pathosphere.agent.thesis import _MarketEnrichment
+
+    e = _MarketEnrichment(enrich_fundamentals=True, enrich_technicals=False)
+    e._fund_cache = {
+        "AAA": None,  # fetch failed
+        "BBB": {"snapshot": {"data_quality": "minimal", "quote_type": "EQUITY"}},
+        "CCC": {"snapshot": {"data_quality": "minimal", "quote_type": "ETF"}},  # by design
+        "DDD": {"snapshot": {"data_quality": "full", "quote_type": "EQUITY"}},
+    }
+    assert e.fundamentals_degradation() == {"tickers": 4, "failed": 1, "degraded": 1}
+
+
+def test_market_enrichment_degradation_empty_run():
+    from pathosphere.agent.thesis import _MarketEnrichment
+
+    e = _MarketEnrichment(enrich_fundamentals=True, enrich_technicals=False)
+    assert e.fundamentals_degradation() == {"tickers": 0, "failed": 0, "degraded": 0}
+    e.log_fundamentals_degradation("THESIS")  # no tickers → no crash, no log

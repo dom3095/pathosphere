@@ -407,7 +407,20 @@ le chiavi giuste.
 1 predizione aperta; post-fix pagina renderizza senza eccezioni sia con sola predizione
 aperta sia con predizione risolta (ramo calibrazione + chart esercitati). Ruff pulito,
 498 test verdi invariati (pagina senza test pytest dedicati, come da nota Fase 4).
-## CP-023: fondamentali yfinance — degradazione silenziosa e dati non cross-verificati (aperto)
+## CP-023: fondamentali yfinance — degradazione silenziosa e dati non cross-verificati — **PARTE 1 RISOLTA 2026-07-17** (retry+visibilità, branch `fix/cp023-yfinance-retry`), parte 2 (cross-check EDGAR) aperta
+
+**Fix parte 1 (2026-07-17)**: (a) retry con backoff esponenziale sulle 2 chiamate rete di
+`fetch_fundamentals` (info, statements): 3 tentativi, 2s→4s (`_with_retries`, `_sleep`
+monkeypatchabile) — un rate-limit transitorio non degrada più il run; contratto never-raise
+invariato. (b) Warning aggregato per run in `thesis generate`/`debate`
+(`_MarketEnrichment.log_fundamentals_degradation`): scatta se ≥metà ticker failed/degradati;
+minimal su non-equity NON conta (design per ETF/future/FX). (c) `pathos doctor` check
+`fundamentals quality`: ultime 20 tesi con `fundamentals_json`, WARN se ≥metà none/minimal su
+equity. Test: +3 fundamentals (retry poi successo, esaurimento tentativi, statements degradano),
++2 thesis (conteggi, run vuoto), +3 doctor (skip/warn/ok). 694 verdi.
+
+**Resta aperto (parte 2)**: nessun cross-check dei numeri (EDGAR v2) — line item Yahoo
+disallineati di un anno restano non rilevabili.
 
 **Contesto:** `pathosphere/market/fundamentals.py` arricchisce le tesi con ratio/Altman Z/Piotroski F
 da yfinance. Per design degrada senza mai bloccare `generate_theses` (`None`/campi mancanti + warning
@@ -448,6 +461,12 @@ nessuno lancia il comando manualmente.
 
 **Azione:** nessuna per l'agent — segnalato per azione utente. Dopo la concessione permessi, verificare
 con `launchctl kickstart -k gui/$(id -u)/com.pathosphere.loop` e controllare che `launchd.log` si popoli.
+
+**Re-diagnosi (2026-07-19)**: stato invariato — `launchctl print gui/501/com.pathosphere.loop` conferma
+`last exit code = 78: EX_CONFIG`, `launchd_error.log` ancora `Operation not permitted` su
+`.venv/bin/activate`, `launchd.log` (stdout) ancora vuoto. Nessun fix di codice possibile: è TCC/privacy
+macOS su un binario di sistema (`/bin/bash`), non sul progetto. Confermato ancora aperto, azione resta
+esclusivamente utente.
 
 ---
 
@@ -534,7 +553,7 @@ correggere.
 
 ---
 
-## CP-029: `pathos thesis debate` — non la concorrenza, è la velocità del modello, variabile e crescente nel tempo — **APERTO, in handoff** (3 run reali falliti, id 1/2/3; timeout 1800s + retry implementati, da validare con run reale)
+## CP-029: `pathos thesis debate` — non la concorrenza, è la velocità del modello, variabile e crescente nel tempo — **RISOLTO 2026-07-19** (2 run completi consecutivi: id=4 il 14/07, id=5 il 19/07 — mai marcato chiuso nonostante id=4 riuscito)
 
 **Contesto (2026-07-14)**: primo run reale di `pathos thesis debate` (mai lanciato prima d'ora — verificato,
 nessuna traccia nei log). Crashato allo Step 1 (research) con `httpx.ReadTimeout` dopo esattamente 120.0s
@@ -624,10 +643,18 @@ nessun run nuovo dopo id=3, ultimo status sempre `failed`.
 3. Accettare il costo e lanciare overnight con margine molto ampio, monitorando `data/logs/` al mattino
    invece di aspettare in sessione.
 
-**Azione**: prossimo run reale lanciato manualmente dall'utente (vedi prompt di ripresa in
-`HANDOFF.md`) — CP-029 si chiude SOLO con `debates.status='complete'` verificato nel DB. Peggior caso
-teorico con nuovi parametri: 13 chiamate × 1800s × 2 tentativi ≈ 13h — improbabile, ma lanciare
-overnight con `caffeinate`.
+**Chiusura (2026-07-19)**: verificato nel DB `debates.status` — id=4 (14/07, 21:28:51) **già completo**,
+mai controllato/registrato all'epoca (HANDOFF continuava a dire "3 run falliti, da validare"). Rilanciato
+un run reale sotto `caffeinate -i uv run pathos thesis debate` (macchina non totalmente scarica, sessione
+Claude Code attiva in parallelo — condizione peggiore, non quella ideale mai testata): **id=5, completo**,
+partito 17:53:29 finito 19:15:58 → **~82 minuti**, nessun timeout/retry scattato, 6 tesi (3 primarie + 3
+alternative), 2 auto-open a soglia confidence, 17 watchlist items. Due run completi consecutivi (id=4, id=5)
+bastano a chiudere: timeout 1800s + retry (fix 2026-07-14 notte) tengono. Nota minore emersa in id=5:
+`_run_divergence_detection` (Qwen) ha prodotto JSON non parsabile una volta → gestito come da design
+(warning + lista vuota, nessun crash, fence-stripping già centralizzato in `llm/client.py`), risultato
+`Divergences: 0` invece di 2-3 — limite di qualità del 4B su un confronto a 6 vie, non un bug.
+Opzione 2 (isolare la causa della latenza crescente) resta non investigata — non bloccante, il timeout
+ampio la assorbe comunque.
 
 ---
 
@@ -815,3 +842,114 @@ il fallimento richiede un errore infrastrutturale, non un input cattivo.
   dedicata (file fuori dallo scope del branch scenari).
 - **Nota**: la pagina Scenari nuova legge le probabilità direttamente dalle tabelle, non da
   `get_calibration()` — non è affetta.
+
+---
+
+## CP-032: output JSON di Qwen non vincolato — solo istruzione testuale, mai schema — **RISOLTO 2026-07-20/21** (confermato dal vivo)
+
+**Contesto**: durante il primo `pathos thesis debate` reale della sessione (id=5, CP-029), la
+divergence detection ha prodotto JSON non parsabile una volta (`Expecting value: line 1 column 0`,
+gestito con warning + lista vuota, nessun crash) e lo stesso errore è comparso nello stesso giorno
+sul batch `--geolocate-qwen` (`RSS geoloc/Qwen failed for event 121959: Expecting value: line 1
+column 0`). Fino a oggi `json_mode=True` (`llm/client.py`) iniettava solo un prompt testuale
+"rispondi SOLO con JSON valido" — nessun vincolo lato server, Qwen3 4B può comunque sbagliare
+sintassi su prompt complessi (confronto 6 analisi, ecc.).
+
+**Fix**: `LLMClient.complete()` accetta ora `json_schema: dict | None` — se passato, per il backend
+qwen-local viene inoltrato come `response_format: {"type": "json_schema", "json_schema": {...}}`
+all'endpoint OpenAI-compatible di Ollama (decoding vincolato a grammatica, non solo istruzione a
+parole). Applicato ai 4 call site con evidenza di fallimento reale: `debate.py` (_run_research,
+_run_divergence_detection, _run_critique — tutti Qwen-only) e `extract.py` (`_GEOLOC_SCHEMA` sul
+fallback Qwen della geolocalizzazione RSS). Per il backend claude il parametro non fa nulla di
+speciale (nessun errore osservato su quel path finora, non serve).
+
+**Rete di sicurezza (nessuna verifica live disponibile)**: al momento del fix, l'unico Ollama
+raggiungibile stava servendo il batch geoloc overnight (`-np 1`, una richiesta alla volta) — una
+sonda di verifica si è accodata e ha superato 120s di timeout senza risposta. **Non verificato dal
+vivo se questa build di Ollama (0.31.1) onora `response_format`/`json_schema` sull'endpoint
+OpenAI-compat.** Per questo `_complete_qwen` intercetta un eventuale `HTTPStatusError` 400 e
+ritenta UNA volta senza `response_format` (log warning, non crash) — se il server rifiuta il
+vincolo, il comportamento degrada a quello di prima (solo prompt testuale), non rompe la pipeline.
+
+**Non toccato**: `_market_review_prompt` (thesis.py/debate.py, condiviso con backend claude) e i
+prompt di `scenarios.py`/`thesis.py` `_build_prompt` (generazione tesi/scenari) — schemi nidificati
+più complessi (narrative libere, ACH ratings, causal chain), usati anche col backend claude
+(nessun fallimento osservato lì), e nessuna evidenza di parse-fail reale su questi path finora.
+Estendere lo schema a questi resta opzionale, non urgente.
+
+**Verificato**: 700 test verdi (4 nuovi in `test_llm_client.py`: response_format nel payload,
+omesso quando schema=None, fallback su 400, più mock signature aggiornata in `test_debate.py`).
+Ruff pulito.
+
+**Conferma dal vivo (2026-07-21, batch `--geolocate-qwen --geoloc-limit 200`, riavviato apposta
+per usare il codice col fix invece di aspettare la fine del batch precedente pre-fix — sicuro,
+ogni evento si commette singolarmente, `with conn:` per-evento, nessun rischio di perdere
+progresso)**: **200/200 chiamate, zero rejection dello schema** (nessun log
+"response_format rejected" — Ollama 0.31.1 onora `response_format`/`json_schema`
+sull'endpoint OpenAI-compat, confermato). **1 solo errore su 200** (0.5%, stessa firma
+"Expecting value: line 1 column 1 (char 0)" = risposta vuota, non malformazione sintattica) —
+contro un tasso pre-fix di ~1 su 10-15 osservato la mattina dello stesso giorno sullo stesso
+batch prima del riavvio. Campione singolo insufficiente per confermare la causa esatta del
+residuo 0.5% (sospetto non verificato: carattere `\xa0` non-ASCII nel titolo), ma il tasso è
+già abbastanza basso che il design esistente (skip + retry al prossimo batch) resta sufficiente
+— nessun fix ulteriore necessario ora.
+
+---
+
+## CP-033: code review PR #24 — 9 finding, tutti applicati — **RISOLTO 2026-07-21**
+
+**Contesto**: `/code-review --effort high` sul branch prima del merge (8 angoli + verifica indipendente
+1-voto). 9 finding sopravvissuti (6 CONFIRMED, 3 PLAUSIBLE), tutti applicati su richiesta utente.
+
+**Fix applicati** (dettaglio commit `f2fe2c7`):
+- `cli.py`: `BriefNotFoundError(ValueError)` dedicata (`thesis.py`) invece di `except ValueError`
+  generico in `thesis_generate`/`thesis_debate` — il catch largo inghiottiva anche il ValueError
+  reale di `debate.py::_run_synthesis` ("Synthesis returned invalid JSON") sotto lo stesso
+  messaggio pulito del banale brief-mancante, perdendo traceback su un bug vero dopo 13 chiamate
+  Qwen già spese. Idioma errori riportato a `click.echo+SystemExit(1)` (10 altri punti nel file,
+  stesso problema) invece di un terzo pattern (`click.ClickException`) introdotto e mai
+  riconciliato.
+- `fundamentals.py`: `balance_sheet`/`financials`/`cashflow` ora ritentati indipendentemente
+  (3 chiamate `_with_retries` separate) invece di bundle in una closure — un fallimento
+  permanente su una gamba non scarta più le altre già ottenute con successo (regressione vs
+  comportamento pre-CP-023, che teneva dati parziali per Piotroski F/Altman Z).
+- `doctor.py`: check "fundamentals quality" — query allargata a `WHERE instrument IS NOT NULL`,
+  i fallimenti totali (`fundamentals_json` NULL) ora contano nel WARN invece di essere esclusi
+  dal campione (bucket `no_data` separato, testo onesto sull'ambiguità con `--no-fundamentals`).
+- `_MarketEnrichment.docs()` (`thesis.py`) ora `async def`, offload via `asyncio.to_thread` —
+  i sleep di backoff CP-023 (fino a ~12s/ticker) bloccavano l'event loop dentro pipeline async.
+- `fundamentals.py`: `_with_retries` ora wrappa `tenacity.Retrying` (dipendenza già presente,
+  già usata in `ingest/gdelt.py`) invece di un secondo loop hand-rolled duplicato.
+- `llm/client.py`: fallback su rifiuto schema Qwen ora ispeziona il body del 400
+  (`_mentions_schema`) prima di assumere sia schema-related — un 400 non correlato (nome modello
+  sbagliato, richiesta malformata) ora propaga normalmente invece di essere ritentato in silenzio.
+  Cache di capability per-istanza (`self._schema_unsupported`) — una volta confermato il rifiuto,
+  le chiamate successive sullo stesso client saltano il probe, mitigando anche l'accumulo di
+  timeout doppio segnalato come PLAUSIBLE minore.
+
+**Verificato**: 705 test verdi (11 nuovi: regressione statement parziali, doctor total-failure,
+llm client body-check + capability cache), ruff pulito.
+
+---
+
+## CP-034: `pathos scenario review` — ValueError di `revise_prediction` non distinto da precondizione (aperto, pre-esistente)
+
+**Contesto**: seconda review (`/code-review` sui fix di CP-033) — verifica per analogia: se `BriefNotFoundError`
+serviva a distinguere una precondizione banale da un bug reale di pipeline in `thesis_debate`, lo stesso
+pattern (`except ValueError` largo) esiste altrove? Trovato in `scenario_generate` REFUTATO (ogni altro
+ValueError interno è già guardato/catturato localmente, verificato leggendo `generate_scenarios` per intero).
+Trovato in **`scenario_review` CONFERMATO**: `review_scenarios` (scenarios.py) chiama `revise_prediction`
+(non guardato da try/except locale) che internamente chiama `_get_open_prediction` — questa può alzare
+`ValueError` per "Prediction {id} not found" o "already resolved" (bug di integrità dati: es. `prediction_id`
+di uno scenario che punta a una prediction risolta/cancellata per altra via), condizione diversa e più seria
+delle due precondizioni documentate ("set not found"/"not active", righe 939/941). `cli.py` cattura tutto
+con lo stesso `except ValueError` largo (~riga 1919) e mostra lo stesso messaggio pulito, nascondendo un bug
+vero. Nota aggiuntiva del verificatore: c'è anche un `UPDATE scenarios SET probability = ...` (riga ~1005-1008)
+senza wrapper transazionale/rollback in questo path, a differenza di `_persist_scenario_set`.
+
+**Impatto**: basso/medio — condizione rara (richiede uno scenario con `prediction_id` orfano), ma se capita
+nasconde un vero bug di integrità sotto un messaggio "set not found"-style.
+
+**Azione**: non fixato in questo branch (fuori scope — `scenarios.py` non è toccato da CP-023/032/033).
+Sessione dedicata futura: applicare lo stesso pattern `BriefNotFoundError`-style (eccezione dedicata per le
+2 precondizioni documentate di `review_scenarios`) + valutare wrapper transazionale sull'update probability.

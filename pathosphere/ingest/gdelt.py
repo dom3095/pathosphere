@@ -17,8 +17,7 @@ import io
 import sqlite3
 import zipfile
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 import httpx

@@ -8,21 +8,37 @@ snapshots via yfinance, and persists all rows to theses + watchlist_items.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date, timezone
+from datetime import date
 
 from loguru import logger
 
 from pathosphere.agent.approval import approve_thesis_with_prediction, open_trade_and_link
 from pathosphere.config import get_settings
 from pathosphere.llm.client import LLMClient
-from pathosphere.market.fundamentals import fetch_fundamentals, render_fundamentals_text
+from pathosphere.market.fundamentals import (
+    _EQUITY_TYPES,
+    fetch_fundamentals,
+    render_fundamentals_text,
+)
 from pathosphere.market.prices import fetch_price
 from pathosphere.market.technicals import fetch_technicals, render_technicals_text
 
 _N_DEFAULT = 3
+
+
+class BriefNotFoundError(ValueError):
+    """No brief exists for the requested date (`pathos brief` not run yet).
+
+    A distinct type from a plain ValueError so callers (the CLI) can catch
+    this specific, user-fixable precondition without also swallowing other
+    ValueErrors raised deeper in the pipeline (e.g. malformed LLM synthesis
+    output) — those should surface with their traceback, not this one's
+    clean one-line message.
+    """
 
 
 # ── result type ───────────────────────────────────────────────────────────────
@@ -240,12 +256,57 @@ class _MarketEnrichment:
         self._tech_cache: dict[str, dict | None] = {}
         self.review_items: list[dict] = []
 
-    def docs(self, ticker: str | None) -> tuple[str | None, str | None]:
+    async def docs(self, ticker: str | None) -> tuple[str | None, str | None]:
         """(fundamentals_json, technicals_json) for *ticker*, honouring the
-        per-layer enable flags. Cached per ticker within the run."""
-        fund = _fundamentals_doc(ticker, self._fund_cache) if self.enrich_fundamentals else None
-        tech = _technicals_doc(ticker, self._tech_cache) if self.enrich_technicals else None
+        per-layer enable flags. Cached per ticker within the run.
+
+        Offloaded to a worker thread: fetch_fundamentals/fetch_technicals are
+        blocking (yfinance network I/O plus the CP-023 retry backoff sleeps,
+        up to ~12s per ticker on repeated failures), and this method is only
+        ever called from async pipeline code (generate_theses, debate.py's
+        _persist_theses) — running them inline would block the event loop
+        for that whole duration.
+        """
+        fund = (
+            await asyncio.to_thread(_fundamentals_doc, ticker, self._fund_cache)
+            if self.enrich_fundamentals else None
+        )
+        tech = (
+            await asyncio.to_thread(_technicals_doc, ticker, self._tech_cache)
+            if self.enrich_technicals else None
+        )
         return fund, tech
+
+    def fundamentals_degradation(self) -> dict[str, int]:
+        """Fundamentals health for this run (CP-023): failed = fetch returned
+        None; degraded = equity ticker with data_quality none/minimal (minimal
+        is the DESIGNED outcome for ETF/future/FX, so those don't count)."""
+        counts = {"tickers": 0, "failed": 0, "degraded": 0}
+        for doc in self._fund_cache.values():
+            counts["tickers"] += 1
+            if doc is None:
+                counts["failed"] += 1
+                continue
+            snapshot = doc["snapshot"]
+            if (snapshot.get("data_quality") in ("none", "minimal")
+                    and snapshot.get("quote_type") in _EQUITY_TYPES):
+                counts["degraded"] += 1
+        return counts
+
+    def log_fundamentals_degradation(self, tag: str) -> None:
+        """One loud per-run signal instead of scattered per-ticker warnings
+        (CP-023: enrichment can stay degraded for days unnoticed)."""
+        if not self.enrich_fundamentals:
+            return
+        c = self.fundamentals_degradation()
+        bad = c["failed"] + c["degraded"]
+        if c["tickers"] and bad * 2 >= c["tickers"]:
+            logger.warning(
+                f"{tag}: fundamentals enrichment DEGRADED this run — "
+                f"{c['failed']} failed + {c['degraded']} none/minimal equity "
+                f"of {c['tickers']} tickers (CP-023: yfinance rate-limit or "
+                f"non-US/small-cap coverage)"
+            )
 
     def queue_review(
         self, thesis_id: int, t: dict, ticker: str | None,
@@ -457,7 +518,7 @@ async def generate_theses(
         propose theses (thin signal) rather than a failure.
 
     Raises:
-        ValueError: If no brief exists for the given date.
+        BriefNotFoundError: If no brief exists for the given date.
     """
     if brief_date is None:
         brief_date = date.today().isoformat()
@@ -466,7 +527,7 @@ async def generate_theses(
 
     brief_content = _load_brief(conn, brief_date)
     if not brief_content:
-        raise ValueError(
+        raise BriefNotFoundError(
             f"No brief found for {brief_date}. Run `pathos brief` first."
         )
 
@@ -502,7 +563,7 @@ async def generate_theses(
 
     for t in theses_data[:n]:
         ticker = t.get("instrument")
-        fund_json, tech_json = enrichment.docs(ticker)
+        fund_json, tech_json = await enrichment.docs(ticker)
         price = _price_snapshot(ticker, tech_json)
         if ticker and price is None:
             logger.warning(f"THESIS: price fetch failed for {ticker}")
@@ -523,7 +584,7 @@ async def generate_theses(
 
         for alt in t.get("alternatives", []):
             alt_ticker = alt.get("instrument")
-            alt_fund, alt_tech = enrichment.docs(alt_ticker)
+            alt_fund, alt_tech = await enrichment.docs(alt_ticker)
             # Reuse already-fetched price if same ticker
             alt_price = price if alt_ticker == ticker else _price_snapshot(alt_ticker, alt_tech)
             alt_id = _save_thesis(
@@ -548,6 +609,7 @@ async def generate_theses(
             logger.warning(
                 f"THESIS: market review failed ({exc}) — theses saved without assessment"
             )
+    enrichment.log_fundamentals_degradation("THESIS")
 
     conn.commit()
     logger.success(

@@ -9,8 +9,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -479,7 +478,7 @@ def test_generate_brief_persists_to_db(tmp_db, tmp_path):
 
 def test_generate_brief_with_data(tmp_db, tmp_path):
     """Verify signal counts flow through correctly when DB has data."""
-    eid = _insert_event(tmp_db, title="Conflict", origin="portwatch", severity=4)
+    _insert_event(tmp_db, title="Conflict", origin="portwatch", severity=4)
     eid2 = _insert_event(tmp_db, title="Narrative event")
     _insert_divergence(tmp_db, eid2, score=0.8)
     a = _insert_entity(tmp_db, "TSMC", "company")

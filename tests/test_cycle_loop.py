@@ -1,6 +1,5 @@
 """Tests for the autonomous cycle loop with state persistence."""
 
-import json
 import tempfile
 from pathlib import Path
 from datetime import datetime

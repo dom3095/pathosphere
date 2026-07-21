@@ -25,6 +25,7 @@ Exit code contract (enforced by the CLI): 0 = no FAIL (warnings allowed),
 """
 
 import importlib.util
+import json
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ SKIP = "skip"
 
 OLLAMA_PROBE_TIMEOUT_S = 3.0
 STALE_BRIEF_DAYS = 3
+FUNDAMENTALS_SAMPLE = 20  # CP-023: latest enriched theses inspected for quality
 
 # Backlog size above which a pending count becomes a WARN instead of an OK.
 # Small backlogs are normal between cycle phases; these flag a pipeline that
@@ -393,6 +395,60 @@ def _check_agent_state(conn: sqlite3.Connection) -> list[CheckResult]:
     else:
         results.append(CheckResult("agent", "predictions", OK,
                                    f"{open_preds or 0} open, none past horizon"))
+
+    # CP-023: fundamentals enrichment can stay silently degraded for days
+    # (yfinance rate-limit, non-US coverage) — surface the data_quality mix
+    # of the latest enriched theses. minimal on non-equity is by design and
+    # does not count as degraded.
+    try:
+        fund_rows = conn.execute(
+            """SELECT fundamentals_json FROM theses
+               WHERE instrument IS NOT NULL
+               ORDER BY id DESC LIMIT ?""",
+            (FUNDAMENTALS_SAMPLE,),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        fund_rows = None
+    if fund_rows is None:
+        results.append(CheckResult("agent", "fundamentals quality", SKIP,
+                                   "table/column missing"))
+    elif not fund_rows:
+        results.append(CheckResult("agent", "fundamentals quality", SKIP,
+                                   "no theses with an instrument yet"))
+    else:
+        # no_data: fundamentals_json itself is NULL — either a total fetch
+        # failure (fetch_fundamentals returned None, the CP-023 outage
+        # scenario this check exists to catch) or a deliberate
+        # --no-fundamentals run; doctor can't tell the two apart from this
+        # table alone, so the WARN text below says so rather than guessing.
+        no_data = degraded = 0
+        for row in fund_rows:
+            raw = row["fundamentals_json"]
+            if raw is None:
+                no_data += 1
+                continue
+            try:
+                snapshot = json.loads(raw).get("snapshot", {})
+            except (json.JSONDecodeError, TypeError):
+                degraded += 1
+                continue
+            if (snapshot.get("data_quality") in ("none", "minimal")
+                    and snapshot.get("quote_type") == "EQUITY"):
+                degraded += 1
+        bad = no_data + degraded
+        if bad * 2 >= len(fund_rows):
+            results.append(CheckResult(
+                "agent", "fundamentals quality", WARN,
+                f"{degraded} none/minimal on equity + {no_data} with no "
+                f"fundamentals data at all, of last {len(fund_rows)} theses "
+                "with an instrument — yfinance rate-limit/outage, coverage "
+                "gap, or --no-fundamentals runs (CP-023)",
+            ))
+        else:
+            results.append(CheckResult(
+                "agent", "fundamentals quality", OK,
+                f"{len(fund_rows) - bad} of last {len(fund_rows)} healthy",
+            ))
 
     active_sets = _scalar(
         conn, "SELECT COUNT(*) FROM scenario_sets WHERE status = 'active'"

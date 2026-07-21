@@ -1049,6 +1049,23 @@ delay filing ~45gg = complessità > valore per un enrichment layer v1.
 small-cap (issue #2584), rate-limit su scraping non autenticato, ratio
 comparabili solo intra-settore (il testo renderizzato lo dichiara).
 
+**Retry/backoff (CP-023, 2026-07-17; CP-033 fix 2026-07-21)**: la chiamata `info`
+e ciascuno dei 3 statement (`balance_sheet`/`financials`/`cashflow`, ritentati
+**indipendentemente** — un fallimento permanente su uno non scarta più gli
+altri due se sono stati ottenuti con successo) tentano fino a 3 volte con
+backoff esponenziale (2s, 4s — `_RETRY_ATTEMPTS`/`_RETRY_BASE_DELAY_S`, via
+`tenacity`); un rate-limit transitorio non degrada più l'intero run. Tradeoff
+accettato: il worst-case per un fallimento a causa condivisa (es. rate-limit
+di sessione) sale da ~6s a ~18s (3 retry indipendenti invece di 1 bundled) —
+correttezza sui dati parziali vince sul tetto di latenza triplicato.
+Visibilità: a fine `thesis generate`/`debate` un **warning aggregato per run**
+se ≥metà dei ticker è failed/degradato (minimal su non-equity non conta — è il
+comportamento di design per ETF/future/FX); `pathos doctor` ha il check
+`fundamentals quality` sulle ultime 20 tesi **con un ticker proposto** (non solo
+quelle arricchite con successo — un fallimento totale, `fundamentals_json`
+NULL, ora conta nel WARN invece di essere escluso dal campione). Il cross-check
+EDGAR resta v2 (CP-023 parte 2, aperta).
+
 ### 8.8 Technicals (enrichment) — `pathosphere/market/technicals.py` ✅
 
 **Livello di contesto price-action, complementare ai fondamentali**: i
@@ -1230,7 +1247,7 @@ ammessi), 1 = almeno un FAIL — usabile in script (`pathos doctor && pathos cyc
 | Config | Solo **presenza** (mai il valore — regola sicurezza CLAUDE.md) di `FIRMS_MAP_KEY`/`RELIEFWEB_APPNAME`; validità `reasoning_model` | chiavi mancanti = ingestori silenziosamente skippati |
 | Freshness | Ultimo dato per fonte ricorrente (rss/gdelt/portwatch/firms/ioda/usgs 48-72h, comtrade 45gg) con hint del comando da lanciare | classe CP-023: degradazione che nessuno nota per giorni |
 | Backlog | Doc in attesa di embedding/dedup/NER, eventi RSS senza geoloc (`geoloc_checked=0`), geocoding pendente, entità senza Wikidata — **stesse query dei moduli pipeline** (embedder/dedup/extract), conteggi identici a ciò che la fase processerebbe | pipeline ferma ≠ pipeline vuota |
-| Agent | Portafogli inizializzati, tesi pending, trade aperti oltre orizzonte tesi, predizioni aperte oltre `horizon_date`, scenario set attivi oltre orizzonte, età ultimo brief (warn > 3gg) | to-do list operativa del giorno |
+| Agent | Portafogli inizializzati, tesi pending, trade aperti oltre orizzonte tesi, predizioni aperte oltre `horizon_date`, qualità fondamentali ultime 20 tesi arricchite (warn se ≥metà none/minimal su equity — CP-023), scenario set attivi oltre orizzonte, età ultimo brief (warn > 3gg) | to-do list operativa del giorno |
 
 `--network` aggiunge un probe yfinance (quote SPY) — opt-in perché tocca la rete.
 

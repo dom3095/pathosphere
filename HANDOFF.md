@@ -1,6 +1,120 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-17 notte — sessione notturna conclusa: 4 PR aperte (#20-#23), zero merge.*
+*Aggiornato: 2026-07-21/22 — PR #24 in attesa review; 2 round di `/code-review` sui fix (CP-033), tutti i bug reali risolti; CP-034 aperto (pre-esistente, fuori scope, trovato per analogia in scenario_review).*
+
+## Secondo round code-review sui fix di CP-033 (2026-07-21/22)
+
+Su richiesta utente, `/code-review --effort high 4b19d8b..HEAD` sul commit di fix del primo round
+(review-fixes-di-review-fixes). 6 finding verificati, applicati:
+- **Bug reale trovato e fixato**: `fundamentals.py` — la guardia "financial statements empty"
+  string-matchava il vecchio testo "statements fetch failed"; il fix del primo round aveva
+  rinominato il warning in "statements fetch partially failed" senza aggiornare la guardia →
+  warning duplicati/contraddittori quando tutti e 3 gli statement falliscono. Fix: check diretto
+  sul dict `failed` invece di string-matching fragile sul testo. Nuovo test di regressione.
+- **Tradeoff non documentato**: split in 3 retry indipendenti (fix precedente) triplica il
+  worst-case di sleep (6s→18s) per il caso a causa condivisa (rate-limit di sessione, il più
+  realistico secondo i commenti CP-023 stessi) — non menzionato da nessuna parte. Fix: commento
+  esplicito nel codice + wiki.md.
+- **`conn.close()` saltato**: se un'eccezione diversa da `BriefNotFoundError` propaga, `conn.close()`
+  (dopo il try/except, stessa indentazione) non veniva mai eseguito. Fix: spostato in `finally` in
+  entrambi i comandi (`thesis_generate`/`thesis_debate`). Severità reale bassa (processo fresco per
+  invocazione CLI) ma fix corretto e a costo zero.
+- **Doc stale**: wiki.md descriveva ancora il modello di retry pre-fix (bundled, non 3 indipendenti)
+  e il campione doctor pre-fix ("tesi arricchite" invece di "con ticker proposto"). Aggiornato.
+- **Latente, non fixato**: `_mentions_schema` (llm/client.py) con match `"schema" in text` largo —
+  rischio teorico di misclassificare un json_schema malformato come "capability non supportata".
+  Nessuna esposizione reale oggi (solo 4 schemi statici hand-written nel codebase) — lasciato,
+  annotato per quando/se si introducono schemi dinamici.
+- **CP-034 aperto (fuori scope)**: per analogia con `BriefNotFoundError`, verificato se lo stesso
+  pattern (catch ValueError largo che nasconde bug reali) esiste altrove in cli.py. `scenario_generate`
+  REFUTATO (ogni altro ValueError è già guardato localmente). `scenario_review` CONFERMATO: chiama
+  `revise_prediction`→`_get_open_prediction` non guardato, che può alzare ValueError per motivi di
+  integrità dati distinti dalle 2 precondizioni documentate — stesso bug-pattern del round precedente,
+  ma in un file (`scenarios.py`) non toccato da questo branch. Documentato, non fixato — sessione dedicata.
+
+**Verificato**: 706 test verdi, ruff pulito.
+
+## Chiusura CP-032 (2026-07-21) — batch geoloc riavviato per validare lo schema JSON
+
+## Chiusura CP-032 (2026-07-21) — batch geoloc riavviato per validare lo schema JSON
+
+Il batch `--geolocate-qwen --geoloc-limit 200` partito nella sessione precedente girava col
+codice PRE-fix (schema JSON non ancora committato). Riavviato a mano (kill + relaunch) dopo
+il commit `0740a6d` per validare CP-032 senza aspettare ore — sicuro perché ogni evento si
+commette singolarmente nel DB (`with conn:` per-evento in `extract.py`), zero rischio di
+perdere i ~34 eventi già processati dal batch precedente (restano `geoloc_checked=1`, non
+riprocessati). **Esito: 200/200 chiamate, zero rejection dello schema (Ollama onora
+`response_format`/`json_schema`), 1 solo errore su 200 (0.5%, contro ~1/10-15 pre-fix)**.
+CP-032 chiuso con conferma reale, non solo teorica. Dettaglio in `CRITICAL_POINTS.md`.
+
+## Sessione 2026-07-19/20 — primo esercizio reale end-to-end (autonoma, su richiesta, branch `fix/cp023-yfinance-retry`)
+
+**Contesto**: sistema costruito (fasi 0-4) ma quasi mai eserciziato con dati/run reali. Utente ha
+lanciato 5 azioni sotto `caffeinate -i uv run pathos ...`, chiesto di leggere gli output e fixare
+i problemi emersi, restando sullo stesso branch.
+
+1. **Backfill storico**: `ucdp` (385,918 righe lette, 15,840 tenute ≥25 morti, +0 eventi nuovi — già
+   presenti da run precedenti), `who-don` (+1 evento), `econ-crises` (+0). `reliefweb` saltato:
+   `RELIEFWEB_APPNAME` non registrato (azione utente, resta in lista).
+2. **`pathos scenario generate`** — primo run reale mai fatto: 58 hotspot candidati, top 2 (Bahrain,
+   Vietnam) → 2 scenario set, 8 scenari MECE, 8 predictions, 24 indicatori watchlist. Prompt ACH
+   validato su Claude vero — qualità alta (net assessment, key assumptions, invalidazione, ACH rating
+   E1-E4 per scenario, tutti coerenti).
+3. **`pathos thesis debate`** — **CP-029 chiuso**: vedi `CRITICAL_POINTS.md`. Run id=5 completo in
+   ~82 minuti, 6 tesi, 2 auto-open. Scoperta laterale: run id=4 (14/07) era già completo ma mai
+   verificato/marcato — CP-029 restava "aperto" per pura mancanza di controllo, non per un problema
+   reale residuo.
+   - **Bug trovato e fixato**: primo tentativo di debate crashava con traceback Python pieno
+     (`ValueError: No brief found for 2026-07-19`) invece di un messaggio pulito — `run_debate`/
+     `generate_theses` alzano `ValueError` per precondizioni mancanti ma il CLI non lo intercettava
+     (i comandi `scenario` già lo fanno). Fix in `pathosphere/cli.py`: `try/except ValueError` →
+     `click.ClickException`, stesso pattern. Commit `6ab76f4`, 51 test debate+thesis verdi.
+   - Lanciato `pathos brief` come precondizione (mancava per oggi), poi rilanciato il debate.
+4. **Batch geoloc Qwen** (`pathos extract --geolocate-qwen --geoloc-limit 200`): in corso in
+   background al momento di questo aggiornamento — euristica 0 nuovi risolti su 2181 (già tutti
+   passati per l'euristica in run precedenti), fallback Qwen al ritmo di **~86-90s/evento**, coerente
+   con la stima già in CP-022 (90-113s) — nessuna sorpresa, confermato che il backfill completo
+   (~2181 eventi ambigui, cresciuti da 1324 per nuova ingestione) è **plausibile solo overnight**,
+   non in sessione interattiva. Wikidata linking rate-limited (429) durante lo stesso giro — comportamento
+   difensivo già previsto (abort pulito, retry al prossimo ciclo).
+5. **CP-024 (launchd)** — ri-diagnosticato: stato identico a prima, `EX_CONFIG`/`Operation not
+   permitted` su `.venv/bin/activate`, causa TCC macOS su `/bin/bash`, zero fix possibile via codice.
+   Confermato in `CRITICAL_POINTS.md`, resta azione esclusiva utente (Full Disk Access).
+
+**Netto**: 1 bug reale trovato e fixato (traceback debate/generate), 1 CP chiuso per verifica mai
+fatta (CP-029), 1 CP riconfermato aperto (CP-024), nessuna sorpresa sulla latenza Qwen (già
+documentata). Portafogli/tesi ora hanno dati reali freschi (debate id=5: 6 tesi, 2 trade auto-aperti).
+
+## Sessione 2026-07-19 — chiusura ciclo PR + igiene repo
+
+**Stato repo**: #20 (docs), #21 (CP-030), #22 (fix test doctor) mergiate su main.
+PR #23 chiusa senza merge → riaperta come **PR #24** su stesso branch
+`fix/cp023-yfinance-retry` (CP-023 parte 1: retry/backoff yfinance, warning aggregato
+per-run, check doctor "fundamentals quality"). Branch aggiornato: main mergiata dentro
+(zero conflitti — il commit duplicato del fix test doctor si riconcilia da solo), 697 verdi.
+
+**Igiene aggiunta a PR #24**:
+- **Ruff 170→0 errori**: prima nessuna config → default su tutto il repo. Ora
+  `[tool.ruff]` in `pyproject.toml` con `extend-exclude = ["notebooks", ".agents"]`
+  (notebook = record storici delle indagini, non si riscrivono; `.agents` = script
+  vendored skill caveman). Su prodotto+test: 33 auto-fix (F401 import, F541 f-string,
+  E401 import multipli) + 11 manuali (F841 variabili assegnate mai usate — codice morto
+  vero in `cli.py` e `cycle/loop.py`, assegnazioni superflue nei test; E741 `l`→`lbl`).
+- **Doc sync**: roadmap (tabella Fase 4 ✅ + riga Fase 5 pianificata, data), LOOP_STATE,
+  questo header, CLAUDE.md stato attuale (dashboard è in main, non più su branch).
+
+**Prossima azione raccomandata**: review + merge PR #24. Poi il collo di bottiglia NON è
+più codice — è esercizio reale (vedi lista sotto, invariata).
+
+**Lavoro reale in attesa dell'UTENTE** (regola run-ingest-self):
+1. `pathos scenario generate` — primo run reale (valida prompt ACH su Claude vero)
+2. `caffeinate -i uv run pathos thesis debate` — a macchina scarica (CP-029)
+3. Batch geoloc Qwen: `pathos extract --geolocate-qwen --geoloc-limit 200` ripetuto (~1324 residui)
+4. Backfill storico (serve `RELIEFWEB_APPNAME` registrato)
+5. CP-024 launchd — permessi macOS, azione manuale
+
+**CP aperti dopo questa sessione**: CP-023 parte 2 (EDGAR, v2), CP-024 (launchd),
+CP-027 parte prezzi, CP-029 (debate da validare con run reale). Minori: CP-006/007/009/013/017.
 
 ## Esito sessione notturna 2026-07-17 (piano approvato dall'utente prima di dormire)
 

@@ -21,7 +21,7 @@ cross-product of both clusters' members before any merge.
 
 import math
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import numpy as np

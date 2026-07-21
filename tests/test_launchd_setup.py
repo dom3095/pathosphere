@@ -3,7 +3,6 @@
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from subprocess import run, PIPE
 
 
 def test_setup_script_generates_valid_plist():

@@ -7,7 +7,6 @@ Network mocked with httpx.MockTransport — no real Comtrade calls.
 from datetime import date
 
 import httpx
-import pytest
 
 from pathosphere.ingest.comtrade import (
     PILOT_SOURCE_NAME,

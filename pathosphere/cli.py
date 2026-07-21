@@ -1388,21 +1388,26 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
     import asyncio
     from pathosphere.db.schema import get_connection
     from pathosphere.llm.client import LLMClient
-    from pathosphere.agent.thesis import generate_theses
+    from pathosphere.agent.thesis import BriefNotFoundError, generate_theses
 
     settings = get_settings()
     _require_db(settings)
     conn = get_connection(settings.db_path)
     llm_client = LLMClient(backend=model)
 
-    result = asyncio.run(generate_theses(
-        conn, llm_client, brief_date=brief_date, n=n,
-        enrich_fundamentals=not no_fundamentals,
-        enrich_technicals=not no_technicals,
-        auto_open=not no_auto_open,
-        auto_open_threshold=auto_open_threshold,
-    ))
-    conn.close()
+    try:
+        result = asyncio.run(generate_theses(
+            conn, llm_client, brief_date=brief_date, n=n,
+            enrich_fundamentals=not no_fundamentals,
+            enrich_technicals=not no_technicals,
+            auto_open=not no_auto_open,
+            auto_open_threshold=auto_open_threshold,
+        ))
+    except BriefNotFoundError as exc:
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    finally:
+        conn.close()
 
     if result.theses_created == 0 and result.refusal_reason:
         click.echo(
@@ -1513,25 +1518,25 @@ def thesis_show(thesis_id: int) -> None:
     if thesis["rejection_reason"]:
         click.echo(f"Rej. reason : {thesis['rejection_reason']}")
 
-    click.echo(f"\n── Trigger ──────────────────────────────────────────────")
+    click.echo("\n── Trigger ──────────────────────────────────────────────")
     click.echo(chain.get("trigger_summary") or "(none)")
 
-    click.echo(f"\n── Causal chain ─────────────────────────────────────────")
+    click.echo("\n── Causal chain ─────────────────────────────────────────")
     for i, step in enumerate(chain.get("steps", []), 1):
         click.echo(f"  {i}. {step}")
 
-    click.echo(f"\n── Invalidation ─────────────────────────────────────────")
+    click.echo("\n── Invalidation ─────────────────────────────────────────")
     click.echo(thesis["invalidation"] or "(none)")
 
     persona_notes = chain.get("persona_notes") or {}
     if persona_notes:
-        click.echo(f"\n── Persona notes ────────────────────────────────────────")
+        click.echo("\n── Persona notes ────────────────────────────────────────")
         for persona, note in persona_notes.items():
             click.echo(f"  [{persona}] {note}")
 
     debate_ctx = chain.get("debate_context") or {}
     if debate_ctx:
-        click.echo(f"\n── Debate context ───────────────────────────────────────")
+        click.echo("\n── Debate context ───────────────────────────────────────")
         supporters = debate_ctx.get("supporters", [])
         opponents = debate_ctx.get("opponents", [])
         if supporters:
@@ -1683,6 +1688,7 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
     from pathosphere.db.schema import get_connection
     from pathosphere.llm.client import LLMClient
     from pathosphere.agent.debate import PERSONAS, run_debate
+    from pathosphere.agent.thesis import BriefNotFoundError
 
     settings = get_settings()
     _require_db(settings)
@@ -1697,16 +1703,21 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
     )
     click.echo("Step 1/4 — Research (6 personas, batches of 2)...")
 
-    result = asyncio.run(
-        run_debate(
-            conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n,
-            enrich_fundamentals=not no_fundamentals,
-            enrich_technicals=not no_technicals,
-            auto_open=not no_auto_open,
-            auto_open_threshold=auto_open_threshold,
+    try:
+        result = asyncio.run(
+            run_debate(
+                conn, qwen_client, claude_client, brief_date=brief_date, n_theses=n,
+                enrich_fundamentals=not no_fundamentals,
+                enrich_technicals=not no_technicals,
+                auto_open=not no_auto_open,
+                auto_open_threshold=auto_open_threshold,
+            )
         )
-    )
-    conn.close()
+    except BriefNotFoundError as exc:
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
+    finally:
+        conn.close()
 
     click.echo(
         f"\nDebate complete:\n"
@@ -2216,7 +2227,6 @@ def trade_list(portfolio_name: str | None, closed: bool) -> None:
         click.echo(f"No {state} trades{' in ' + portfolio_name if portfolio_name else ''}.")
         return
 
-    state_label = "closed" if closed else "open"
     click.echo(f"\n{'ID':>4}  {'Port':<10}  {'Ticker':<7}  {'Dir':<5}  {'Qty':>10}  {'Open':>8}  {'Close':>8}  {'P&L':>9}")
     click.echo("─" * 80)
     for r in rows:

@@ -1,6 +1,57 @@
 # Loop State — Pathosphere Autonomous Dev
 
-## Fase corrente: manutenzione post-merge — sessione notturna autonoma 2026-07-17
+## Fase corrente: primo esercizio reale end-to-end — 2026-07-19/20
+
+**Stato**: su richiesta utente, lanciati i 5 punti del "resta a te" (scenario generate, thesis debate,
+geoloc Qwen, backfill storico, CP-024) sotto `caffeinate`, sul branch `fix/cp023-yfinance-retry`
+(nessun nuovo branch, come richiesto). Dettaglio completo in `HANDOFF.md`.
+
+**Esiti**: CP-029 chiuso (2 run completi confermati, id=4+id=5); 1 bug fixato (`cli.py`, traceback
+pulito su precondizioni ValueError in thesis generate/debate, commit `6ab76f4`); scenari generati per
+la prima volta con Claude vero (Bahrain, Vietnam — qualità alta); backfill storico incrementale
+(+1 WHO DON); geoloc Qwen batch in corso (ritmo confermato ~90s/evento, solo overnight);
+CP-024 riconfermato bloccato (azione utente).
+
+**Aggiornamento 2026-07-21**: CP-032 (JSON strutturato Qwen) chiuso con conferma dal vivo —
+batch geoloc riavviato apposta col fix, 200/200 chiamate, zero schema-rejection, errore
+0.5% (era ~1/10-15 pre-fix). Backlog geoloc sceso da 2181 a **1336** (`pathos doctor` verificato).
+
+**Aggiornamento 2026-07-21/22 — CP-033 (2 round `/code-review` sui fix)**: primo round sul branch
+intero (9 finding, tutti applicati: BriefNotFoundError dedicata, retry statement indipendenti,
+doctor query allargata, tenacity, capability cache Qwen). Secondo round SUI FIX del primo (per
+verificare che i fix stessi non avessero introdotto bug) — trovato e fixato 1 bug reale (guardia
+warning morta, duplicati contraddittori in fundamentals.py), documentato 1 tradeoff non menzionato
+(latenza 3x), fixato 1 resource-leak cosmetico (`conn.close()` in `finally`), aggiornato wiki.md
+stale. Aperto **CP-034** (fuori scope, `scenarios.py` non toccato da questo branch): stesso
+bug-pattern trovato per analogia in `scenario_review` — sessione dedicata futura.
+
+**Prossima azione (utente)**: review/merge PR #24 (ora comprende: CP-023 retry yfinance, igiene
+ruff/doc, fix cli.py precondizioni, CP-032 structured output). Poi: altri batch geoloc per
+smaltire il resto del backlog, registrare `RELIEFWEB_APPNAME`, concedere Full Disk Access per
+CP-024, continuare a lanciare `thesis debate`/`scenario generate` periodicamente per accumulare
+dati di calibrazione (Brier/time-adjusted) — l'unica metrica che conta.
+
+---
+
+## Fase precedente: chiusura ciclo PR notturne + igiene repo — 2026-07-19
+
+**Stato**: #20/#21/#22 mergiate su main. #23 chiusa senza merge → riaperta come
+**PR #24** (`fix/cp023-yfinance-retry`, stesso branch, main mergiata dentro, 697 verdi).
+Sulla stessa PR #24 aggiunta igiene repo:
+- **Ruff 170→0**: config `[tool.ruff]` in pyproject (exclude `notebooks/` = record storici,
+  `.agents/` = script skill vendored); 33 auto-fix su prodotto+test; 11 fix manuali
+  (F841 variabili morte in cli.py/loop.py/test, E741 rename `l`→`lbl`). Zero errori.
+- **Doc sync**: roadmap (Fase 4 ✅ in tabella, riga Fase 5), HANDOFF header, questo file,
+  CLAUDE.md stato attuale.
+
+**Prossima azione (utente)**: review/merge PR #24; poi esercizio reale del sistema —
+`pathos scenario generate` (primo run vero), `caffeinate -i uv run pathos thesis debate`
+a macchina scarica (CP-029), batch geoloc Qwen (~1324 residui), backfill storico
+(serve `RELIEFWEB_APPNAME`), fix launchd CP-024 (manuale macOS).
+
+---
+
+## Fase precedente: manutenzione post-merge — sessione notturna autonoma 2026-07-17
 
 **Stato**: tutte le PR mergiate (#14→#19), main allineata, zero PR aperte. Fasi 0-4
 complete + scenari conflitto + technicals + doctor + backfill storico in main.

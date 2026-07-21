@@ -9,7 +9,6 @@ import sqlite3
 from datetime import date, timedelta
 
 import httpx
-import pytest
 
 from pathosphere.ingest.portwatch import (
     _detect_anomaly,

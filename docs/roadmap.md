@@ -1,6 +1,6 @@
 # Pathosphere — Roadmap
 
-Stato aggiornato: 2026-07-16.
+Stato aggiornato: 2026-07-19.
 
 ---
 
@@ -12,7 +12,8 @@ Stato aggiornato: 2026-07-16.
 | **1** | Ingestione | ✅ Completa |
 | **2** | Semantica | ✅ Completa |
 | **3** | Agent e valutazione | ✅ Completa (3a–3g) |
-| **4** | Interfaccia | ⬜ Futuro |
+| **4** | Interfaccia | ✅ Completa |
+| **5** | Situazioni a lungo termine | ⬜ Pianificata, non iniziata |
 
 ---
 

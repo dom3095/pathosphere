@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import random
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from loguru import logger

@@ -234,7 +234,7 @@ def test_group_vs_group_complete_linkage_not_just_trigger_pair(tmp_db):
     _insert_embedding(tmp_db, doc_b, vec_b)
     _insert_embedding(tmp_db, doc_c, vec_c)
 
-    result = link_related_events(tmp_db, time_window_days=10)
+    link_related_events(tmp_db, time_window_days=10)
 
     story_ids = {
         r["id"]: r["story_id"]
@@ -307,7 +307,7 @@ def test_prevents_chain_collapse_across_time(tmp_db):
     _insert_embedding(tmp_db, doc_c, vec_bc)
     _insert_embedding(tmp_db, doc_a, _unit_vec(5))
 
-    result = link_related_events(tmp_db, time_window_days=8)
+    link_related_events(tmp_db, time_window_days=8)
 
     story_ids = {
         r["id"]: r["story_id"]

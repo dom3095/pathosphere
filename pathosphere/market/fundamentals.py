@@ -26,12 +26,14 @@ worth it for a v1 enrichment layer.
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 import pandas as pd
 import yfinance as yf
 from loguru import logger
+from tenacity import Retrying, stop_after_attempt, wait_exponential
 
 # Altman Z-score standard thresholds (original 1968 model)
 ALTMAN_SAFE = 2.99
@@ -39,6 +41,41 @@ ALTMAN_DISTRESS = 1.81
 
 # quoteType values for which company fundamentals apply
 _EQUITY_TYPES = {"EQUITY"}
+
+# CP-023: yfinance rate-limits/hiccups are transient — one failed call must not
+# silently degrade the enrichment for the whole run. Small bounded retry only;
+# permanent gaps (non-US/small-cap) still degrade gracefully as before.
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY_S = 2.0
+_sleep = time.sleep  # module-level for test monkeypatching
+
+
+def _with_retries(what: str, ticker: str, fn):
+    """Run *fn* up to _RETRY_ATTEMPTS times with exponential backoff, via
+    tenacity — the same retry/backoff engine already used for the identical
+    transient-network-failure problem in ingest/gdelt.py, instead of a
+    second hand-rolled loop.
+
+    Returns (value, None) on success, (None, last_exception) when every
+    attempt raised — a "degrade to None" contract the callers rely on
+    (fetch_fundamentals must never raise), so `reraise=True` on the
+    tenacity side just means "propagate the original exception type to
+    this try/except" rather than "propagate to the caller of this function".
+    """
+    try:
+        return Retrying(
+            stop=stop_after_attempt(_RETRY_ATTEMPTS),
+            wait=wait_exponential(multiplier=_RETRY_BASE_DELAY_S, min=_RETRY_BASE_DELAY_S),
+            before_sleep=lambda rs: logger.warning(
+                f"FUNDAMENTALS: {what} fetch failed for {ticker} "
+                f"(attempt {rs.attempt_number}/{_RETRY_ATTEMPTS}, "
+                f"retry in {rs.next_action.sleep:.0f}s): {rs.outcome.exception()}"
+            ),
+            reraise=True,
+            sleep=_sleep,
+        )(fn), None
+    except Exception as exc:
+        return None, exc
 
 # Sectors / industry keywords where Altman Z is not applicable
 _FINANCIAL_SECTORS = {"financial services", "financial", "financials"}
@@ -246,12 +283,18 @@ def fetch_fundamentals(ticker: str) -> FundamentalsSnapshot | None:
         fetched_at=datetime.now(timezone.utc).isoformat(),
     )
 
-    try:
-        tk = yf.Ticker(ticker)
-        info: dict = tk.info or {}
-    except Exception as exc:
-        logger.warning(f"FUNDAMENTALS: info fetch failed for {ticker}: {exc}")
+    def _load_info():
+        t = yf.Ticker(ticker)
+        return t, t.info or {}
+
+    loaded, exc = _with_retries("info", ticker, _load_info)
+    if loaded is None:
+        logger.warning(
+            f"FUNDAMENTALS: info fetch failed for {ticker} "
+            f"after {_RETRY_ATTEMPTS} attempts: {exc}"
+        )
         return None
+    tk, info = loaded
 
     if not info or (info.get("quoteType") is None and info.get("marketCap") is None):
         logger.warning(f"FUNDAMENTALS: no info data for {ticker}")
@@ -298,19 +341,43 @@ def fetch_fundamentals(ticker: str) -> FundamentalsSnapshot | None:
         )
 
     # ── financial statements (may be empty/stale — expected) ──
-    balance = income = cashflow = None
-    try:
-        balance = tk.balance_sheet
-        income = tk.financials
-        cashflow = tk.cashflow
-    except Exception as exc:
-        snap.warnings.append(f"statements fetch failed: {exc}")
-        logger.warning(f"FUNDAMENTALS: statements fetch failed for {ticker}: {exc}")
+    # Each statement retried independently: bundling all three into one
+    # retry unit meant a permanently-failing statement (e.g. financials
+    # unsupported for this instrument) discarded siblings that fetched fine
+    # on every attempt, losing data the codebase otherwise treats as usable
+    # (Piotroski F scores with whatever subset of the three is available).
+    # Tradeoff accepted: worst case (a shared root cause — e.g. a session-
+    # level rate-limit — fails all three) now sleeps up to ~18s (3 × ~6s)
+    # instead of the old bundled ~6s. Correctness (not silently losing a
+    # statement that actually succeeded) wins over the tripled latency
+    # ceiling, same time-over-quality precedent as CP-029's 1800s timeout.
+    balance, balance_exc = _with_retries("balance_sheet", ticker, lambda: tk.balance_sheet)
+    income, income_exc = _with_retries("financials", ticker, lambda: tk.financials)
+    cashflow, cashflow_exc = _with_retries("cashflow", ticker, lambda: tk.cashflow)
+
+    failed = {
+        name: exc for name, exc in (
+            ("balance_sheet", balance_exc),
+            ("financials", income_exc),
+            ("cashflow", cashflow_exc),
+        ) if exc is not None
+    }
+    if failed:
+        detail = "; ".join(f"{name}: {exc}" for name, exc in failed.items())
+        snap.warnings.append(f"statements fetch partially failed: {detail}")
+        logger.warning(
+            f"FUNDAMENTALS: {len(failed)}/3 statements failed for {ticker} "
+            f"after {_RETRY_ATTEMPTS} attempts each: {detail}"
+        )
 
     statements_ok = any(
         df is not None and not df.empty for df in (balance, income, cashflow)
     )
-    if not statements_ok and "statements fetch failed" not in " ".join(snap.warnings):
+    # Only say "empty" when nothing actually failed (fetches succeeded but
+    # returned empty frames, e.g. non-US ticker) — checking the `failed`
+    # dict directly instead of string-matching the warning text above
+    # avoids the two drifting out of sync if either message is reworded.
+    if not statements_ok and not failed:
         snap.warnings.append("financial statements empty on yfinance")
 
     # ── Altman Z (skip for financials — leverage is their core business) ──

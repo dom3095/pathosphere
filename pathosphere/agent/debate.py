@@ -21,6 +21,7 @@ from datetime import date
 from loguru import logger
 
 from pathosphere.agent.thesis import (
+    BriefNotFoundError,
     ThesisResult,
     _MarketEnrichment,
     _maybe_auto_open,
@@ -174,11 +175,26 @@ Return JSON:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+_RESEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "key_concerns": {"type": "array", "items": {"type": "string"}},
+        "opportunities": {"type": "array", "items": {"type": "string"}},
+        "key_actors": {"type": "array", "items": {"type": "string"}},
+        "narrative": {"type": "string"},
+        "risk_assessment": {"type": "string", "enum": ["high", "medium", "low"]},
+        "market_implications": {"type": "string"},
+    },
+    "required": ["key_concerns", "opportunities", "key_actors", "narrative",
+                 "risk_assessment", "market_implications"],
+}
+
+
 async def _run_research(
     qwen: LLMClient, persona_key: str, persona_cfg: dict, brief_content: str
 ) -> tuple[str, dict]:
     messages = _research_prompt(persona_key, persona_cfg, brief_content)
-    raw = await qwen.complete(messages, json_mode=True)
+    raw = await qwen.complete(messages, json_mode=True, json_schema=_RESEARCH_SCHEMA)
     try:
         return persona_key, json.loads(raw)
     except json.JSONDecodeError:
@@ -225,11 +241,34 @@ Return JSON with 2-3 divergence points (the most important structural disagreeme
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+_DIVERGENCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "divergence_points": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "personas_for": {"type": "array", "items": {"type": "string"}},
+                    "personas_against": {"type": "array", "items": {"type": "string"}},
+                    "personas_neutral": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id", "title", "description"],
+            },
+        }
+    },
+    "required": ["divergence_points"],
+}
+
+
 async def _run_divergence_detection(
     qwen: LLMClient, analyses: dict[str, dict]
 ) -> list[dict]:
     messages = _divergence_prompt(analyses)
-    raw = await qwen.complete(messages, json_mode=True)
+    raw = await qwen.complete(messages, json_mode=True, json_schema=_DIVERGENCE_SCHEMA)
     try:
         data = json.loads(raw)
         return data.get("divergence_points", [])
@@ -276,6 +315,26 @@ For each divergence point, state your position. Return JSON:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+_CRITIQUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "responses": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "divergence_id": {"type": "string"},
+                    "stance": {"type": "string", "enum": ["support", "oppose", "nuance"]},
+                    "argument": {"type": "string"},
+                },
+                "required": ["divergence_id", "stance", "argument"],
+            },
+        }
+    },
+    "required": ["responses"],
+}
+
+
 async def _run_critique(
     qwen: LLMClient,
     persona_key: str,
@@ -284,7 +343,7 @@ async def _run_critique(
     divergence_points: list[dict],
 ) -> tuple[str, dict]:
     messages = _critique_prompt(persona_key, persona_cfg, own_analysis, divergence_points)
-    raw = await qwen.complete(messages, json_mode=True)
+    raw = await qwen.complete(messages, json_mode=True, json_schema=_CRITIQUE_SCHEMA)
     try:
         return persona_key, json.loads(raw)
     except json.JSONDecodeError:
@@ -420,7 +479,7 @@ async def _persist_theses(
 
     for t in theses_data[:n]:
         ticker = t.get("instrument")
-        fund_json, tech_json = enrichment.docs(ticker)
+        fund_json, tech_json = await enrichment.docs(ticker)
         price = _price_snapshot(ticker, tech_json)
         if ticker and price is None:
             logger.warning(f"DEBATE: price fetch failed for {ticker}")
@@ -443,7 +502,7 @@ async def _persist_theses(
 
         for alt in t.get("alternatives", []):
             alt_ticker = alt.get("instrument")
-            alt_fund, alt_tech = enrichment.docs(alt_ticker)
+            alt_fund, alt_tech = await enrichment.docs(alt_ticker)
             alt_price = price if alt_ticker == ticker else _price_snapshot(alt_ticker, alt_tech)
             alt_id = _save_thesis(
                 conn, alt, alt_price, debate_id=debate_id,
@@ -463,6 +522,7 @@ async def _persist_theses(
             logger.warning(
                 f"DEBATE: market review failed ({exc}) — theses saved without assessment"
             )
+    enrichment.log_fundamentals_degradation("DEBATE")
 
     conn.commit()
 
@@ -534,7 +594,11 @@ async def run_debate(
         DebateResult with debate_id, ThesisResult, and divergence_points.
 
     Raises:
-        ValueError: If no brief found or synthesis returns invalid JSON.
+        BriefNotFoundError: If no brief exists for the given date.
+        ValueError: If Claude synthesis returns invalid JSON (a real pipeline
+            bug, not a precondition — deliberately a plain ValueError so it
+            keeps its traceback instead of being displayed like the clean,
+            user-fixable BriefNotFoundError case).
     """
     if brief_date is None:
         brief_date = date.today().isoformat()
@@ -543,7 +607,7 @@ async def run_debate(
 
     brief_id, brief_content = _load_brief(conn, brief_date)
     if not brief_content:
-        raise ValueError(f"No brief found for {brief_date}. Run `pathos brief` first.")
+        raise BriefNotFoundError(f"No brief found for {brief_date}. Run `pathos brief` first.")
 
     debate_id = _save_debate(conn, brief_date, brief_id)
     logger.info(f"DEBATE: id={debate_id}")
