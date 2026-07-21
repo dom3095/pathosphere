@@ -522,6 +522,92 @@ def test_complete_qwen_falls_back_when_schema_rejected():
     assert call_count == 2
 
 
+def test_complete_qwen_unrelated_400_does_not_trigger_schema_fallback():
+    """CP-032 review fix: a 400 whose body has nothing to do with
+    response_format/schema (e.g. a bad model name, malformed request) must
+    NOT be silently retried without the schema — that would misclassify a
+    real config/usage bug as 'this Ollama build doesn't support schemas' and
+    hide the actual error."""
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    client = LLMClient(backend="qwen-local")
+
+    reject_resp = MagicMock()
+    reject_resp.status_code = 400
+    reject_resp.text = "model 'qwen3:4b-typo' not found"
+    reject_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "400", request=MagicMock(), response=reject_resp
+    )
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = AsyncMock(return_value=reject_resp)
+            mock_cls.return_value = mock_http
+
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.complete(
+                    [{"role": "user", "content": "hi"}], json_mode=True, json_schema=schema
+                )
+            return mock_http.post.call_count
+
+    call_count = asyncio.run(run())
+    assert call_count == 1  # no fallback retry — the real error propagates
+
+
+def test_complete_qwen_caches_schema_unsupported_across_calls():
+    """After one confirmed rejection, later calls on the same LLMClient
+    instance must skip response_format entirely instead of paying the
+    doomed extra round-trip again on every subsequent call (CP-032)."""
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    client = LLMClient(backend="qwen-local")
+
+    reject_resp = MagicMock()
+    reject_resp.status_code = 400
+    reject_resp.text = "response_format not supported"
+    reject_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "400", request=MagicMock(), response=reject_resp
+    )
+
+    ok_resp = MagicMock()
+    ok_resp.status_code = 200
+    ok_resp.json.return_value = {"choices": [{"message": {"content": "ok"}}]}
+    ok_resp.raise_for_status = MagicMock()
+
+    payloads: list[dict] = []
+
+    async def fake_post(url, json=None, **kwargs):
+        # snapshot a copy — production code mutates the same payload dict
+        # in place (payload.pop("response_format")) right after this call,
+        # which would otherwise retroactively corrupt this capture
+        payloads.append(dict(json) if json else {})
+        return reject_resp if len(payloads) == 1 else ok_resp
+
+    async def run():
+        with patch("httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_http.post = fake_post
+            mock_cls.return_value = mock_http
+
+            await client.complete(
+                [{"role": "user", "content": "first"}], json_mode=True, json_schema=schema
+            )
+            await client.complete(
+                [{"role": "user", "content": "second"}], json_mode=True, json_schema=schema
+            )
+
+    asyncio.run(run())
+    # call 1: rejected-with-schema, then retried-without-schema (2 payloads)
+    # call 2: cache already knows schema is unsupported — 1 payload, no retry
+    assert len(payloads) == 3
+    assert "response_format" in payloads[0]
+    assert "response_format" not in payloads[1]
+    assert "response_format" not in payloads[2]
+
+
 def test_complete_qwen_connect_error():
     """ConnectError is re-raised as a descriptive RuntimeError."""
     import httpx as _httpx

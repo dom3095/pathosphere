@@ -403,7 +403,7 @@ def _check_agent_state(conn: sqlite3.Connection) -> list[CheckResult]:
     try:
         fund_rows = conn.execute(
             """SELECT fundamentals_json FROM theses
-               WHERE fundamentals_json IS NOT NULL
+               WHERE instrument IS NOT NULL
                ORDER BY id DESC LIMIT ?""",
             (FUNDAMENTALS_SAMPLE,),
         ).fetchall()
@@ -414,29 +414,40 @@ def _check_agent_state(conn: sqlite3.Connection) -> list[CheckResult]:
                                    "table/column missing"))
     elif not fund_rows:
         results.append(CheckResult("agent", "fundamentals quality", SKIP,
-                                   "no enriched theses yet"))
+                                   "no theses with an instrument yet"))
     else:
-        degraded = 0
+        # no_data: fundamentals_json itself is NULL — either a total fetch
+        # failure (fetch_fundamentals returned None, the CP-023 outage
+        # scenario this check exists to catch) or a deliberate
+        # --no-fundamentals run; doctor can't tell the two apart from this
+        # table alone, so the WARN text below says so rather than guessing.
+        no_data = degraded = 0
         for row in fund_rows:
+            raw = row["fundamentals_json"]
+            if raw is None:
+                no_data += 1
+                continue
             try:
-                snapshot = json.loads(row["fundamentals_json"]).get("snapshot", {})
+                snapshot = json.loads(raw).get("snapshot", {})
             except (json.JSONDecodeError, TypeError):
                 degraded += 1
                 continue
             if (snapshot.get("data_quality") in ("none", "minimal")
                     and snapshot.get("quote_type") == "EQUITY"):
                 degraded += 1
-        if degraded * 2 >= len(fund_rows):
+        bad = no_data + degraded
+        if bad * 2 >= len(fund_rows):
             results.append(CheckResult(
                 "agent", "fundamentals quality", WARN,
-                f"{degraded} of last {len(fund_rows)} enriched theses are "
-                "none/minimal on equity tickers — yfinance rate-limit or "
-                "coverage gap (CP-023)",
+                f"{degraded} none/minimal on equity + {no_data} with no "
+                f"fundamentals data at all, of last {len(fund_rows)} theses "
+                "with an instrument — yfinance rate-limit/outage, coverage "
+                "gap, or --no-fundamentals runs (CP-023)",
             ))
         else:
             results.append(CheckResult(
                 "agent", "fundamentals quality", OK,
-                f"{len(fund_rows) - degraded} of last {len(fund_rows)} healthy",
+                f"{len(fund_rows) - bad} of last {len(fund_rows)} healthy",
             ))
 
     active_sets = _scalar(

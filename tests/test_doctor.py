@@ -363,13 +363,28 @@ def test_fundamentals_quality_warns_when_degraded(tmp_db, settings):
     )
     for _ in range(2):
         tmp_db.execute(
-            "INSERT INTO theses (title, causal_chain, fundamentals_json) "
-            "VALUES ('t', 'c', ?)",
+            "INSERT INTO theses (title, causal_chain, instrument, fundamentals_json) "
+            "VALUES ('t', 'c', 'AAPL', ?)",
             (bad,),
         )
     res = _by_name(run_doctor(tmp_db, settings))[("agent", "fundamentals quality")]
     assert res.status == WARN
     assert "CP-023" in res.detail
+
+
+def test_fundamentals_quality_warns_on_total_fetch_failure(tmp_db, settings):
+    """CP-032 review fix: a total fetch failure (fetch_fundamentals returned
+    None, so fundamentals_json is SQL NULL rather than a degraded snapshot)
+    must count toward the WARN, not be silently excluded from the sample —
+    that was the exact yfinance-outage scenario this check exists to catch."""
+    for _ in range(2):
+        tmp_db.execute(
+            "INSERT INTO theses (title, causal_chain, instrument, fundamentals_json) "
+            "VALUES ('t', 'c', 'AAPL', NULL)"
+        )
+    res = _by_name(run_doctor(tmp_db, settings))[("agent", "fundamentals quality")]
+    assert res.status == WARN
+    assert "no fundamentals data at all" in res.detail
 
 
 def test_fundamentals_quality_ok_when_healthy_or_non_equity_minimal(tmp_db, settings):
@@ -381,8 +396,8 @@ def test_fundamentals_quality_ok_when_healthy_or_non_equity_minimal(tmp_db, sett
     )
     for doc in (good, good, etf):
         tmp_db.execute(
-            "INSERT INTO theses (title, causal_chain, fundamentals_json) "
-            "VALUES ('t', 'c', ?)",
+            "INSERT INTO theses (title, causal_chain, instrument, fundamentals_json) "
+            "VALUES ('t', 'c', 'AAPL', ?)",
             (doc,),
         )
     res = _by_name(run_doctor(tmp_db, settings))[("agent", "fundamentals quality")]

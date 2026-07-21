@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from pathosphere.agent.thesis import (
+    BriefNotFoundError,
     _build_prompt,
     _load_brief,
     _maybe_auto_open,
@@ -236,7 +237,7 @@ def test_generate_theses_full(tmp_db):
 
 def test_generate_theses_no_brief_raises(tmp_db):
     mock_client = MagicMock()
-    with pytest.raises(ValueError, match="No brief found"):
+    with pytest.raises(BriefNotFoundError, match="No brief found"):
         asyncio.run(generate_theses(tmp_db, mock_client, brief_date="2000-01-01"))
 
 

@@ -124,6 +124,8 @@ def test_fetch_statements_failure_degrades_to_minimal():
     tk = MagicMock()
     tk.info = dict(_INFO_FULL)
     type(tk).balance_sheet = PropertyMock(side_effect=RuntimeError("paywall"))
+    tk.financials = pd.DataFrame()
+    tk.cashflow = pd.DataFrame()
     with patch("pathosphere.market.fundamentals.yf.Ticker", return_value=tk):
         snap = fetch_fundamentals("TSM")
 
@@ -132,7 +134,7 @@ def test_fetch_statements_failure_degrades_to_minimal():
     assert snap.altman_zone == "unavailable"
     assert snap.piotroski_f is None
     assert snap.data_quality == "minimal"
-    assert any("statements fetch failed" in w for w in snap.warnings)
+    assert any("statements fetch partially failed" in w for w in snap.warnings)
 
 
 def test_fetch_empty_statements_expected_for_non_us():
@@ -277,10 +279,39 @@ def test_statements_failure_retries_then_degrades(monkeypatch):
     tk = MagicMock()
     tk.info = dict(_INFO_FULL)
     type(tk).balance_sheet = PropertyMock(side_effect=Exception("boom"))
+    tk.financials = pd.DataFrame()
+    tk.cashflow = pd.DataFrame()
 
     with patch("pathosphere.market.fundamentals.yf.Ticker", return_value=tk):
         snap = fetch_fundamentals("NVDA")
 
     assert snap is not None  # degrades, never raises — same contract as before
-    assert any("statements fetch failed" in w for w in snap.warnings)
+    assert any("statements fetch partially failed" in w for w in snap.warnings)
     assert len(delays) == 2
+
+
+def test_statements_partial_failure_keeps_successful_statement(monkeypatch):
+    """CP-032 review fix regression test: balance_sheet keeps fetching fine
+    on every attempt while financials permanently fails — the pre-fix code
+    bundled all three into one retry unit and discarded balance_sheet too;
+    each statement must now retry independently so a successful sibling
+    survives a permanently-failing one."""
+    monkeypatch.setattr("pathosphere.market.fundamentals._sleep", lambda _delay: None)
+    tk = MagicMock()
+    tk.info = dict(_INFO_FULL)
+    tk.balance_sheet = _BALANCE
+    type(tk).financials = PropertyMock(side_effect=Exception("permanently broken"))
+    tk.cashflow = _CASHFLOW
+
+    with patch("pathosphere.market.fundamentals.yf.Ticker", return_value=tk):
+        snap = fetch_fundamentals("NVDA")
+
+    assert snap is not None
+    assert any(
+        "statements fetch partially failed" in w and "financials: permanently broken" in w
+        for w in snap.warnings
+    )
+    # balance_sheet/cashflow survived — enough for a real Piotroski/Altman
+    # score instead of the "minimal" degradation a fully-discarded retry
+    # would have produced.
+    assert snap.piotroski_f is not None

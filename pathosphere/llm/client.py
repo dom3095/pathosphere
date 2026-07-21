@@ -51,6 +51,11 @@ class LLMClient:
                 f"Unknown reasoning_model '{self._backend}'. "
                 "Use 'claude' or 'qwen-local'."
             )
+        # Capability cache (qwen-local only): set once a response_format
+        # rejection is confirmed, so later calls on this same instance skip
+        # straight to the unconstrained request instead of paying a doomed
+        # extra round-trip on every call for the rest of the run.
+        self._schema_unsupported = False
 
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -111,24 +116,35 @@ class LLMClient:
         self, messages: list[dict], *, model: str | None, json_schema: dict | None = None
     ) -> str:
         mdl = model or _QWEN_MODEL
+        # Once a rejection is confirmed for this instance, stop asking —
+        # every later call would otherwise pay the same doomed extra
+        # round-trip (see CP-032).
+        schema = json_schema if not self._schema_unsupported else None
         payload: dict = {"model": mdl, "messages": messages, "stream": False}
-        if json_schema is not None:
+        if schema is not None:
             payload["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"name": "output", "schema": json_schema},
+                "json_schema": {"name": "output", "schema": schema},
             }
 
         try:
             return await self._post_qwen(payload)
         except httpx.HTTPStatusError as exc:
-            if json_schema is None or exc.response.status_code != 400:
+            if schema is None or exc.response.status_code != 400 or not _mentions_schema(exc.response):
                 raise
-            # Ollama/model rejected the schema constraint (not yet observed
-            # live — added 2026-07-20 without a live confirmation that this
-            # Ollama build honours response_format, since the local model was
-            # busy with an overnight geoloc batch at the time). Degrade to
-            # unconstrained JSON mode rather than fail the whole call.
-            logger.warning("LLM/qwen response_format rejected (400) — retrying without schema")
+            # Confirmed (body mentions response_format/schema, not just any
+            # 400 — an unrelated client error, e.g. bad model name, must
+            # still surface normally): this Ollama/model build rejects the
+            # schema constraint. Degrade to unconstrained JSON mode instead
+            # of failing the whole call, and remember it for the rest of
+            # this client's lifetime. Live-confirmed working on Ollama
+            # 0.31.1 (2026-07-21, 200/200 calls, zero rejections) — this
+            # branch exists for a downgrade/model-swap, not the common case.
+            logger.warning(
+                "LLM/qwen response_format rejected (400, schema-related) — "
+                "retrying without it, caching as unsupported for this client"
+            )
+            self._schema_unsupported = True
             payload.pop("response_format")
             return await self._post_qwen(payload)
 
@@ -170,6 +186,17 @@ class LLMClient:
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
+
+
+def _mentions_schema(response: httpx.Response) -> bool:
+    """Does this 400's body actually mention response_format/schema, or is
+    it an unrelated client error (bad model name, malformed messages) that
+    merely also happens to be a 400? Conservative on purpose — only treat a
+    400 as schema rejection when the body says so; otherwise the caller
+    re-raises so the real error surfaces instead of being silently retried
+    away as if it were a compatibility quirk."""
+    text = response.text.lower()
+    return "response_format" in text or "json_schema" in text or "schema" in text
 
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)

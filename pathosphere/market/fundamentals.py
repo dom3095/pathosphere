@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import yfinance as yf
 from loguru import logger
+from tenacity import Retrying, stop_after_attempt, wait_exponential
 
 # Altman Z-score standard thresholds (original 1968 model)
 ALTMAN_SAFE = 2.99
@@ -50,25 +51,31 @@ _sleep = time.sleep  # module-level for test monkeypatching
 
 
 def _with_retries(what: str, ticker: str, fn):
-    """Run *fn* up to _RETRY_ATTEMPTS times with exponential backoff.
+    """Run *fn* up to _RETRY_ATTEMPTS times with exponential backoff, via
+    tenacity — the same retry/backoff engine already used for the identical
+    transient-network-failure problem in ingest/gdelt.py, instead of a
+    second hand-rolled loop.
 
     Returns (value, None) on success, (None, last_exception) when every
-    attempt raised. *fn* must return a non-None value.
+    attempt raised — a "degrade to None" contract the callers rely on
+    (fetch_fundamentals must never raise), so `reraise=True` on the
+    tenacity side just means "propagate the original exception type to
+    this try/except" rather than "propagate to the caller of this function".
     """
-    last_exc: Exception | None = None
-    for attempt in range(1, _RETRY_ATTEMPTS + 1):
-        try:
-            return fn(), None
-        except Exception as exc:
-            last_exc = exc
-            if attempt < _RETRY_ATTEMPTS:
-                delay = _RETRY_BASE_DELAY_S * (2 ** (attempt - 1))
-                logger.warning(
-                    f"FUNDAMENTALS: {what} fetch failed for {ticker} "
-                    f"(attempt {attempt}/{_RETRY_ATTEMPTS}, retry in {delay:.0f}s): {exc}"
-                )
-                _sleep(delay)
-    return None, last_exc
+    try:
+        return Retrying(
+            stop=stop_after_attempt(_RETRY_ATTEMPTS),
+            wait=wait_exponential(multiplier=_RETRY_BASE_DELAY_S, min=_RETRY_BASE_DELAY_S),
+            before_sleep=lambda rs: logger.warning(
+                f"FUNDAMENTALS: {what} fetch failed for {ticker} "
+                f"(attempt {rs.attempt_number}/{_RETRY_ATTEMPTS}, "
+                f"retry in {rs.next_action.sleep:.0f}s): {rs.outcome.exception()}"
+            ),
+            reraise=True,
+            sleep=_sleep,
+        )(fn), None
+    except Exception as exc:
+        return None, exc
 
 # Sectors / industry keywords where Altman Z is not applicable
 _FINANCIAL_SECTORS = {"financial services", "financial", "financials"}
@@ -334,18 +341,28 @@ def fetch_fundamentals(ticker: str) -> FundamentalsSnapshot | None:
         )
 
     # ── financial statements (may be empty/stale — expected) ──
-    def _load_statements():
-        return tk.balance_sheet, tk.financials, tk.cashflow
+    # Each statement retried independently: bundling all three into one
+    # retry unit meant a permanently-failing statement (e.g. financials
+    # unsupported for this instrument) discarded siblings that fetched fine
+    # on every attempt, losing data the codebase otherwise treats as usable
+    # (Piotroski F scores with whatever subset of the three is available).
+    balance, balance_exc = _with_retries("balance_sheet", ticker, lambda: tk.balance_sheet)
+    income, income_exc = _with_retries("financials", ticker, lambda: tk.financials)
+    cashflow, cashflow_exc = _with_retries("cashflow", ticker, lambda: tk.cashflow)
 
-    balance = income = cashflow = None
-    stmts, exc = _with_retries("statements", ticker, _load_statements)
-    if stmts is not None:
-        balance, income, cashflow = stmts
-    else:
-        snap.warnings.append(f"statements fetch failed: {exc}")
+    failed = {
+        name: exc for name, exc in (
+            ("balance_sheet", balance_exc),
+            ("financials", income_exc),
+            ("cashflow", cashflow_exc),
+        ) if exc is not None
+    }
+    if failed:
+        detail = "; ".join(f"{name}: {exc}" for name, exc in failed.items())
+        snap.warnings.append(f"statements fetch partially failed: {detail}")
         logger.warning(
-            f"FUNDAMENTALS: statements fetch failed for {ticker} "
-            f"after {_RETRY_ATTEMPTS} attempts: {exc}"
+            f"FUNDAMENTALS: {len(failed)}/3 statements failed for {ticker} "
+            f"after {_RETRY_ATTEMPTS} attempts each: {detail}"
         )
 
     statements_ok = any(

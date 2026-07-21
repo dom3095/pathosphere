@@ -29,6 +29,7 @@ from pathosphere.agent.debate import (
     _update_debate_status,
     run_debate,
 )
+from pathosphere.agent.thesis import BriefNotFoundError
 
 
 # ── fixtures / helpers ────────────────────────────────────────────────────────
@@ -269,6 +270,24 @@ def test_run_synthesis_returns_theses():
     assert theses[0]["instrument"] == "SOXX"
 
 
+def test_run_synthesis_invalid_json_raises_plain_value_error_not_brief_not_found():
+    """A malformed synthesis response is a real pipeline bug, not the missing-
+    brief precondition — it must stay a plain ValueError (traceback preserved,
+    cli.py's BriefNotFoundError-only catch must NOT swallow it) rather than
+    BriefNotFoundError, even though BriefNotFoundError is itself a ValueError
+    subclass so a naive `isinstance(exc, ValueError)` check can't tell them
+    apart — the type distinction is what cli.py's except clause relies on."""
+    mock_claude = MagicMock()
+    mock_claude.complete = AsyncMock(return_value="not json")
+    analyses = {k: _SAMPLE_RESEARCH for k in PERSONAS}
+    critiques = {k: {"responses": []} for k in PERSONAS}
+    dp = [{"id": "dp1", "title": "T", "description": "D", "personas_for": [], "personas_against": []}]
+
+    with pytest.raises(ValueError, match="Synthesis returned invalid JSON") as exc_info:
+        asyncio.run(_run_synthesis(mock_claude, "brief", analyses, dp, critiques, 3))
+    assert not isinstance(exc_info.value, BriefNotFoundError)
+
+
 # ── batching (CP-029) ─────────────────────────────────────────────────────────
 
 def test_gather_in_batches_caps_concurrency():
@@ -468,7 +487,7 @@ def test_run_debate_auto_open_disabled(tmp_db):
 def test_run_debate_no_brief_raises(tmp_db):
     mock_qwen = MagicMock()
     mock_claude = MagicMock()
-    with pytest.raises(ValueError, match="No brief found"):
+    with pytest.raises(BriefNotFoundError, match="No brief found"):
         asyncio.run(run_debate(tmp_db, mock_qwen, mock_claude, brief_date="2000-01-01"))
 
 

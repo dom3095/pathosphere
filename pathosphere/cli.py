@@ -1388,7 +1388,7 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
     import asyncio
     from pathosphere.db.schema import get_connection
     from pathosphere.llm.client import LLMClient
-    from pathosphere.agent.thesis import generate_theses
+    from pathosphere.agent.thesis import BriefNotFoundError, generate_theses
 
     settings = get_settings()
     _require_db(settings)
@@ -1403,10 +1403,10 @@ def thesis_generate(brief_date: str | None, n: int, model: str | None,
             auto_open=not no_auto_open,
             auto_open_threshold=auto_open_threshold,
         ))
-    except ValueError as exc:
-        # precondition errors (e.g. missing brief) — actionable message, no traceback
+    except BriefNotFoundError as exc:
         conn.close()
-        raise click.ClickException(str(exc))
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
     conn.close()
 
     if result.theses_created == 0 and result.refusal_reason:
@@ -1688,6 +1688,7 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
     from pathosphere.db.schema import get_connection
     from pathosphere.llm.client import LLMClient
     from pathosphere.agent.debate import PERSONAS, run_debate
+    from pathosphere.agent.thesis import BriefNotFoundError
 
     settings = get_settings()
     _require_db(settings)
@@ -1712,10 +1713,10 @@ def thesis_debate(brief_date: str | None, n: int, no_fundamentals: bool,
                 auto_open_threshold=auto_open_threshold,
             )
         )
-    except ValueError as exc:
-        # precondition errors (e.g. missing brief) — actionable message, no traceback
+    except BriefNotFoundError as exc:
         conn.close()
-        raise click.ClickException(str(exc))
+        click.echo(f"Error: {exc}")
+        raise SystemExit(1)
     conn.close()
 
     click.echo(

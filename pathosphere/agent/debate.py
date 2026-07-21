@@ -21,6 +21,7 @@ from datetime import date
 from loguru import logger
 
 from pathosphere.agent.thesis import (
+    BriefNotFoundError,
     ThesisResult,
     _MarketEnrichment,
     _maybe_auto_open,
@@ -478,7 +479,7 @@ async def _persist_theses(
 
     for t in theses_data[:n]:
         ticker = t.get("instrument")
-        fund_json, tech_json = enrichment.docs(ticker)
+        fund_json, tech_json = await enrichment.docs(ticker)
         price = _price_snapshot(ticker, tech_json)
         if ticker and price is None:
             logger.warning(f"DEBATE: price fetch failed for {ticker}")
@@ -501,7 +502,7 @@ async def _persist_theses(
 
         for alt in t.get("alternatives", []):
             alt_ticker = alt.get("instrument")
-            alt_fund, alt_tech = enrichment.docs(alt_ticker)
+            alt_fund, alt_tech = await enrichment.docs(alt_ticker)
             alt_price = price if alt_ticker == ticker else _price_snapshot(alt_ticker, alt_tech)
             alt_id = _save_thesis(
                 conn, alt, alt_price, debate_id=debate_id,
@@ -593,7 +594,11 @@ async def run_debate(
         DebateResult with debate_id, ThesisResult, and divergence_points.
 
     Raises:
-        ValueError: If no brief found or synthesis returns invalid JSON.
+        BriefNotFoundError: If no brief exists for the given date.
+        ValueError: If Claude synthesis returns invalid JSON (a real pipeline
+            bug, not a precondition — deliberately a plain ValueError so it
+            keeps its traceback instead of being displayed like the clean,
+            user-fixable BriefNotFoundError case).
     """
     if brief_date is None:
         brief_date = date.today().isoformat()
@@ -602,7 +607,7 @@ async def run_debate(
 
     brief_id, brief_content = _load_brief(conn, brief_date)
     if not brief_content:
-        raise ValueError(f"No brief found for {brief_date}. Run `pathos brief` first.")
+        raise BriefNotFoundError(f"No brief found for {brief_date}. Run `pathos brief` first.")
 
     debate_id = _save_debate(conn, brief_date, brief_id)
     logger.info(f"DEBATE: id={debate_id}")
