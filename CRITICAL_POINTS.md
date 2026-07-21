@@ -845,7 +845,7 @@ il fallimento richiede un errore infrastrutturale, non un input cattivo.
 
 ---
 
-## CP-032: output JSON di Qwen non vincolato — solo istruzione testuale, mai schema — **PARZIALMENTE RISOLTO 2026-07-20** (session esercizio reale)
+## CP-032: output JSON di Qwen non vincolato — solo istruzione testuale, mai schema — **RISOLTO 2026-07-20/21** (confermato dal vivo)
 
 **Contesto**: durante il primo `pathos thesis debate` reale della sessione (id=5, CP-029), la
 divergence detection ha prodotto JSON non parsabile una volta (`Expecting value: line 1 column 0`,
@@ -879,7 +879,17 @@ Estendere lo schema a questi resta opzionale, non urgente.
 
 **Verificato**: 700 test verdi (4 nuovi in `test_llm_client.py`: response_format nel payload,
 omesso quando schema=None, fallback su 400, più mock signature aggiornata in `test_debate.py`).
-Ruff pulito. **Azione**: prossimo run reale (batch geoloc o debate) confermerà se il 400-fallback
-scatta mai — se sì, verificare la versione Ollama minima che supporta lo schema e/o il formato
-esatto atteso; se non scatta mai, il vincolo è attivo e la classe di errore osservata oggi
-dovrebbe sparire.
+Ruff pulito.
+
+**Conferma dal vivo (2026-07-21, batch `--geolocate-qwen --geoloc-limit 200`, riavviato apposta
+per usare il codice col fix invece di aspettare la fine del batch precedente pre-fix — sicuro,
+ogni evento si commette singolarmente, `with conn:` per-evento, nessun rischio di perdere
+progresso)**: **200/200 chiamate, zero rejection dello schema** (nessun log
+"response_format rejected" — Ollama 0.31.1 onora `response_format`/`json_schema`
+sull'endpoint OpenAI-compat, confermato). **1 solo errore su 200** (0.5%, stessa firma
+"Expecting value: line 1 column 1 (char 0)" = risposta vuota, non malformazione sintattica) —
+contro un tasso pre-fix di ~1 su 10-15 osservato la mattina dello stesso giorno sullo stesso
+batch prima del riavvio. Campione singolo insufficiente per confermare la causa esatta del
+residuo 0.5% (sospetto non verificato: carattere `\xa0` non-ASCII nel titolo), ma il tasso è
+già abbastanza basso che il design esistente (skip + retry al prossimo batch) resta sufficiente
+— nessun fix ulteriore necessario ora.

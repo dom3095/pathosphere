@@ -1,6 +1,17 @@
 # Handoff Document — Pathosphere
 
-*Aggiornato: 2026-07-19/20 — PR #24 in attesa review; primo esercizio reale end-to-end del sistema (scenari, debate CP-029 chiuso, backfill, geoloc); CP-024 confermato ancora bloccato (azione utente).*
+*Aggiornato: 2026-07-21 — PR #24 in attesa review; esercizio reale end-to-end concluso: CP-029 e CP-032 chiusi e confermati dal vivo, CP-024 confermato ancora bloccato (azione utente).*
+
+## Chiusura CP-032 (2026-07-21) — batch geoloc riavviato per validare lo schema JSON
+
+Il batch `--geolocate-qwen --geoloc-limit 200` partito nella sessione precedente girava col
+codice PRE-fix (schema JSON non ancora committato). Riavviato a mano (kill + relaunch) dopo
+il commit `0740a6d` per validare CP-032 senza aspettare ore — sicuro perché ogni evento si
+commette singolarmente nel DB (`with conn:` per-evento in `extract.py`), zero rischio di
+perdere i ~34 eventi già processati dal batch precedente (restano `geoloc_checked=1`, non
+riprocessati). **Esito: 200/200 chiamate, zero rejection dello schema (Ollama onora
+`response_format`/`json_schema`), 1 solo errore su 200 (0.5%, contro ~1/10-15 pre-fix)**.
+CP-032 chiuso con conferma reale, non solo teorica. Dettaglio in `CRITICAL_POINTS.md`.
 
 ## Sessione 2026-07-19/20 — primo esercizio reale end-to-end (autonoma, su richiesta, branch `fix/cp023-yfinance-retry`)
 

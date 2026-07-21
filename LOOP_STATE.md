@@ -12,10 +12,15 @@ la prima volta con Claude vero (Bahrain, Vietnam — qualità alta); backfill st
 (+1 WHO DON); geoloc Qwen batch in corso (ritmo confermato ~90s/evento, solo overnight);
 CP-024 riconfermato bloccato (azione utente).
 
-**Prossima azione (utente)**: review/merge PR #24 (ora comprende anche fix cli.py + doc). Poi:
-lanciare geoloc Qwen overnight per smaltire backlog (2181 eventi), registrare `RELIEFWEB_APPNAME`,
-concedere Full Disk Access per CP-024, continuare a lanciare `thesis debate`/`scenario generate`
-periodicamente per accumulare dati di calibrazione (Brier/time-adjusted) — l'unica metrica che conta.
+**Aggiornamento 2026-07-21**: CP-032 (JSON strutturato Qwen) chiuso con conferma dal vivo —
+batch geoloc riavviato apposta col fix, 200/200 chiamate, zero schema-rejection, errore
+0.5% (era ~1/10-15 pre-fix). Backlog geoloc sceso da 2181 a **1336** (`pathos doctor` verificato).
+
+**Prossima azione (utente)**: review/merge PR #24 (ora comprende: CP-023 retry yfinance, igiene
+ruff/doc, fix cli.py precondizioni, CP-032 structured output). Poi: altri batch geoloc per
+smaltire il resto del backlog, registrare `RELIEFWEB_APPNAME`, concedere Full Disk Access per
+CP-024, continuare a lanciare `thesis debate`/`scenario generate` periodicamente per accumulare
+dati di calibrazione (Brier/time-adjusted) — l'unica metrica che conta.
 
 ---
 
